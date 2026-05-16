@@ -19,14 +19,17 @@ export function NewRulesForm({
   const searchParams = useSearchParams();
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<ClientLink | null>(null);
+  const [fromReclassId, setFromReclassId] = useState<string | null>(null);
 
   // Auto-select from URL deep link
   useEffect(() => {
     const clientId = searchParams.get("client");
+    const fromReclass = searchParams.get("from_reclass");
     if (clientId && !selected) {
       const found = clientLinks.find((c) => c.id === clientId);
       if (found) setSelected(found);
     }
+    if (fromReclass) setFromReclassId(fromReclass);
   }, [searchParams, clientLinks]);
   const [months, setMonths] = useState(6);
   const [starting, setStarting] = useState(false);
@@ -58,6 +61,24 @@ export function NewRulesForm({
 
   return (
     <div>
+      {fromReclassId && (
+        <div className="rounded-xl p-4 mb-6 bg-teal-lighter border border-teal/30">
+          <div className="flex items-start gap-3">
+            <CheckCircle2 className="text-teal flex-shrink-0 mt-0.5" size={18} />
+            <div className="flex-1">
+              <div className="font-semibold text-sm text-navy mb-0.5">
+                Continuing from Transaction Reclassification
+              </div>
+              <p className="text-xs text-ink-slate">
+                Client is pre-selected. Discovery will use your reclass categorizations as priors —
+                vendors that consistently mapped to the same account during reclass will surface as
+                high-confidence rule candidates.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {recentJobs.length > 0 && (
         <div className="rounded-xl bg-white border border-gray-200 mb-6">
           <div className="px-5 py-3 border-b border-gray-200">

@@ -2,7 +2,7 @@ import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { createServerSupabase } from "@/lib/supabase";
 import Link from "next/link";
-import { Plus, ArrowRight, MoreVertical, Zap, CheckCircle2, Flag, TrendingUp } from "lucide-react";
+import { Plus, ArrowRight, MoreVertical, Zap, CheckCircle2, Flag, TrendingUp, FilePlus2, Shuffle, CreditCard, Receipt } from "lucide-react";
 
 export default async function DashboardPage() {
   const supabase = await createServerSupabase();
@@ -64,6 +64,64 @@ export default async function DashboardPage() {
               </div>
             );
           })}
+        </div>
+
+        {/* Workflow guide */}
+        <div className="rounded-xl bg-white border border-gray-200 mb-6 overflow-hidden">
+          <div className="px-5 py-4 border-b border-gray-200 bg-gradient-to-r from-teal-lighter to-blue-50">
+            <h2 className="text-base font-bold text-navy">The IronBooks Cleanup Workflow</h2>
+            <p className="text-xs text-ink-slate mt-0.5">
+              Four sequential steps to take a painter's QBO from messy to clean. Each step hands off to the next.
+            </p>
+          </div>
+          <div className="grid grid-cols-4 divide-x divide-gray-100">
+            {[
+              {
+                num: 1, label: "COA Cleanup", icon: FilePlus2, href: "/jobs/new",
+                desc: "Align chart of accounts to the IronBooks master template",
+                tag: "Required", tagColor: "#2D7A75",
+              },
+              {
+                num: 2, label: "Reclassify", icon: Shuffle, href: "/reclass/new",
+                desc: "AI categorizes every transaction against the new COA",
+                tag: "Required", tagColor: "#2D7A75",
+              },
+              {
+                num: 3, label: "Stripe Recon", icon: CreditCard, href: "/stripe-recon/new",
+                desc: "Match Stripe deposits to invoices + split out fees & tax",
+                tag: "If applicable", tagColor: "#7C3AED",
+              },
+              {
+                num: 4, label: "Bank Rules", icon: Receipt, href: "/rules/new",
+                desc: "Auto-generate rules so future transactions categorize themselves",
+                tag: "Recommended", tagColor: "#0891B2",
+              },
+            ].map((s) => {
+              const Icon = s.icon;
+              return (
+                <Link
+                  key={s.num}
+                  href={s.href}
+                  className="p-4 hover:bg-teal-lighter transition-colors group"
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="rounded-full flex items-center justify-center font-bold text-xs w-6 h-6 bg-gray-100 text-ink-slate group-hover:bg-teal group-hover:text-white transition-colors">
+                      {s.num}
+                    </div>
+                    <Icon size={16} className="text-ink-slate group-hover:text-teal transition-colors" />
+                    <span
+                      className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ml-auto"
+                      style={{ backgroundColor: `${s.tagColor}15`, color: s.tagColor }}
+                    >
+                      {s.tag}
+                    </span>
+                  </div>
+                  <div className="font-bold text-sm text-navy mb-1">{s.label}</div>
+                  <div className="text-xs text-ink-slate leading-snug">{s.desc}</div>
+                </Link>
+              );
+            })}
+          </div>
         </div>
 
         {/* Active jobs */}

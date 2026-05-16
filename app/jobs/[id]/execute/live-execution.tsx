@@ -255,7 +255,8 @@ export function LiveExecution({
         <div className="rounded-xl p-5 mb-6 bg-gradient-to-br from-teal-lighter to-blue-50 border-2 border-teal/30">
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1 min-w-0">
-              <h3 className="font-bold text-base text-navy mb-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-teal">Step 2 of 4 · Required</span>
+              <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
                 COA cleanup complete — next: reclassify transactions
               </h3>
               <p className="text-sm text-ink-slate">
@@ -267,7 +268,7 @@ export function LiveExecution({
               href={`/reclass/new?client=${clientLinkId}&workflow=full_categorization`}
               className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-5 py-2.5 rounded-lg flex-shrink-0 shadow-md"
             >
-              Start Transaction Reclassification <ArrowRight size={16} />
+              Start Reclassification <ArrowRight size={16} />
             </Link>
           </div>
         </div>

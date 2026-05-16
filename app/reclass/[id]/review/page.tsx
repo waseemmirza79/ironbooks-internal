@@ -1,5 +1,6 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
+import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { redirect } from "next/navigation";
 import { ReclassReview } from "./review-client";
@@ -43,6 +44,7 @@ export default async function ReclassReviewPage({
           title={`Reclassification: ${job.client_name}`}
           subtitle={`Discovery in progress · ${job.workflow}`}
         />
+        <WorkflowStepper currentStep="reclass" currentState="active" completedSteps={["coa"]} />
         <div className="px-8 py-6 max-w-4xl">
           <ReclassDiscoveryPending jobId={id} />
         </div>
@@ -75,8 +77,15 @@ export default async function ReclassReviewPage({
     <AppShell>
       <TopBar
         title={`Reclassification: ${job.client_name}`}
-        subtitle={`Review · ${job.workflow === "consolidation" ? "Account Consolidation" : "AI Scrub"}`}
+        subtitle={`Review · ${
+          job.workflow === "consolidation"
+            ? "Account Consolidation"
+            : job.workflow === "full_categorization"
+            ? "Full AI Categorization"
+            : "AI Scrub"
+        }`}
       />
+      <WorkflowStepper currentStep="reclass" currentState="active" completedSteps={["coa"]} />
       <div className="px-8 py-6">
         <ReclassReview
           job={job}

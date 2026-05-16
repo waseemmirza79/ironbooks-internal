@@ -37,7 +37,15 @@ interface JobView {
   client_link_id?: string;
 }
 
-export function ExecuteLive({ job: initialJob, userRole }: { job: JobView; userRole: string }) {
+export function ExecuteLive({
+  job: initialJob,
+  userRole,
+  hasStripeDeposits = false,
+}: {
+  job: JobView;
+  userRole: string;
+  hasStripeDeposits?: boolean;
+}) {
   const router = useRouter();
   const [job, setJob] = useState(initialJob);
   const [progress, setProgress] = useState({ total: 0, completed: 0, percentage: 0 });
@@ -200,12 +208,16 @@ export function ExecuteLive({ job: initialJob, userRole }: { job: JobView; userR
         )}
       </div>
 
-      {/* Stripe AR Reconciliation handoff — for completed full_categorization jobs */}
+      {/* Next-step handoff — sequential.
+          • If client has Stripe deposits → Stripe Recon is the next required step,
+            and a small Bank Rules link is shown as the eventual next next step.
+          • If no Stripe deposits → skip directly to Bank Rules. */}
       {job.status === "complete" &&
         job.workflow === "full_categorization" &&
         !job.is_rollback &&
         job.transactions_moved > 0 &&
-        job.client_link_id && (
+        job.client_link_id &&
+        (hasStripeDeposits ? (
           <div className="rounded-2xl p-5 bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-200">
             <div className="flex items-start justify-between gap-4">
               <div className="flex items-start gap-3 flex-1 min-w-0">
@@ -213,12 +225,13 @@ export function ExecuteLive({ job: initialJob, userRole }: { job: JobView; userR
                   <CreditCard className="text-purple-600" size={20} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h3 className="font-bold text-base text-navy mb-1">
-                    Stripe AR Reconciliation <span className="text-xs font-normal text-ink-slate">(if applicable)</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-purple-700">Step 3 of 4 · Recommended</span>
+                  <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
+                    Stripe AR Reconciliation
                   </h3>
                   <p className="text-sm text-ink-slate">
-                    If this client uses Stripe, match Stripe deposits to customer invoices, calculate
-                    processing fees, and apply sales tax (Canada only).
+                    Stripe deposits detected. Match them to customer invoices, split out processing fees,
+                    and apply sales tax (Canada).
                   </p>
                 </div>
               </div>
@@ -229,15 +242,19 @@ export function ExecuteLive({ job: initialJob, userRole }: { job: JobView; userR
                 Start Stripe Recon <ArrowRight size={16} />
               </Link>
             </div>
+            <div className="mt-3 pt-3 border-t border-purple-200 flex items-center justify-between text-xs">
+              <span className="text-ink-slate">
+                Skip if this client doesn't use Stripe →
+              </span>
+              <Link
+                href={`/rules/new?client=${job.client_link_id}&from_reclass=${job.id}`}
+                className="font-semibold text-purple-700 hover:text-purple-900"
+              >
+                Skip to Bank Rules
+              </Link>
+            </div>
           </div>
-        )}
-
-      {/* Bank Rules handoff — only for completed full_categorization jobs */}
-      {job.status === "complete" &&
-        job.workflow === "full_categorization" &&
-        !job.is_rollback &&
-        job.transactions_moved > 0 &&
-        job.client_link_id && (
+        ) : (
           <div className="rounded-2xl p-5 bg-gradient-to-br from-teal-lighter to-blue-50 border-2 border-teal/30">
             <div className="flex items-start justify-between gap-4">
               <div className="flex items-start gap-3 flex-1 min-w-0">
@@ -245,12 +262,13 @@ export function ExecuteLive({ job: initialJob, userRole }: { job: JobView; userR
                   <Receipt className="text-teal" size={20} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h3 className="font-bold text-base text-navy mb-1">
-                    Generate Bank Rules from these categorizations
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-teal">Step 4 of 4 · Recommended</span>
+                  <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
+                    Generate Bank Rules
                   </h3>
                   <p className="text-sm text-ink-slate">
-                    Turn the {job.transactions_moved} approved decisions into QBO Bank Rules so future
-                    transactions from the same vendors are auto-categorized.
+                    No Stripe deposits detected — skipping Step 3. Turn the {job.transactions_moved} approved
+                    categorizations into QBO Bank Rules so future transactions auto-categorize.
                   </p>
                 </div>
               </div>
@@ -262,7 +280,7 @@ export function ExecuteLive({ job: initialJob, userRole }: { job: JobView; userR
               </Link>
             </div>
           </div>
-        )}
+        ))}
 
       {/* Event log */}
       <div className="bg-white rounded-2xl border border-gray-100 p-6">

@@ -1,5 +1,6 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
+import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { notFound, redirect } from "next/navigation";
 import { StripeReconExecute } from "./execute-live";
@@ -35,6 +36,12 @@ export default async function StripeReconExecutePage({
             ? "Failed"
             : "Executing..."
         }
+      />
+      <WorkflowStepper
+        currentStep="stripe"
+        currentState={job.status === "complete" ? "complete" : "active"}
+        completedSteps={job.status === "complete" ? ["coa", "reclass", "stripe"] : ["coa", "reclass"]}
+        clientLinkId={clientLink?.id}
       />
       <div className="px-8 py-6 max-w-4xl">
         <StripeReconExecute

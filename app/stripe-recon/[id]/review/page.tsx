@@ -1,5 +1,6 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
+import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { notFound, redirect } from "next/navigation";
 import { Loader2 } from "lucide-react";
@@ -34,6 +35,7 @@ export default async function StripeReconReviewPage({
           title={`Stripe Reconciliation — ${clientLink?.client_name}`}
           subtitle="Pulling Stripe deposits and matching them to invoices..."
         />
+        <WorkflowStepper currentStep="stripe" currentState="active" completedSteps={["coa", "reclass"]} />
         <div className="px-8 py-12 flex flex-col items-center">
           <Loader2 size={48} className="animate-spin text-teal mb-4" />
           <p className="text-sm text-ink-slate">
@@ -57,6 +59,7 @@ export default async function StripeReconReviewPage({
         title={`Stripe Reconciliation — ${clientLink?.client_name}`}
         subtitle={`${matches?.length || 0} deposits matched`}
       />
+      <WorkflowStepper currentStep="stripe" currentState="active" completedSteps={["coa", "reclass"]} />
       <div className="px-8 py-6">
         <StripeReconReview
           job={job as any}

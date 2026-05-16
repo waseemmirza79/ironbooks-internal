@@ -1,5 +1,6 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
+import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { redirect } from "next/navigation";
 import { NewStripeReconForm } from "./form";
@@ -22,6 +23,7 @@ export default async function NewStripeReconPage() {
         title="Stripe AR Reconciliation"
         subtitle="Match Stripe deposits to customer invoices · calculate fees + sales tax"
       />
+      <WorkflowStepper currentStep="stripe" currentState="active" completedSteps={["coa", "reclass"]} />
       <div className="px-8 py-6 max-w-3xl">
         <NewStripeReconForm clientLinks={clientLinks || []} />
       </div>

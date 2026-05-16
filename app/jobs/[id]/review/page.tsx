@@ -1,5 +1,6 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
+import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase } from "@/lib/supabase";
 import { notFound } from "next/navigation";
 import { Loader2, AlertCircle, RefreshCcw } from "lucide-react";
@@ -126,6 +127,7 @@ export default async function ReviewPage({
         title={`COA Review — ${clientLink?.client_name}`}
         subtitle={`${actions?.length || 0} actions identified by AI`}
       />
+      <WorkflowStepper currentStep="coa" currentState="active" clientLinkId={clientLink?.id} />
       <div className="px-8 py-6">
         <ReviewClient
           jobId={id}

@@ -1,5 +1,6 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
+import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase } from "@/lib/supabase";
 import { notFound } from "next/navigation";
 import { LiveExecution } from "./live-execution";
@@ -33,6 +34,12 @@ export default async function ExecutePage({
             : "Executing Cleanup"
         }
         subtitle={`${clientLink?.client_name} • ${clientLink?.jurisdiction} ${clientLink?.state_province || ""}`}
+      />
+      <WorkflowStepper
+        currentStep="coa"
+        currentState={job.status === "complete" ? "complete" : "active"}
+        completedSteps={job.status === "complete" ? ["coa"] : []}
+        clientLinkId={clientLink?.id}
       />
       <div className="px-8 py-6 max-w-5xl">
         <LiveExecution

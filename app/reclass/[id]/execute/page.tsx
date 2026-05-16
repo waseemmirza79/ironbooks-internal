@@ -1,5 +1,6 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
+import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { redirect } from "next/navigation";
 import { ExecuteLive } from "./execute-live";
@@ -33,6 +34,19 @@ export default async function ReclassExecutePage({
     if (!(job as any).workflow) (job as any).workflow = baseJob.workflow;
   }
 
+  // Detect Stripe deposits in the reclass decisions — if none, we'll auto-skip
+  // the Stripe Recon step and route directly to Bank Rules.
+  let hasStripeDeposits = false;
+  if ((job as any).workflow === "full_categorization") {
+    const { data: stripeRows } = await service
+      .from("reclassifications")
+      .select("id")
+      .eq("reclass_job_id", id)
+      .or("vendor_name.ilike.%stripe%,vendor_name.ilike.%STRP%,description.ilike.%stripe%")
+      .limit(1);
+    hasStripeDeposits = (stripeRows?.length || 0) > 0;
+  }
+
   if (!job) {
     return (
       <AppShell>
@@ -64,8 +78,14 @@ export default async function ReclassExecutePage({
             : "Executing..."
         }
       />
+      <WorkflowStepper
+        currentStep="reclass"
+        currentState={job.status === "complete" ? "complete" : "active"}
+        completedSteps={job.status === "complete" ? ["coa", "reclass"] : ["coa"]}
+        clientLinkId={(job as any).client_link_id}
+      />
       <div className="px-8 py-6 max-w-4xl">
-        <ExecuteLive job={job} userRole={userRole} />
+        <ExecuteLive job={job} userRole={userRole} hasStripeDeposits={hasStripeDeposits} />
       </div>
     </AppShell>
   );

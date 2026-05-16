@@ -1,5 +1,6 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
+import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase } from "@/lib/supabase";
 import { NewRulesForm } from "./new-form";
 
@@ -25,6 +26,7 @@ export default async function NewRulesPage() {
         title="New Bank Rules Discovery"
         subtitle="Auto-generate QBO bank feed rules from transaction history"
       />
+      <WorkflowStepper currentStep="rules" currentState="active" completedSteps={["coa", "reclass", "stripe"]} />
       <div className="px-8 py-6 max-w-3xl">
         <NewRulesForm clientLinks={clientLinks || []} recentJobs={recentJobs || []} />
       </div>
