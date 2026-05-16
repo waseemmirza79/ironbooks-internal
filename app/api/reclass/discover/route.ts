@@ -48,8 +48,9 @@ export async function POST(request: Request) {
 
   const body = await request.json();
 
-  // Base required fields (apply to all workflows)
-  const baseRequired = ["client_link_id", "workflow", "date_range_start", "date_range_end", "jurisdiction", "reason"];
+  // Base required fields (apply to all workflows). Reason is checked separately
+  // since it's auto-generated for full_categorization workflows.
+  const baseRequired = ["client_link_id", "workflow", "date_range_start", "date_range_end", "jurisdiction"];
   for (const f of baseRequired) {
     if (!body[f]) {
       return NextResponse.json({ error: `Missing required field: ${f}` }, { status: 400 });
