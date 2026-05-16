@@ -487,6 +487,7 @@ export type Database = {
           ai_completed_at: string | null
           attested: boolean | null
           attested_at: string | null
+          auto_approve_threshold: number | null
           bookkeeper_id: string
           client_link_id: string
           created_at: string | null
@@ -508,8 +509,8 @@ export type Database = {
           rolled_back: boolean | null
           rolled_back_at: string | null
           rolled_back_by: string | null
-          source_account_id: string
-          source_account_name: string
+          source_account_id: string | null
+          source_account_name: string | null
           state_province: string | null
           status: Database["public"]["Enums"]["job_status"]
           target_account_id: string | null
@@ -533,6 +534,7 @@ export type Database = {
           ai_completed_at?: string | null
           attested?: boolean | null
           attested_at?: string | null
+          auto_approve_threshold?: number | null
           bookkeeper_id: string
           client_link_id: string
           created_at?: string | null
@@ -554,8 +556,8 @@ export type Database = {
           rolled_back?: boolean | null
           rolled_back_at?: string | null
           rolled_back_by?: string | null
-          source_account_id: string
-          source_account_name: string
+          source_account_id?: string | null
+          source_account_name?: string | null
           state_province?: string | null
           status?: Database["public"]["Enums"]["job_status"]
           target_account_id?: string | null
@@ -579,6 +581,7 @@ export type Database = {
           ai_completed_at?: string | null
           attested?: boolean | null
           attested_at?: string | null
+          auto_approve_threshold?: number | null
           bookkeeper_id?: string
           client_link_id?: string
           created_at?: string | null
@@ -1133,7 +1136,7 @@ export type Database = {
         | "unsupported_type"
         | "user_excluded"
         | "manual_entry"
-      reclass_workflow: "consolidation" | "scrub"
+      reclass_workflow: "consolidation" | "scrub" | "full_categorization"
       user_role: "admin" | "lead" | "bookkeeper" | "viewer"
     }
     CompositeTypes: {
@@ -1309,7 +1312,7 @@ export const Constants = {
         "user_excluded",
         "manual_entry",
       ],
-      reclass_workflow: ["consolidation", "scrub"],
+      reclass_workflow: ["consolidation", "scrub", "full_categorization"],
       user_role: ["admin", "lead", "bookkeeper", "viewer"],
     },
   },

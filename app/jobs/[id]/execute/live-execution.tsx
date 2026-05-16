@@ -42,10 +42,12 @@ export function LiveExecution({
   jobId,
   initialStatus,
   clientName,
+  clientLinkId,
 }: {
   jobId: string;
   initialStatus: string;
   clientName: string;
+  clientLinkId?: string;
 }) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [events, setEvents] = useState<AuditEvent[]>([]);
@@ -248,6 +250,29 @@ export function LiveExecution({
         </div>
       </div>
 
+      {/* Reclass handoff banner (only after COA complete) */}
+      {isComplete && clientLinkId && (
+        <div className="rounded-xl p-5 mb-6 bg-gradient-to-br from-teal-lighter to-blue-50 border-2 border-teal/30">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <h3 className="font-bold text-base text-navy mb-1">
+                COA cleanup complete — next: reclassify transactions
+              </h3>
+              <p className="text-sm text-ink-slate">
+                Now that {clientName}'s chart of accounts is aligned to the IronBooks master,
+                run AI transaction reclassification to map historical transactions to the new accounts.
+              </p>
+            </div>
+            <Link
+              href={`/reclass/new?client=${clientLinkId}&workflow=full_categorization`}
+              className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-5 py-2.5 rounded-lg flex-shrink-0 shadow-md"
+            >
+              Start Transaction Reclassification <ArrowRight size={16} />
+            </Link>
+          </div>
+        </div>
+      )}
+
       {/* Action buttons */}
       <div className="flex justify-between items-center">
         <Link href="/dashboard" className="text-sm font-semibold text-ink-slate hover:text-navy">
@@ -256,9 +281,9 @@ export function LiveExecution({
         {isComplete && (
           <Link
             href="/jobs/new"
-            className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
+            className="text-sm font-semibold text-ink-slate hover:text-navy"
           >
-            Start Another Cleanup <ArrowRight size={16} />
+            or Start Another COA Cleanup
           </Link>
         )}
       </div>

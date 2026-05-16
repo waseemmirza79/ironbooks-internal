@@ -35,7 +35,12 @@ export default async function ExecutePage({
         subtitle={`${clientLink?.client_name} • ${clientLink?.jurisdiction} ${clientLink?.state_province || ""}`}
       />
       <div className="px-8 py-6 max-w-5xl">
-        <LiveExecution jobId={id} initialStatus={job.status} clientName={clientLink?.client_name} />
+        <LiveExecution
+          jobId={id}
+          initialStatus={job.status}
+          clientName={clientLink?.client_name}
+          clientLinkId={clientLink?.id}
+        />
       </div>
     </AppShell>
   );

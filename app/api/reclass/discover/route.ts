@@ -45,40 +45,49 @@ export async function POST(request: Request) {
 
   const body = await request.json();
 
-  // Validation
-  const required = [
-    "client_link_id",
-    "workflow",
-    "source_account_id",
-    "source_account_name",
-    "date_range_start",
-    "date_range_end",
-    "jurisdiction",
-    "reason",
-  ];
-  for (const f of required) {
+  // Base required fields (apply to all workflows)
+  const baseRequired = ["client_link_id", "workflow", "date_range_start", "date_range_end", "jurisdiction", "reason"];
+  for (const f of baseRequired) {
     if (!body[f]) {
       return NextResponse.json({ error: `Missing required field: ${f}` }, { status: 400 });
     }
   }
 
-  if (!["consolidation", "scrub"].includes(body.workflow)) {
+  if (!["consolidation", "scrub", "full_categorization"].includes(body.workflow)) {
     return NextResponse.json({ error: "Invalid workflow" }, { status: 400 });
   }
-  if (body.workflow === "consolidation" && !body.target_account_id) {
-    return NextResponse.json(
-      { error: "target_account_id is required for consolidation workflow" },
-      { status: 400 }
-    );
+
+  // Workflow-specific validation
+  if (body.workflow === "consolidation" || body.workflow === "scrub") {
+    if (!body.source_account_id || !body.source_account_name) {
+      return NextResponse.json(
+        { error: "source_account_id and source_account_name are required for this workflow" },
+        { status: 400 }
+      );
+    }
+    if (body.workflow === "consolidation" && !body.target_account_id) {
+      return NextResponse.json(
+        { error: "target_account_id is required for consolidation workflow" },
+        { status: 400 }
+      );
+    }
+    if (body.source_account_id === body.target_account_id) {
+      return NextResponse.json(
+        { error: "Source and target cannot be the same account" },
+        { status: 400 }
+      );
+    }
   }
-  if (body.source_account_id === body.target_account_id) {
-    return NextResponse.json(
-      { error: "Source and target cannot be the same account" },
-      { status: 400 }
-    );
+  if (body.workflow === "full_categorization") {
+    if (!body.auto_approve_threshold || body.auto_approve_threshold <= 0) {
+      return NextResponse.json(
+        { error: "auto_approve_threshold (>0) is required for full_categorization" },
+        { status: 400 }
+      );
+    }
   }
 
-  // Date range validation (1 year max)
+  // Date range validation
   const startDate = new Date(body.date_range_start);
   const endDate = new Date(body.date_range_end);
   if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
@@ -87,12 +96,15 @@ export async function POST(request: Request) {
   if (endDate < startDate) {
     return NextResponse.json({ error: "End date must be >= start date" }, { status: 400 });
   }
-  const daysDiff = Math.round((endDate.getTime() - startDate.getTime()) / 86400000);
-  if (daysDiff > 366) {
-    return NextResponse.json(
-      { error: "Date range exceeds 1 year. Run multiple jobs for multi-year cleanup." },
-      { status: 400 }
-    );
+  // 1-year cap only for consolidation/scrub. full_categorization can run multi-year.
+  if (body.workflow !== "full_categorization") {
+    const daysDiff = Math.round((endDate.getTime() - startDate.getTime()) / 86400000);
+    if (daysDiff > 366) {
+      return NextResponse.json(
+        { error: "Date range exceeds 1 year. Run multiple jobs for multi-year cleanup." },
+        { status: 400 }
+      );
+    }
   }
 
   if (!body.reason || body.reason.trim().length < 5) {
@@ -111,8 +123,8 @@ export async function POST(request: Request) {
       bookkeeper_id: user.id,
       workflow: body.workflow,
       status: "executing", // executing the discovery phase
-      source_account_id: body.source_account_id,
-      source_account_name: body.source_account_name,
+      source_account_id: body.source_account_id || null,
+      source_account_name: body.source_account_name || null,
       target_account_id: body.target_account_id || null,
       target_account_name: body.target_account_name || null,
       date_range_start: body.date_range_start,
@@ -120,6 +132,7 @@ export async function POST(request: Request) {
       jurisdiction: body.jurisdiction,
       state_province: body.state_province || null,
       reason: body.reason.trim(),
+      auto_approve_threshold: body.auto_approve_threshold || null,
     } as any)
     .select()
     .single();
@@ -165,12 +178,33 @@ async function runDiscovery(jobId: string) {
   // Get fresh QBO token
   const accessToken = await getValidToken(clientLink.id, service as any);
 
+  // full_categorization runs through a separate path (handled below; not implemented yet
+  // in this deploy — UI/form is shipping first to unblock the wizard flow).
+  if (job.workflow === "full_categorization") {
+    await service
+      .from("reclass_jobs")
+      .update({
+        status: "in_review",
+        transactions_pulled: 0,
+        transactions_in_scope: 0,
+        transactions_auto_approve: 0,
+        transactions_needs_review: 0,
+        transactions_flagged: 0,
+        ai_completed_at: new Date().toISOString(),
+        warnings: [
+          "Full AI Categorization pipeline pending. The job was created with your date range and threshold; transaction processing will run in the next deploy."
+        ] as any,
+      } as any)
+      .eq("id", jobId);
+    return;
+  }
+
   // 1. Pull all transactions hitting source account in date range
   const { lines, transactionsPulled, transactionsSkippedUnsupported } =
     await fetchTransactionsForAccount(
       clientLink.qbo_realm_id,
       accessToken,
-      job.source_account_id,
+      job.source_account_id!,
       job.date_range_start,
       job.date_range_end
     );

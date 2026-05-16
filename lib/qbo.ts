@@ -724,6 +724,56 @@ export interface QBOCompanyInfo {
   };
   PrimaryEmailAddr?: { Address?: string };
   PrimaryPhone?: { FreeFormNumber?: string };
+  /** "January" | "February" | ... | "December" — month the client's fiscal year starts */
+  FiscalYearStartMonth?: string;
+}
+
+/**
+ * Convert QBO's "January", "February", ... to a 1-indexed month number.
+ * Defaults to 1 (January) if unknown.
+ */
+export function fiscalStartMonthToNumber(name: string | undefined): number {
+  if (!name) return 1;
+  const months = [
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+  ];
+  const idx = months.indexOf(name.trim().toLowerCase());
+  return idx >= 0 ? idx + 1 : 1;
+}
+
+export interface DateRangePreset {
+  id: string;
+  label: string;
+  start: string;
+  end: string;
+}
+
+/**
+ * Build the 6 date-range presets shown on the reclass form, using the client's
+ * actual fiscal year start month (from QBO CompanyInfo). Every range ends today.
+ */
+export function getReclassDateRangePresets(
+  fiscalStartMonth: number,
+  today: Date = new Date()
+): DateRangePreset[] {
+  const y = today.getUTCFullYear();
+  const todayStr = today.toISOString().slice(0, 10);
+  const cyStart = (year: number) => `${year}-01-01`;
+  const fyStartYear = (today.getUTCMonth() + 1) >= fiscalStartMonth ? y : y - 1;
+  const fyStart = (yearsBack: number) => {
+    const yr = fyStartYear - yearsBack;
+    const mm = String(fiscalStartMonth).padStart(2, "0");
+    return `${yr}-${mm}-01`;
+  };
+  return [
+    { id: "cy",        label: "This Calendar Year",           start: cyStart(y),     end: todayStr },
+    { id: "fy",        label: "This Fiscal Year",             start: fyStart(0),     end: todayStr },
+    { id: "cy_plus_1", label: "Calendar Year + Last Year",    start: cyStart(y - 1), end: todayStr },
+    { id: "fy_plus_1", label: "Fiscal Year + Last Year",      start: fyStart(1),     end: todayStr },
+    { id: "cy_plus_2", label: "Calendar Year + Last 2 Years", start: cyStart(y - 2), end: todayStr },
+    { id: "fy_plus_2", label: "Fiscal Year + Last 2 Years",   start: fyStart(2),     end: todayStr },
+  ];
 }
 
 /**
