@@ -41,6 +41,53 @@ interface VendorPattern {
 // Order matters: more specific patterns first. First match wins.
 
 const PATTERNS: VendorPattern[] = [
+  // ══════════════════ ATM WITHDRAWALS → Owner Draw ══════════════════
+  // Cash withdrawn from ATM is essentially untracked spending — booked to owner
+  // draw by default for trades businesses (rules vary by client but this is the
+  // safest default).
+  { pattern: /\batm\s+(withdrawal|wd|w\/d|cash|debit)/i, account: "Owner Draw / Salary", confidence: 0.95, reasoning: "ATM Withdrawal → Owner Draw (untracked cash)" },
+  { pattern: /\bwithdrawal\s*[\-:]\s*atm/i, account: "Owner Draw / Salary", confidence: 0.95, reasoning: "ATM Withdrawal → Owner Draw" },
+  { pattern: /^atm\b/i, account: "Owner Draw / Salary", confidence: 0.88, reasoning: "ATM transaction → Owner Draw" },
+
+  // ══════════════════ INTERAC E-TRANSFER FEE — tiny amounts ALWAYS bank fee ══════════════════
+  // Caught by amountRange so this only fires for sub-$2 amounts which are
+  // unambiguously fees (Canadian banks charge $1-$1.50 per e-transfer)
+  { pattern: /interac\s+e[\s\-]?transfer/i, account: "Bank Charges", confidence: 0.99, reasoning: "Interac e-Transfer < $2 → Bank Charges (fee)", amountRange: [0, 2] },
+  { pattern: /\be[\s\-]?tfr\b/i, account: "Bank Charges", confidence: 0.99, reasoning: "e-Tfr < $2 → Bank Charges (fee)", amountRange: [0, 2] },
+  { pattern: /\bemt\b/i, account: "Bank Charges", confidence: 0.99, reasoning: "EMT < $2 → Bank Charges (fee)", amountRange: [0, 2] },
+
+  // ══════════════════ GYMS → Owner Draw ══════════════════
+  // Personal fitness memberships almost always = owner draw for trades clients
+  { pattern: /\bfit4less\b/i, account: "Owner Draw / Salary", confidence: 0.95, reasoning: "Fit4Less → Owner Draw (personal)" },
+  { pattern: /good\s*life\s+fitness/i, account: "Owner Draw / Salary", confidence: 0.95, reasoning: "GoodLife Fitness → Owner Draw (personal)" },
+  { pattern: /anytime\s+fitness/i, account: "Owner Draw / Salary", confidence: 0.95, reasoning: "Anytime Fitness → Owner Draw (personal)" },
+  { pattern: /\bplanet\s+fitness/i, account: "Owner Draw / Salary", confidence: 0.95, reasoning: "Planet Fitness → Owner Draw (personal)" },
+  { pattern: /\bworld\s+gym\b/i, account: "Owner Draw / Salary", confidence: 0.95, reasoning: "World Gym → Owner Draw (personal)" },
+  { pattern: /\bcrunch\s+fitness/i, account: "Owner Draw / Salary", confidence: 0.95, reasoning: "Crunch Fitness → Owner Draw (personal)" },
+  { pattern: /\b(la|24\s*hour)\s+fitness/i, account: "Owner Draw / Salary", confidence: 0.95, reasoning: "LA/24h Fitness → Owner Draw (personal)" },
+  { pattern: /\borange\s*theory/i, account: "Owner Draw / Salary", confidence: 0.95, reasoning: "Orangetheory → Owner Draw (personal)" },
+  { pattern: /\b(curves|f45|crossfit)\b/i, account: "Owner Draw / Salary", confidence: 0.93, reasoning: "Gym/CrossFit → Owner Draw (personal)" },
+  { pattern: /\byoga\s+(studio|barn|works)/i, account: "Owner Draw / Salary", confidence: 0.90, reasoning: "Yoga studio → Owner Draw (personal)" },
+
+  // ══════════════════ GROCERY STORES → Employee Benefits (employee appreciation) ══════════════════
+  // Trades clients buying groceries are usually doing it for crew lunches /
+  // employee appreciation. Default to Employee Benefits.
+  { pattern: /\bfresh[\s\-]?co\b/i, account: "Employee Benefits – Admin & Sales", confidence: 0.92, reasoning: "Freshco → Employee Benefits (crew snacks/appreciation)" },
+  { pattern: /save[\s\-]?on[\s\-]?foods/i, account: "Employee Benefits – Admin & Sales", confidence: 0.92, reasoning: "Save-On-Foods → Employee Benefits" },
+  { pattern: /\bsobeys\b/i, account: "Employee Benefits – Admin & Sales", confidence: 0.92, reasoning: "Sobeys → Employee Benefits" },
+  { pattern: /\bloblaws?\b/i, account: "Employee Benefits – Admin & Sales", confidence: 0.92, reasoning: "Loblaws → Employee Benefits" },
+  { pattern: /real\s+canadian\s+superstore|\bsuperstore\b/i, account: "Employee Benefits – Admin & Sales", confidence: 0.92, reasoning: "Superstore → Employee Benefits" },
+  { pattern: /\biga\b/i, account: "Employee Benefits – Admin & Sales", confidence: 0.92, reasoning: "IGA → Employee Benefits" },
+  { pattern: /\bsafeway\b/i, account: "Employee Benefits – Admin & Sales", confidence: 0.92, reasoning: "Safeway → Employee Benefits" },
+  { pattern: /\bco[\s\-]?op\s+food/i, account: "Employee Benefits – Admin & Sales", confidence: 0.92, reasoning: "Co-op Food → Employee Benefits" },
+  { pattern: /\bno\s+frills\b/i, account: "Employee Benefits – Admin & Sales", confidence: 0.92, reasoning: "No Frills → Employee Benefits" },
+  { pattern: /\bmetro\b\s*(grocer|food)?/i, account: "Employee Benefits – Admin & Sales", confidence: 0.85, reasoning: "Metro grocery → Employee Benefits" },
+  { pattern: /\bt\s*&\s*t\s+supermarket|t\&t\s+market/i, account: "Employee Benefits – Admin & Sales", confidence: 0.92, reasoning: "T&T Supermarket → Employee Benefits" },
+  { pattern: /\bfortinos\b|\bzehrs\b|\bvalu[\s\-]?mart/i, account: "Employee Benefits – Admin & Sales", confidence: 0.92, reasoning: "Loblaws-family grocery → Employee Benefits" },
+
+  // ══════════════════ WALMART → Office Supplies ══════════════════
+  { pattern: /\bwalmart\b|\bwal[\s\-]?mart\b/i, account: "Office Supplies", confidence: 0.92, reasoning: "Walmart → Office Supplies" },
+
   // ══════════════════ COSTCO DISAMBIGUATION (most specific first) ══════════════════
   { pattern: /costco\s*(gas|fuel|cardlock)/i, account: "Fuel – Admin & Sales Vehicles", confidence: 0.95, reasoning: "Costco Gas → Fuel" },
   { pattern: /costco\s*(food court|restaurant)/i, account: "Meals (50% deductible)", confidence: 0.95, reasoning: "Costco Food Court → Meals" },

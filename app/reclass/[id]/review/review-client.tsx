@@ -132,16 +132,54 @@ export function ReclassReview({
   }
 
   /**
+   * Normalize a vendor name so all transactions from "SHERWIN-WILLIAMS #4521"
+   * and "Sherwin Williams Co" cluster together for propagation.
+   */
+  function normalizeVendorName(raw: string | null | undefined): string {
+    return (raw || "")
+      .toUpperCase()
+      .replace(/^(interac\s+(purchase|retail|debit)\s*[\-:]?\s*)/i, "")
+      .replace(/^(pos\s+(purchase|debit)\s*[\-:]?\s*)/i, "")
+      .replace(/\bstore\s*#?\s*\d+\b/gi, "")
+      .replace(/#\d+/g, "")
+      .replace(/[^A-Z0-9 ]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  /**
    * Set the target account for a row + promote to "approved".
-   * Also fires off a bank-rule upsert so the same vendor auto-categorizes next time.
-   * Skipped for ask_client decisions (peer payments are never re-rule'd).
+   *
+   * Propagation: if other unresolved rows (needs_review / flagged / ask_client)
+   * share the same normalized vendor name, they get the same target — saves the
+   * bookkeeper from picking the same account 20 times for the same vendor.
+   *
+   * Also fires a bank-rule upsert so future runs skip categorization for this
+   * vendor. Skipped for ask_client (peer payments are unique).
    */
   async function setTarget(rowId: string, targetAccountName: string) {
     const row = rows.find((r) => r.id === rowId);
     if (!row) return;
+
+    // Find all sibling rows with the same normalized vendor that are still
+    // unresolved (needs_review / flagged / ask_client). Auto-approve them too.
+    const normalized = normalizeVendorName(row.vendor_name);
+    const unresolvedStates = new Set(["needs_review", "flagged", "ask_client"]);
+    const propagateIds = new Set<string>([rowId]);
+    if (normalized) {
+      for (const r of rows) {
+        if (r.id === rowId) continue;
+        if (!unresolvedStates.has(r.decision)) continue;
+        if (normalizeVendorName(r.vendor_name) === normalized) {
+          propagateIds.add(r.id);
+        }
+      }
+    }
+
+    // Optimistic local update for all affected rows
     setRows((prev) =>
       prev.map((r) =>
-        r.id === rowId
+        propagateIds.has(r.id)
           ? {
               ...r,
               bookkeeper_override: true,
@@ -152,16 +190,23 @@ export function ReclassReview({
           : r
       )
     );
-    // Persist row update
-    await fetch(`/api/reclass/decisions/${rowId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        decision: "approved",
-        bookkeeper_override_target_name: targetAccountName,
-      }),
-    });
-    // Save as bank rule (fire-and-forget, skip for ask_client / no vendor)
+
+    // Persist each row update
+    await Promise.all(
+      Array.from(propagateIds).map((id) =>
+        fetch(`/api/reclass/decisions/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            decision: "approved",
+            bookkeeper_override_target_name: targetAccountName,
+          }),
+        })
+      )
+    );
+
+    // Save as bank rule once for this vendor — covers all current AND future
+    // transactions. Skipped for ask_client / unknown-vendor rows.
     if (
       clientLinkId &&
       row.decision !== "ask_client" &&
