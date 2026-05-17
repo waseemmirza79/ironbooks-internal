@@ -66,7 +66,20 @@ function isQboLimitationError(err: any): boolean {
   return (
     msg.includes("\"code\":\"2010\"") ||
     msg.includes("Request has invalid or unsupported property") ||
-    msg.includes("\"code\":\"2170\"") // "Invalid Enumeration" — often hit on parent type conflicts
+    msg.includes("\"code\":\"2170\"") ||      // "Invalid Enumeration" — often hit on parent type conflicts
+    // Business Validation Error (code 6000) when QBO refuses to inactivate
+    // an account that's referenced by another entity (product/service,
+    // shipping default, payroll account, sales tax, etc.). These are QBO
+    // system protections — UI lets users force-resolve via the warning
+    // popup, but the REST API has no equivalent path. Send to Manual
+    // Cleanup Report so the bookkeeper handles them in QBO directly.
+    (msg.includes("\"code\":\"6000\"") &&
+      (msg.includes("cannot be deleted because") ||
+       msg.includes("can't be deleted because") ||
+       msg.includes("used by a product or service") ||
+       msg.includes("default account") ||
+       msg.includes("used by") ||
+       msg.includes("is the default")))
   );
 }
 

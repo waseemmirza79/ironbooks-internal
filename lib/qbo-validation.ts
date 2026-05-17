@@ -272,6 +272,14 @@ const SYSTEM_ACCOUNT_NAME_PATTERNS: RegExp[] = [
   /^Reconciliation\s+Discrepancies$/i,
   /^Exchange\s+Gain\s+or\s+Loss$/i,
   /^Billable\s+Expense\s+Income$/i,
+  // QBO assigns these as defaults for products/services and shipping lines.
+  // Inactivation via API returns code 6000 ("can't be deleted because it
+  // is used by..."). Treat as system-protected — must be reassigned in QBO
+  // UI under Account & Settings → Sales / Products before removal.
+  /^Ask\s+My\s+Accountant$/i,
+  /^Shipping\s+Income$/i,
+  /^Discounts\s+Given$/i,
+  /^Refunds-?Allowances$/i,
 ];
 
 export function isSystemAccount(name: string | null | undefined): boolean {
