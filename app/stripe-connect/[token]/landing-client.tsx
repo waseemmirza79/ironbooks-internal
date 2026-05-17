@@ -167,9 +167,9 @@ export function LandingClient({
           <div className="flex items-start gap-2">
             <Lock size={14} className="text-teal mt-0.5 flex-shrink-0" />
             <div>
-              <span className="font-semibold text-navy">Never write access</span> — we can't move
-              money, change settings, issue refunds, or charge your customers. The Stripe scope
-              we request is literally called <code className="text-xs bg-white px-1 py-0.5 rounded">read_only</code>.
+              <span className="font-semibold text-navy">We won't move money</span> — Ironbooks
+              only reads payouts, charges, and balance transactions to match them to your
+              invoices. We never issue refunds, change settings, or charge your customers.
             </div>
           </div>
           <div className="flex items-start gap-2">

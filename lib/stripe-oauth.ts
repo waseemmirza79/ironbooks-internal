@@ -1,9 +1,14 @@
 /**
- * Stripe OAuth Connect (read-only)
- * ─────────────────────────────────
- * Standard OAuth flow with read_only scope. Client clicks our branded landing
- * page, hits Stripe's auth screen, approves, redirects back to our callback
- * with a code we exchange for a long-lived access token.
+ * Stripe OAuth Connect
+ * ─────────────────────
+ * Standard OAuth flow. Client clicks our branded landing page, hits Stripe's
+ * auth screen, approves, redirects back to our callback with a code we
+ * exchange for a long-lived access token.
+ *
+ * Scope: `read_write` — Stripe no longer auto-approves `read_only` for new
+ * Connect platforms (requires a support ticket). We use read_write but our
+ * code only ever calls read endpoints (payouts, charges, balance transactions).
+ * We can switch to read_only later by emailing Stripe support to enable it.
  *
  * Required env vars (set in Vercel):
  *   STRIPE_CONNECT_CLIENT_ID  — platform Connect Client ID (ca_xxx)
@@ -44,7 +49,7 @@ export function buildStripeAuthorizeUrl(params: {
   const query = new URLSearchParams({
     response_type: "code",
     client_id: clientId,
-    scope: "read_only",
+    scope: "read_write",
     redirect_uri: redirectUri,
     state: params.state,
     "stripe_user[email]": "",    // we don't have it; Stripe will prompt
