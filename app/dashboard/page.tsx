@@ -131,22 +131,26 @@ export default async function DashboardPage() {
   // Flagged counts — senior only, second round-trip is fine since it's conditional
   let flaggedCounts = { coa: 0, reclass: 0, stripe: 0 };
   if (isSenior) {
-    const [coaFlagRes, stripeFlagRes] = await Promise.all([
+    const [coaFlagRes, reclassFlagRes, stripeFlagRes] = await Promise.all([
       service
         .from("coa_actions")
-        .select("id, coa_jobs(id)")
+        .select("id, coa_jobs!inner(id, client_links(id), users(id))")
         .eq("action", "flag")
         .eq("executed", false),
       service
+        .from("reclassifications")
+        .select("id, reclass_jobs!reclass_job_id!inner(id, client_links(id), users(id))")
+        .eq("decision", "flagged"),
+      service
         .from("stripe_recon_matches")
-        .select("id, stripe_recon_jobs(id)")
+        .select("id, stripe_recon_jobs!inner(id, client_links(id), users(id))")
         .eq("decision", "flagged")
         .eq("executed", false),
     ]);
     flaggedCounts = {
-      coa: (coaFlagRes.data || []).filter((r: any) => r.coa_jobs !== null).length,
-      reclass: 0,
-      stripe: (stripeFlagRes.data || []).filter((r: any) => r.stripe_recon_jobs !== null).length,
+      coa: (coaFlagRes.data || []).filter((r: any) => r.coa_jobs).length,
+      reclass: (reclassFlagRes.data || []).filter((r: any) => r.reclass_jobs).length,
+      stripe: (stripeFlagRes.data || []).filter((r: any) => r.stripe_recon_jobs).length,
     };
   }
 
