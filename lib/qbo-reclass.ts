@@ -376,20 +376,24 @@ export async function reclassifyTransactionLines(
   // Step 1: Refetch fresh transaction (get current SyncToken)
   const tx = await refetchTransaction(realmId, accessToken, params.txType, params.txId);
 
-  // Step 2: Mutate matching lines
+  // Step 2: Mutate matching lines.
+  // Build a completely clean AccountBasedExpenseLineDetail for updated lines — no fallback
+  // empty-string AccountRef, no stray fields from the original that could confuse QBO.
   const lineUpdateMap = new Map(params.lineUpdates.map((u) => [u.line_id, u]));
-  const updatedLines = tx.Line.map((line) => {
+  const updatedLines = (tx.Line ?? []).map((line: any) => {
     if (!line.Id) return line;
     const update = lineUpdateMap.get(line.Id);
-    if (!update) return line;
-    if (!update.new_account_id) return line;
+    if (!update?.new_account_id) return line;
 
+    const originalDetail = line.AccountBasedExpenseLineDetail ?? {};
     return {
       ...line,
       AccountBasedExpenseLineDetail: {
-        ...(line.AccountBasedExpenseLineDetail || {
-          AccountRef: { value: "" },
-        }),
+        // Preserve optional sub-fields (tax, billable, class) but always set AccountRef last
+        ...(originalDetail.TaxCodeRef    && { TaxCodeRef:    originalDetail.TaxCodeRef }),
+        ...(originalDetail.BillableStatus && { BillableStatus: originalDetail.BillableStatus }),
+        ...(originalDetail.CustomerRef   && { CustomerRef:   originalDetail.CustomerRef }),
+        ...(originalDetail.ClassRef      && { ClassRef:      originalDetail.ClassRef }),
         AccountRef: {
           value: update.new_account_id,
           ...(update.new_account_name && { name: update.new_account_name }),
@@ -398,45 +402,60 @@ export async function reclassifyTransactionLines(
     };
   });
 
-  // Step 3: Append memo (avoid double-appending if memo already contains the same line)
-  const memoAppendDelim = "\n";
+  // Step 3: Append memo
   const existingMemo = tx.PrivateNote || "";
   const newMemo = existingMemo.includes(params.auditMemo)
     ? existingMemo
-    : (existingMemo ? existingMemo + memoAppendDelim : "") + params.auditMemo;
+    : (existingMemo ? existingMemo + "\n" : "") + params.auditMemo;
 
-  // Step 4: Sanitize lines.
-  // QBO sometimes returns lines with AccountBasedExpenseLineDetail present but no valid
-  // AccountRef (bank-feed lines, legacy data, or lines with a different DetailType that
-  // still carry the field). Sending these back triggers error 2020 regardless of DetailType.
-  // - If DetailType IS AccountBasedExpenseLineDetail and AccountRef is invalid: drop the line.
-  // - If DetailType is something else but AccountBasedExpenseLineDetail is invalid: strip the field.
-  // Lines we updated above always have a valid AccountRef, so they are never affected here.
-  const safeLines = updatedLines
-    .map((line: any) => {
+  // Step 4: Sanitize every line before sending.
+  //
+  // QBO error 2020 fires whenever a line reaches the API with
+  // AccountBasedExpenseLineDetail present but AccountRef.value absent/empty.
+  // This happens for several reasons:
+  //   a) Line has the property set to null / {} / { AccountRef: null } / { AccountRef: { value: "" } }
+  //   b) Line has DetailType "AccountBasedExpenseLineDetail" but the property itself is missing
+  //   c) A non-AccountBased line (Item, SubTotal…) has the field as a stale/null property
+  //
+  // Rules:
+  //   - If DetailType IS AccountBasedExpenseLineDetail AND AccountRef.value is invalid → drop line
+  //   - If DetailType is anything else AND AccountBasedExpenseLineDetail is present but invalid → strip field
+  //   - Otherwise → leave untouched
+  const safeLines = (updatedLines as any[])
+    .map((line) => {
+      const isAccountBasedType = line.DetailType === "AccountBasedExpenseLineDetail";
       const detail = line.AccountBasedExpenseLineDetail;
-      const hasInvalidDetail = detail !== undefined && !detail?.AccountRef?.value;
-      if (!hasInvalidDetail) return line;
+      const hasValidRef = !!(detail?.AccountRef?.value);
 
-      if (line.DetailType === "AccountBasedExpenseLineDetail") {
-        // Log so we can diagnose which lines are being dropped
+      // Case (b): DetailType says AccountBased but property is absent
+      const isMissingDetail = isAccountBasedType && detail === undefined;
+
+      if (isMissingDetail || (detail !== undefined && !hasValidRef)) {
+        if (isAccountBasedType) {
+          console.warn(
+            `[qbo-reclass] ${params.txType}/${params.txId} line ${line.Id ?? "(no id)"}: ` +
+            `dropping — DetailType=AccountBasedExpenseLineDetail but AccountRef missing/invalid`
+          );
+          return null;
+        }
+        // Non-AccountBased line carrying a stale/null detail field: strip it
         console.warn(
-          `[qbo-reclass] dropping malformed line ${line.Id ?? "(no id)"} on ${params.txType}/${params.txId}: AccountBasedExpenseLineDetail present but AccountRef missing`
+          `[qbo-reclass] ${params.txType}/${params.txId} line ${line.Id ?? "(no id)"}: ` +
+          `stripping invalid AccountBasedExpenseLineDetail from ${line.DetailType} line`
         );
-        return null; // drop entirely
+        const { AccountBasedExpenseLineDetail: _bad, ...rest } = line;
+        return rest;
       }
-      // For other DetailTypes, strip only the bad property and keep the line
-      console.warn(
-        `[qbo-reclass] stripping AccountBasedExpenseLineDetail from ${line.DetailType} line ${line.Id ?? "(no id)"} on ${params.txType}/${params.txId}`
-      );
-      const { AccountBasedExpenseLineDetail, ...rest } = line;
-      return rest;
+
+      return line;
     })
     .filter(Boolean);
 
-  // Step 5: Full update via POST
+  // Step 5: Build payload — explicitly exclude QBO read-only / computed fields
+  // (MetaData, domain, TotalAmt) so they can't trigger unexpected validation.
+  const { MetaData: _meta, domain: _domain, TotalAmt: _total, ...txCore } = tx as any;
   const updatePayload = {
-    ...tx,
+    ...txCore,
     Line: safeLines,
     PrivateNote: newMemo,
     sparse: false,
@@ -454,15 +473,18 @@ export async function reclassifyTransactionLines(
       }
     );
   } catch (err: any) {
-    // Log the sanitized line structure so we can diagnose persistent failures
+    // Log complete raw line data so we can diagnose any remaining failures
     console.error(
-      `[qbo-reclass] update failed for ${params.txType}/${params.txId}. safeLines:`,
-      JSON.stringify(safeLines.map((l: any) => ({
-        Id: l.Id,
-        DetailType: l.DetailType,
-        hasAccountDetail: !!l.AccountBasedExpenseLineDetail,
-        accountRef: l.AccountBasedExpenseLineDetail?.AccountRef,
-      })))
+      `[qbo-reclass] update failed — ${params.txType}/${params.txId}\n` +
+      `raw tx.Line: ${JSON.stringify((tx.Line ?? []).map((l: any) => ({
+        Id: l.Id, DetailType: l.DetailType,
+        hasDetail: l.AccountBasedExpenseLineDetail !== undefined,
+        ref: l.AccountBasedExpenseLineDetail?.AccountRef,
+      })))}\n` +
+      `safeLines:  ${JSON.stringify(safeLines.map((l: any) => ({
+        Id: l.Id, DetailType: l.DetailType,
+        ref: l.AccountBasedExpenseLineDetail?.AccountRef,
+      })))}`
     );
     throw err;
   }
