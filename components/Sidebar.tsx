@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Home, Sparkles, Users, Settings, LogOut, BookOpen, Clock,
+  Home, Sparkles, Flag, Users, Settings, LogOut, BookOpen, Clock,
   Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
@@ -16,6 +16,11 @@ const standardItems = [
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/templates", label: "Master COA", icon: BookOpen },
   { href: "/history", label: "Job History", icon: Clock },
+];
+
+// Visible only to admin + lead
+const seniorItems = [
+  { href: "/flagged", label: "Flagged Queue", icon: Flag },
 ];
 
 const advancedItems = [
@@ -37,6 +42,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const [userName, setUserName] = useState<string>("");
   const [userRole, setUserRole] = useState<string>("");
+  const [flaggedCount, setFlaggedCount] = useState(0);
   const [stripeModalOpen, setStripeModalOpen] = useState(false);
 
   // Advanced section is collapsed by default; auto-open if user lands on one of its routes
@@ -69,6 +75,29 @@ export function Sidebar() {
             .update({ last_login_at: new Date().toISOString() } as any)
             .eq("id", data.user.id)
             .then(() => {});
+
+          // Pull real flagged count for seniors — 3 tables, same logic as dashboard
+          if (profile.role === "admin" || profile.role === "lead") {
+            const [coaRes, reclassRes, stripeRes] = await Promise.all([
+              supabase
+                .from("coa_actions")
+                .select("id", { count: "exact", head: true })
+                .eq("action", "flag")
+                .eq("executed", false),
+              supabase
+                .from("reclassifications")
+                .select("id", { count: "exact", head: true })
+                .eq("decision", "flagged"),
+              supabase
+                .from("stripe_recon_matches")
+                .select("id", { count: "exact", head: true })
+                .eq("decision", "flagged")
+                .eq("executed", false),
+            ]);
+            setFlaggedCount(
+              (coaRes.count || 0) + (reclassRes.count || 0) + (stripeRes.count || 0)
+            );
+          }
         }
       }
     });
@@ -80,6 +109,7 @@ export function Sidebar() {
   }
 
   const isAdmin = userRole === "admin";
+  const isSenior = userRole === "admin" || userRole === "lead";
 
   // Active state for the primary CTA — match any /jobs/* route or in-flight workflow pages
   const cleanupActive =
@@ -120,6 +150,15 @@ export function Sidebar() {
 
         {standardItems.map((item) => (
           <NavItem key={item.href} item={item} pathname={pathname} />
+        ))}
+
+        {isSenior && seniorItems.map((item) => (
+          <NavItem
+            key={item.href}
+            item={item}
+            pathname={pathname}
+            badgeCount={flaggedCount}
+          />
         ))}
 
         {/* ADVANCED — collapsed by default */}
@@ -196,10 +235,12 @@ export function Sidebar() {
 function NavItem({
   item,
   pathname,
+  badgeCount,
   dim,
 }: {
   item: { href: string; label: string; icon: any };
   pathname: string;
+  badgeCount?: number;
   dim?: boolean;
 }) {
   const active = pathname === item.href || pathname.startsWith(item.href + "/");
@@ -218,6 +259,11 @@ function NavItem({
     >
       <Icon size={dim ? 14 : 17} />
       <span className={dim ? "text-[13px]" : ""}>{item.label}</span>
+      {badgeCount != null && badgeCount > 0 && (
+        <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500 text-white">
+          {badgeCount}
+        </span>
+      )}
     </Link>
   );
 }
