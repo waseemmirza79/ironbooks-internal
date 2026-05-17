@@ -18,6 +18,7 @@
 
 const STRIPE_OAUTH_AUTHORIZE = "https://connect.stripe.com/oauth/authorize";
 const STRIPE_OAUTH_TOKEN = "https://connect.stripe.com/oauth/token";
+const STRIPE_OAUTH_DEAUTHORIZE = "https://connect.stripe.com/oauth/deauthorize";
 
 export interface StripeOAuthTokenResponse {
   access_token: string;
@@ -97,6 +98,44 @@ export async function exchangeCodeForTokens(code: string): Promise<StripeOAuthTo
     throw new Error("Stripe OAuth response missing access_token or stripe_user_id");
   }
   return data;
+}
+
+/**
+ * Revoke our access to a connected Stripe account. Calls Stripe's
+ * /oauth/deauthorize endpoint with the platform secret key. After this,
+ * the access_token we stored is invalidated and the client also sees
+ * Ironbooks removed from their Stripe Dashboard's Connected applications.
+ *
+ * Safe to call even if Stripe-side state is out of sync — we treat
+ * "account already not connected" as a success.
+ */
+export async function deauthorizeStripeAccount(stripeUserId: string): Promise<void> {
+  const secret = process.env.STRIPE_SECRET_KEY;
+  const clientId = process.env.STRIPE_CONNECT_CLIENT_ID;
+  if (!secret) throw new Error("STRIPE_SECRET_KEY env var is not set");
+  if (!clientId) throw new Error("STRIPE_CONNECT_CLIENT_ID env var is not set");
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    stripe_user_id: stripeUserId,
+  });
+
+  const res = await fetch(STRIPE_OAUTH_DEAUTHORIZE, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${secret}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    // Stripe returns 400 with error_code=application_not_authorized if the
+    // account is already disconnected — that's still success for our purposes.
+    if (text.includes("application_not_authorized")) return;
+    throw new Error(`Stripe OAuth deauthorize failed (${res.status}): ${text}`);
+  }
 }
 
 /**

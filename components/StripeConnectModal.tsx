@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import {
-  X, Loader2, CreditCard, Copy, CheckCircle2, Search, Send, Mail,
+  X, Loader2, CreditCard, Copy, CheckCircle2, Search, Send, Mail, Unplug,
 } from "lucide-react";
 import type { Database } from "@/lib/database.types";
 
@@ -30,6 +30,9 @@ export function StripeConnectModal({
     client_name: string;
   } | null>(null);
   const [copied, setCopied] = useState<"url" | "email" | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [disconnectMessage, setDisconnectMessage] = useState<string>("");
 
   const supabase = createBrowserClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -76,6 +79,34 @@ export function StripeConnectModal({
     }
   }
 
+  async function handleDisconnect() {
+    if (!selectedId) return;
+    setDisconnecting(true);
+    setError("");
+    setDisconnectMessage("");
+    try {
+      const res = await fetch("/api/stripe-connect/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_link_id: selectedId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not disconnect");
+      // Locally flip the status so the UI reflects it without a reload
+      setClients((prev) =>
+        prev.map((c) =>
+          c.id === selectedId ? { ...c, stripe_connection_status: "not_set" } : c
+        )
+      );
+      setDisconnectMessage(data.message || "Disconnected.");
+      setConfirmDisconnect(false);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setDisconnecting(false);
+    }
+  }
+
   async function copyUrl() {
     if (!generated) return;
     await navigator.clipboard.writeText(generated.url);
@@ -117,7 +148,7 @@ export function StripeConnectModal({
               Stripe Connect Link
             </h3>
             <p className="text-xs text-ink-slate mt-1">
-              Generate a one-time link for a client to connect their Stripe (read-only OAuth).
+              Generate a one-time link for a client to connect their Stripe account.
               Valid for 7 days. Copy and send via Double or any other channel.
             </p>
           </div>
@@ -190,8 +221,57 @@ export function StripeConnectModal({
               </div>
 
               {selected?.stripe_connection_status === "connected" && (
-                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
-                  This client already has Stripe connected. Generating a new link will replace the existing connection once they complete OAuth again.
+                <div className="p-4 bg-green-50 border border-green-200 rounded-lg space-y-3">
+                  <div className="text-sm text-green-900">
+                    <strong>{selected.client_name}</strong> already has Stripe connected.
+                    Use Disconnect below if they requested removal or the wrong account
+                    was connected.
+                  </div>
+                  {!confirmDisconnect ? (
+                    <button
+                      onClick={() => {
+                        setConfirmDisconnect(true);
+                        setError("");
+                        setDisconnectMessage("");
+                      }}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-red-700 hover:text-red-800"
+                    >
+                      <Unplug size={13} /> Disconnect Stripe
+                    </button>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="text-xs text-red-800 font-semibold">
+                        Confirm: revoke Ironbooks' access to {selected.client_name}'s Stripe?
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleDisconnect}
+                          disabled={disconnecting}
+                          className="inline-flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-xs font-semibold px-3 py-1.5 rounded-md"
+                        >
+                          {disconnecting ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <Unplug size={12} />
+                          )}
+                          {disconnecting ? "Disconnecting..." : "Yes, disconnect"}
+                        </button>
+                        <button
+                          onClick={() => setConfirmDisconnect(false)}
+                          disabled={disconnecting}
+                          className="text-xs font-semibold text-ink-slate hover:text-navy px-3 py-1.5"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {disconnectMessage && (
+                <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
+                  {disconnectMessage}
                 </div>
               )}
 
@@ -312,7 +392,7 @@ function buildEmailHtml(firstName: string, url: string, clientName: string) {
   </div>
   <div style="border:1px solid ${BRAND.border};border-top:none;padding:24px 22px;border-radius:0 0 10px 10px;background:${BRAND.white};">
     <p style="margin:0 0 14px 0;color:${BRAND.navy};line-height:1.55;">Hi ${firstName},</p>
-    <p style="margin:0 0 14px 0;color:${BRAND.navy};line-height:1.55;">As we clean up your books for ${clientName}, we'd like read-only access to your Stripe account so we can match your Stripe deposits directly to the invoices in QuickBooks. This makes the books significantly more accurate and saves us hours of guesswork.</p>
+    <p style="margin:0 0 14px 0;color:${BRAND.navy};line-height:1.55;">As we clean up your books for ${clientName}, we'd like to connect to your Stripe account so we can match your Stripe deposits directly to the invoices in QuickBooks. This makes the books significantly more accurate and saves us hours of guesswork.</p>
     <p style="margin:0 0 18px 0;color:${BRAND.navy};line-height:1.55;">Click the button below to connect — it'll take about 30 seconds:</p>
     <div style="text-align:center;margin:24px 0;">
       <a href="${url}" style="display:inline-block;background:${BRAND.stripe};color:${BRAND.white};font-weight:600;font-size:15px;padding:14px 28px;border-radius:8px;text-decoration:none;">Connect Stripe to Ironbooks &rarr;</a>
@@ -320,9 +400,9 @@ function buildEmailHtml(firstName: string, url: string, clientName: string) {
     <div style="background:${BRAND.tealLighter};border:1px solid ${BRAND.border};border-radius:8px;padding:14px 16px;margin:18px 0;">
       <div style="font-size:13px;font-weight:600;color:${BRAND.teal};margin-bottom:8px;">What this gives us</div>
       <ul style="margin:0;padding-left:18px;color:${BRAND.slate};font-size:13px;line-height:1.6;">
-        <li><strong style="color:${BRAND.navy};">Read-only access</strong> to your payouts, charges, and balance transactions — nothing else</li>
-        <li><strong style="color:${BRAND.navy};">No write access</strong> — we can't move money, change settings, or refund customers</li>
-        <li><strong style="color:${BRAND.navy};">Revoke anytime</strong> from your Stripe Dashboard &rarr; Settings &rarr; Connected applications</li>
+        <li><strong style="color:${BRAND.navy};">Just for reconciliation</strong> — we look at your payouts, charges, and balance transactions to match them to invoices</li>
+        <li><strong style="color:${BRAND.navy};">No charges, no transfers</strong> — Ironbooks won't issue refunds, move money, or charge your customers</li>
+        <li><strong style="color:${BRAND.navy};">Disconnect anytime</strong> — from your Stripe Dashboard (Settings &rarr; Connected applications), or just ask us</li>
       </ul>
     </div>
     <p style="margin:18px 0 0 0;color:${BRAND.navy};line-height:1.55;">The link expires in 7 days. If you have questions or want a walkthrough, just reply to this email.</p>
@@ -336,15 +416,15 @@ function buildEmailHtml(firstName: string, url: string, clientName: string) {
 function buildEmailPlainText(firstName: string, url: string, clientName: string) {
   return `Hi ${firstName},
 
-As we clean up your books for ${clientName}, we'd like read-only access to your Stripe account so we can match your Stripe deposits directly to the invoices in QuickBooks.
+As we clean up your books for ${clientName}, we'd like to connect to your Stripe account so we can match your Stripe deposits directly to the invoices in QuickBooks.
 
 Click here to connect (takes about 30 seconds):
 ${url}
 
 What this gives us:
-  • Read-only access to your payouts, charges, and balance transactions — nothing else
-  • No write access — we can't move money, change settings, or refund customers
-  • Revoke anytime from your Stripe Dashboard → Settings → Connected applications
+  • Just for reconciliation — we look at your payouts, charges, and balance transactions to match them to invoices
+  • No charges, no transfers — Ironbooks won't issue refunds, move money, or charge your customers
+  • Disconnect anytime — from your Stripe Dashboard (Settings → Connected applications), or just ask us
 
 The link expires in 7 days.
 

@@ -39,12 +39,12 @@ export function LandingClient({
           </p>
           <div className="rounded-lg bg-teal-lighter border border-teal/30 p-4 text-left">
             <div className="font-semibold text-sm text-teal mb-1 flex items-center gap-1.5">
-              <Shield size={14} /> What we can see
+              <Shield size={14} /> What happens next
             </div>
             <p className="text-xs text-ink-slate leading-relaxed">
-              Read-only access to your payouts, charges, and balance transactions. We cannot move
-              money, change settings, or issue refunds. You can revoke access anytime from your
-              Stripe Dashboard → Settings → Connected applications.
+              Your bookkeeper will look at your payouts, charges, and balance transactions to
+              match them to invoices. We won't issue refunds, move money, or charge customers.
+              You can disconnect anytime from your Stripe Dashboard, or just ask your bookkeeper.
             </p>
           </div>
         </div>
@@ -145,9 +145,9 @@ export function LandingClient({
           Connect Stripe for <span className="text-teal">{validity.clientName}</span>
         </h1>
         <p className="text-sm text-ink-slate leading-relaxed max-w-md mx-auto">
-          Your Ironbooks bookkeeper is cleaning up your books and would like read-only access to
-          your Stripe account so they can match deposits to customer invoices automatically. This
-          takes 30 seconds.
+          Your Ironbooks bookkeeper is cleaning up your books and would like to connect to your
+          Stripe account so they can match deposits to customer invoices automatically. This
+          takes 30 seconds, and you can disconnect anytime.
         </p>
       </div>
 
@@ -160,24 +160,25 @@ export function LandingClient({
           <div className="flex items-start gap-2">
             <Eye size={14} className="text-teal mt-0.5 flex-shrink-0" />
             <div>
-              <span className="font-semibold text-navy">Read-only</span> — we can see your payouts,
-              charges, and balance transactions to match them to your invoices in QuickBooks.
+              <span className="font-semibold text-navy">Just for matching deposits</span> — your
+              bookkeeper looks at your payouts, charges, and balance transactions so they can
+              match them to invoices in QuickBooks.
             </div>
           </div>
           <div className="flex items-start gap-2">
             <Lock size={14} className="text-teal mt-0.5 flex-shrink-0" />
             <div>
-              <span className="font-semibold text-navy">We won't move money</span> — Ironbooks
-              only reads payouts, charges, and balance transactions to match them to your
-              invoices. We never issue refunds, change settings, or charge your customers.
+              <span className="font-semibold text-navy">No charges, no transfers</span> — Ironbooks
+              won't issue refunds, move money, or charge your customers. We're just here to
+              reconcile your books.
             </div>
           </div>
           <div className="flex items-start gap-2">
             <CheckCircle2 size={14} className="text-teal mt-0.5 flex-shrink-0" />
             <div>
-              <span className="font-semibold text-navy">Revocable anytime</span> — in your Stripe
-              Dashboard under Settings → Connected applications, you can remove Ironbooks with
-              one click.
+              <span className="font-semibold text-navy">Disconnect anytime</span> — you can remove
+              Ironbooks in one click from your Stripe Dashboard (Settings → Connected
+              applications), or just ask your bookkeeper.
             </div>
           </div>
         </div>
