@@ -11,6 +11,7 @@ import {
   ArrowRight,
   Receipt,
   CreditCard,
+  Rewind,
 } from "lucide-react";
 
 interface JobView {
@@ -53,6 +54,8 @@ export function ExecuteLive({
   const [rollbackConfirm, setRollbackConfirm] = useState("");
   const [rollingBack, setRollingBack] = useState(false);
   const [rollbackError, setRollbackError] = useState("");
+  const [cascading, setCascading] = useState(false);
+  const [cascadeError, setCascadeError] = useState("");
 
   const isLeadOrAdmin = userRole === "admin" || userRole === "lead";
   const isComplete = job.status === "complete" || job.status === "failed";
@@ -105,6 +108,26 @@ export function ExecuteLive({
       cancelled = true;
     };
   }, [job.id, isComplete, router]);
+
+  async function handleCascadePriorYear() {
+    setCascading(true);
+    setCascadeError("");
+    try {
+      const res = await fetch(`/api/reclass/${job.id}/cascade-prior-year`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to start prior-year cleanup");
+      router.push(`/reclass/${data.job_id}/review`);
+    } catch (e: any) {
+      setCascadeError(e.message);
+      setCascading(false);
+    }
+  }
+
+  // Calculate the prior year that would be offered for cascading
+  const priorYear = (() => {
+    const d = new Date(job.date_range_start);
+    return isNaN(d.getTime()) ? null : d.getUTCFullYear() - 1;
+  })();
 
   async function handleRollback() {
     if (rollbackConfirm !== "ROLLBACK") {
@@ -281,6 +304,61 @@ export function ExecuteLive({
             </div>
           </div>
         ))}
+
+      {/* Year cascade — "Continue with Previous Year"
+          Offered after every successful full_categorization run (no rollback) so
+          the bookkeeper can clean up year-by-year. The bank-rules cache from this
+          run will speed up the next year dramatically. */}
+      {job.status === "complete" &&
+        job.workflow === "full_categorization" &&
+        !job.is_rollback &&
+        !job.rolled_back &&
+        job.transactions_moved > 0 &&
+        job.client_link_id &&
+        priorYear && (
+          <div className="rounded-2xl p-5 bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-200">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3 flex-1 min-w-0">
+                <div className="rounded-full flex items-center justify-center w-10 h-10 bg-white flex-shrink-0">
+                  <Rewind className="text-amber-700" size={20} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700">Optional · Year-by-Year Cleanup</span>
+                  <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
+                    Continue with Previous Year ({priorYear})
+                  </h3>
+                  <p className="text-sm text-ink-slate">
+                    Every account the bookkeeper picked just got saved as a bank rule. Most {priorYear} transactions will auto-categorize instantly from the cache — typically ~10 min of review vs ~30 min for year 1.
+                  </p>
+                  {cascadeError && (
+                    <div className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
+                      {cascadeError}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={handleCascadePriorYear}
+                disabled={cascading}
+                className="inline-flex items-center gap-2 bg-amber-700 hover:bg-amber-800 disabled:opacity-60 text-white text-sm font-semibold px-5 py-2.5 rounded-lg flex-shrink-0 shadow-md"
+              >
+                {cascading ? <Loader2 className="animate-spin" size={16} /> : <Rewind size={16} />}
+                {cascading ? "Starting..." : `Categorize ${priorYear} →`}
+              </button>
+            </div>
+            <div className="mt-3 pt-3 border-t border-amber-200 flex items-center justify-between text-xs">
+              <span className="text-ink-slate">
+                Or stop here if this client doesn't need older books cleaned up
+              </span>
+              <Link
+                href="/dashboard"
+                className="font-semibold text-amber-700 hover:text-amber-900"
+              >
+                I'm done with this client
+              </Link>
+            </div>
+          </div>
+        )}
 
       {/* Event log */}
       <div className="bg-white rounded-2xl border border-gray-100 p-6">

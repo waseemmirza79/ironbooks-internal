@@ -91,6 +91,16 @@ export function ReclassReview({
 }) {
   const router = useRouter();
   const [rows, setRows] = useState(initialRows);
+
+  // Capture the ORIGINAL decision per row at mount-time. Tab partitioning uses
+  // this snapshot — so a row that started in "Needs Review" stays visible there
+  // even after the bookkeeper approves it (it gets a "✓ Moved" badge instead of
+  // vanishing). The Auto-Approved tab still surfaces it via the current decision,
+  // so the row appears in BOTH places: confirmation in the original tab + active
+  // execution row in auto-approved.
+  const [originalDecisions] = useState(
+    () => new Map(initialRows.map((r) => [r.id, r.decision]))
+  );
   const [activeTab, setActiveTab] = useState<Tab>(
     initialRows.some((r) => r.decision === "needs_review") ? "review" : "auto"
   );
@@ -103,22 +113,38 @@ export function ReclassReview({
   const isAdmin = userRole === "admin";
   const isLeadOrAdmin = userRole === "admin" || userRole === "lead";
 
-  // Partition rows by tab
+  // Partition rows by tab.
+  //
+  // Auto-approved tab uses CURRENT decision (it's the destination — items move HERE).
+  //
+  // All other tabs use the ORIGINAL decision snapshot — so a row that started
+  // in Needs Review STAYS visible there even after the bookkeeper approves it.
+  // The approved row will appear in BOTH its original tab (with a "Moved" badge)
+  // AND in Auto-Approved. This prevents the disorienting "rows vanishing" effect.
   const partitioned = useMemo(() => {
     const auto: Reclassification[] = [];
     const review: Reclassification[] = [];
     const flagged: Reclassification[] = [];
     const ask: Reclassification[] = [];
     const skipped: Reclassification[] = [];
+
     for (const r of rows) {
-      if (r.decision === "auto_approve" || r.decision === "approved") auto.push(r);
-      else if (r.decision === "needs_review") review.push(r);
-      else if (r.decision === "flagged") flagged.push(r);
-      else if (r.decision === "ask_client") ask.push(r);
-      else if (r.decision === "skip" || r.decision === "rejected") skipped.push(r);
+      // Always place in Auto-Approved if currently approved
+      if (r.decision === "auto_approve" || r.decision === "approved") {
+        auto.push(r);
+      } else if (r.decision === "skip" || r.decision === "rejected") {
+        skipped.push(r);
+      }
+
+      // Then place in the original-tab bucket (regardless of current decision)
+      const orig = originalDecisions.get(r.id) || r.decision;
+      if (orig === "needs_review") review.push(r);
+      else if (orig === "flagged") flagged.push(r);
+      else if (orig === "ask_client") ask.push(r);
     }
+
     return { auto, review, flagged, ask, skipped };
-  }, [rows]);
+  }, [rows, originalDecisions]);
 
   const totalApproved = partitioned.auto.length;
   const stillNeedsAction = partitioned.review.length + partitioned.flagged.length;
@@ -651,15 +677,27 @@ function RowTable({
           </tr>
         </thead>
         <tbody>
-          {rows.slice(0, 200).map((r) => (
-            <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50">
+          {rows.slice(0, 200).map((r) => {
+            // A row that's been moved out of this tab (i.e., now approved) gets
+            // a "Moved to Auto-Approved" visual confirmation instead of vanishing.
+            const isMovedOut =
+              r.decision === "approved" || r.decision === "auto_approve";
+            return (
+            <tr key={r.id} className={`border-b border-gray-100 ${isMovedOut ? "bg-green-50/40" : "hover:bg-gray-50"}`}>
               <td className="px-4 py-2.5 text-ink-slate align-top">{r.transaction_date}</td>
               <td className="px-4 py-2.5 align-top">
-                <div className="font-medium text-navy">{r.vendor_name}</div>
+                <div className={`font-medium ${isMovedOut ? "text-ink-slate line-through" : "text-navy"}`}>
+                  {r.vendor_name}
+                </div>
                 {r.description && (
                   <div className="text-xs text-ink-slate truncate max-w-xs">{r.description}</div>
                 )}
-                <div className="flex gap-1.5 mt-0.5">
+                <div className="flex gap-1.5 mt-0.5 flex-wrap">
+                  {isMovedOut && (
+                    <span className="text-[10px] font-bold bg-green-600 text-white px-1.5 py-0.5 rounded inline-flex items-center gap-0.5">
+                      <CheckCircle2 size={10} /> Moved to Auto-Approved
+                    </span>
+                  )}
                   {r.is_reconciled && (
                     <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded">
                       reconciled
@@ -734,7 +772,8 @@ function RowTable({
                 </td>
               )}
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
       {rows.length > 200 && (
