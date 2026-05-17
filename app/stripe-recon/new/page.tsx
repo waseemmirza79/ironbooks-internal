@@ -13,7 +13,7 @@ export default async function NewStripeReconPage() {
   const service = createServiceSupabase();
   const { data: clientLinks } = await service
     .from("client_links")
-    .select("id, client_name, jurisdiction, state_province, qbo_realm_id, double_client_id, double_client_name")
+    .select("id, client_name, jurisdiction, state_province, qbo_realm_id, double_client_id, double_client_name, stripe_connection_status")
     .eq("is_active", true)
     .order("client_name");
 

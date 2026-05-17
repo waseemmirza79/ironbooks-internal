@@ -11,6 +11,7 @@ interface ClientLink {
   client_name: string;
   jurisdiction: string;
   state_province: string | null;
+  stripe_connection_status?: string | null;
 }
 
 interface DateRangePreset {
@@ -40,6 +41,17 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
   const [submitError, setSubmitError] = useState<string>("");
 
   const selectedClient = clientLinks.find((c) => c.id === clientLinkId);
+  const isStripeConnected =
+    selectedClient?.stripe_connection_status === "connected";
+
+  // Default to Stripe API when connected, QBO matching otherwise. The user
+  // can override on the form.
+  const [method, setMethod] = useState<"stripe_api" | "qbo_invoice_match">(
+    "qbo_invoice_match"
+  );
+  useEffect(() => {
+    setMethod(isStripeConnected ? "stripe_api" : "qbo_invoice_match");
+  }, [isStripeConnected]);
 
   // Auto-init from query string (handoff from reclass)
   useEffect(() => {
@@ -98,6 +110,7 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
           date_range_end: dateRangeEnd,
           jurisdiction: selectedClient.jurisdiction,
           state_province: selectedClient.state_province || "",
+          method,
         }),
       });
       const data = await res.json();
@@ -141,11 +154,57 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
             <option value="">Select a client...</option>
             {clientLinks.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.client_name} ({c.jurisdiction}{c.state_province ? ` · ${c.state_province}` : ""})
+                {c.client_name} ({c.jurisdiction}{c.state_province ? ` · ${c.state_province}` : ""}){c.stripe_connection_status === "connected" ? " · Stripe connected" : ""}
               </option>
             ))}
           </select>
         </div>
+
+        {/* Matching method — only meaningful once a client is selected */}
+        {clientLinkId && (
+          <div>
+            <label className="block text-sm font-semibold text-navy mb-2">
+              Matching method
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={!isStripeConnected}
+                onClick={() => setMethod("stripe_api")}
+                className={`px-3 py-3 rounded-lg border-2 text-left transition-colors ${
+                  !isStripeConnected
+                    ? "bg-gray-50 border-gray-200 cursor-not-allowed opacity-60"
+                    : method === "stripe_api"
+                    ? "bg-purple-50 border-purple-500 text-purple-900"
+                    : "bg-white border-gray-200 hover:border-gray-300 text-navy"
+                }`}
+              >
+                <div className="font-semibold text-sm mb-1">
+                  Stripe API {isStripeConnected ? "(deterministic)" : "(not connected)"}
+                </div>
+                <div className="text-[11px] leading-relaxed text-ink-slate">
+                  {isStripeConnected
+                    ? "Pull exact charges + fees from Stripe directly. No AI guessing — instant, accurate."
+                    : "Send the client a Connect link from the sidebar to enable this method."}
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMethod("qbo_invoice_match")}
+                className={`px-3 py-3 rounded-lg border-2 text-left transition-colors ${
+                  method === "qbo_invoice_match"
+                    ? "bg-teal-lighter border-teal text-teal"
+                    : "bg-white border-gray-200 hover:border-gray-300 text-navy"
+                }`}
+              >
+                <div className="font-semibold text-sm mb-1">QBO invoice match (AI)</div>
+                <div className="text-[11px] leading-relaxed text-ink-slate">
+                  Match deposits to QBO invoices using AI. Falls back to a manual picker for any deposits the AI can't resolve.
+                </div>
+              </button>
+            </div>
+          </div>
+        )}
 
         {clientLinkId && (
           <>

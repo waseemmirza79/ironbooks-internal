@@ -5,8 +5,10 @@ import {
   fetchStripeDeposits,
   fetchInvoicesForRange,
   fetchCustomerPaymentsForRange,
+  fetchAllCustomers,
 } from "@/lib/qbo-stripe-recon";
 import { matchStripeDeposits } from "@/lib/claude-stripe-match";
+import { reconcileViaStripeApi } from "@/lib/stripe-recon-api";
 
 /**
  * POST /api/stripe-recon/discover
@@ -57,9 +59,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error?.message || "Job creation failed" }, { status: 500 });
   }
 
+  // method=stripe_api → use Stripe Connect API path (deterministic)
+  // method=qbo_invoice_match (or absent) → AI matcher against QBO invoices
+  const method: "stripe_api" | "qbo_invoice_match" =
+    body.method === "stripe_api" ? "stripe_api" : "qbo_invoice_match";
+
   after(async () => {
     try {
-      await runDiscovery(job.id, body.auto_approve_confidence ?? 0.90);
+      await runDiscovery(job.id, body.auto_approve_confidence ?? 0.90, method);
     } catch (err: any) {
       console.error(`Stripe recon discovery failed for job ${job.id}:`, err);
       const svc = createServiceSupabase();
@@ -77,7 +84,11 @@ export async function POST(request: Request) {
   return NextResponse.json({ job_id: job.id, started: true });
 }
 
-async function runDiscovery(jobId: string, autoApproveConfidence: number) {
+async function runDiscovery(
+  jobId: string,
+  autoApproveConfidence: number,
+  method: "stripe_api" | "qbo_invoice_match"
+) {
   const service = createServiceSupabase();
 
   const { data: job } = await service
@@ -90,7 +101,8 @@ async function runDiscovery(jobId: string, autoApproveConfidence: number) {
 
   const accessToken = await getValidToken(clientLink.id, service as any);
 
-  // 1. Fetch Stripe deposits
+  // 1. Fetch Stripe deposits from QBO (the QBO-side ground truth — both paths
+  //    need to know which QBO deposits to update)
   const deposits = await fetchStripeDeposits(
     clientLink.qbo_realm_id, accessToken, job.date_range_start, job.date_range_end
   );
@@ -116,16 +128,46 @@ async function runDiscovery(jobId: string, autoApproveConfidence: number) {
     clientLink.qbo_realm_id, accessToken, job.date_range_start, job.date_range_end
   );
 
-  // 3. AI matching
-  const result = await matchStripeDeposits({
-    clientName: clientLink.client_name,
-    jurisdiction: clientLink.jurisdiction,
-    stateProvince: clientLink.state_province || "",
-    deposits,
-    invoices,
-    payments,
-    autoApproveThreshold: autoApproveConfidence,
-  });
+  // 3. BRANCH: Stripe API path (deterministic) or QBO invoice-match (AI)
+  let result: {
+    matches: any[];
+    warnings: string[];
+    summary: string;
+  };
+
+  if (method === "stripe_api") {
+    // Verify Stripe is actually connected for this client
+    if (
+      clientLink.stripe_connection_status !== "connected" ||
+      !clientLink.stripe_access_token
+    ) {
+      throw new Error(
+        "Stripe API method requested but this client doesn't have Stripe connected. Send them a Connect link from the sidebar first, or run with method=qbo_invoice_match."
+      );
+    }
+    const customers = await fetchAllCustomers(clientLink.qbo_realm_id, accessToken);
+    const stripeResult = await reconcileViaStripeApi({
+      accessToken: clientLink.stripe_access_token,
+      jurisdiction: clientLink.jurisdiction,
+      stateProvince: clientLink.state_province || "",
+      qboDeposits: deposits,
+      qboInvoices: invoices,
+      qboCustomers: customers,
+      arrivalStartISO: job.date_range_start,
+      arrivalEndISO: job.date_range_end,
+    });
+    result = stripeResult;
+  } else {
+    result = await matchStripeDeposits({
+      clientName: clientLink.client_name,
+      jurisdiction: clientLink.jurisdiction,
+      stateProvince: clientLink.state_province || "",
+      deposits,
+      invoices,
+      payments,
+      autoApproveThreshold: autoApproveConfidence,
+    });
+  }
 
   // 4. Insert match rows
   const rows = result.matches.map((m) => ({

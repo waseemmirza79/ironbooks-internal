@@ -275,3 +275,48 @@ export async function fetchCustomerPaymentsForRange(
 
   return results;
 }
+
+export interface QBOCustomerLite {
+  id: string;
+  display_name: string;
+  primary_email: string | null;
+}
+
+/**
+ * Fetch every active QBO customer with their primary email. Used by the
+ * Stripe-API reconciliation path to map Stripe charge receipt_emails to
+ * the right QBO customer.
+ */
+export async function fetchAllCustomers(
+  realmId: string,
+  accessToken: string
+): Promise<QBOCustomerLite[]> {
+  const results: QBOCustomerLite[] = [];
+  let page = 0;
+  const pageSize = 1000;
+
+  while (true) {
+    const startPosition = page * pageSize + 1;
+    const query = encodeURIComponent(
+      `SELECT * FROM Customer WHERE Active = true STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
+    );
+    let data: any;
+    try {
+      data = await qboRequest<any>(realmId, accessToken, `/query?query=${query}`);
+    } catch (err: any) {
+      console.warn("[stripe-recon] Customer query failed:", err.message);
+      break;
+    }
+    const customers: any[] = data?.QueryResponse?.Customer || [];
+    for (const c of customers) {
+      results.push({
+        id: c.Id,
+        display_name: c.DisplayName || c.CompanyName || c.GivenName || "",
+        primary_email: c.PrimaryEmailAddr?.Address || null,
+      });
+    }
+    if (customers.length < pageSize) break;
+    page++;
+  }
+  return results;
+}
