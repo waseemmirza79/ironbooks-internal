@@ -533,7 +533,7 @@ export function ReclassReview({
 
         <button
           onClick={handleExecute}
-          disabled={!attested || submitting || totalApproved === 0}
+          disabled={!attested || submitting}
           className="w-full bg-teal hover:bg-teal-dark text-white font-semibold px-6 py-3 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
         >
           {submitting ? (
@@ -541,7 +541,7 @@ export function ReclassReview({
           ) : (
             <Play size={18} />
           )}
-          Execute {totalApproved} reclassifications in QBO
+          {totalApproved === 0 ? "Continue to next step" : `Execute ${totalApproved} reclassifications in QBO`}
         </button>
         <p className="text-xs text-ink-slate text-center mt-2">
           Skipped, flagged, and rejected transactions will NOT be executed.
