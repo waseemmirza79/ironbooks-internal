@@ -139,7 +139,7 @@ export default async function DashboardPage() {
         .eq("executed", false),
       service
         .from("reclassifications")
-        .select("id", { count: "exact", head: true })
+        .select("id, reclass_jobs!reclass_job_id!inner(id)", { count: "exact", head: true })
         .eq("decision", "flagged"),
       service
         .from("stripe_recon_matches")
