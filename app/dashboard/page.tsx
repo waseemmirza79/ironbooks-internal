@@ -12,6 +12,7 @@ import {
   Timer,
   Wifi,
 } from "lucide-react";
+import { DashboardCharts, type WeeklyPoint, type BookkeeperPoint } from "./dashboard-charts";
 
 export const dynamic = "force-dynamic";
 
@@ -46,6 +47,7 @@ export default async function DashboardPage() {
   const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000).toISOString();
   const ninetyDaysAgo = new Date(now.getTime() - 90 * 86400000).toISOString();
   const fourteenDaysFromNow = new Date(now.getTime() + 14 * 86400000).toISOString();
+  const eightWeeksAgo = new Date(now.getTime() - 56 * 86400000).toISOString();
 
   const [
     profileRes,
@@ -54,7 +56,7 @@ export default async function DashboardPage() {
     allCoaRes,
     allReclassRes,
     completedMonthRes,
-    avgDurationRes,
+    eightWeeksRes,
     bookkeepersRes,
     stripeCountRes,
     assignedClientsRes,
@@ -83,18 +85,21 @@ export default async function DashboardPage() {
       .select("id, status, created_at, updated_at, bookkeeper_id, client_link_id, client_links!client_link_id(client_name)")
       .in("status", ACTIVE_STATUSES),
 
+    // Completed this month — used for stats + per-bookkeeper chart
     service
       .from("coa_jobs")
-      .select("id, bookkeeper_id, execution_duration_seconds")
+      .select("id, bookkeeper_id, created_at, execution_completed_at, execution_duration_seconds")
       .eq("status", "complete")
+      .not("execution_completed_at", "is", null)
       .gte("updated_at", startOfMonth),
 
+    // Completed last 8 weeks — weekly trend charts
     service
       .from("coa_jobs")
-      .select("execution_duration_seconds")
+      .select("id, bookkeeper_id, created_at, execution_completed_at")
       .eq("status", "complete")
-      .not("execution_duration_seconds", "is", null)
-      .gte("updated_at", ninetyDaysAgo),
+      .not("execution_completed_at", "is", null)
+      .gte("execution_completed_at", eightWeeksAgo),
 
     service
       .from("users")
@@ -209,15 +214,63 @@ export default async function DashboardPage() {
 
   // Stats
   const activeJobsCount = allActiveJobs.length;
-  const completedThisMonth = (completedMonthRes.data || []).length;
-  const durations = (avgDurationRes.data || [])
-    .map((r) => r.execution_duration_seconds)
-    .filter(Boolean) as number[];
-  const avgDays =
-    durations.length > 0
-      ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length / 86400)
-      : null;
+  const completedThisMonthJobs = completedMonthRes.data || [];
+  const completedThisMonth = completedThisMonthJobs.length;
   const stripeConnected = stripeCountRes.count || 0;
+
+  // Avg minutes per cleanup = (execution_completed_at - created_at) in minutes
+  function elapsedMinutes(job: { created_at: string | null; execution_completed_at: string | null }): number | null {
+    if (!job.created_at || !job.execution_completed_at) return null;
+    const diff = new Date(job.execution_completed_at).getTime() - new Date(job.created_at).getTime();
+    return Math.round(diff / 60000);
+  }
+
+  const allMinutes = completedThisMonthJobs.map(elapsedMinutes).filter((m): m is number => m !== null);
+  const avgMinutesThisMonth =
+    allMinutes.length > 0 ? Math.round(allMinutes.reduce((a, b) => a + b, 0) / allMinutes.length) : null;
+
+  // ─── Chart data ───
+
+  // Build 8 weekly buckets, oldest first
+  const weekBuckets: { label: string; start: number; end: number }[] = [];
+  const thisMonday = new Date(now);
+  thisMonday.setDate(thisMonday.getDate() - ((thisMonday.getDay() + 6) % 7)); // ISO Monday
+  thisMonday.setHours(0, 0, 0, 0);
+  for (let i = 7; i >= 0; i--) {
+    const start = new Date(thisMonday.getTime() - i * 7 * 86400000);
+    const end = new Date(start.getTime() + 7 * 86400000);
+    weekBuckets.push({
+      label: start.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      start: start.getTime(),
+      end: end.getTime(),
+    });
+  }
+
+  const eightWeeksJobs = eightWeeksRes.data || [];
+  const weeklyData: WeeklyPoint[] = weekBuckets.map((w) => {
+    const weekJobs = eightWeeksJobs.filter((j) => {
+      const t = new Date(j.execution_completed_at!).getTime();
+      return t >= w.start && t < w.end;
+    });
+    const mins = weekJobs.map(elapsedMinutes).filter((m): m is number => m !== null);
+    return {
+      week: w.label,
+      jobs: weekJobs.length,
+      avgMinutes: mins.length > 0 ? Math.round(mins.reduce((a, b) => a + b, 0) / mins.length) : null,
+    };
+  });
+
+  const bookkeepersData: BookkeeperPoint[] = bookkeepers
+    .map((bk) => {
+      const bkJobs = completedThisMonthJobs.filter((j) => j.bookkeeper_id === bk.id);
+      const mins = bkJobs.map(elapsedMinutes).filter((m): m is number => m !== null);
+      return {
+        name: bk.full_name.split(" ")[0],
+        cleanups: bkJobs.length,
+        avgMinutes: mins.length > 0 ? Math.round(mins.reduce((a, b) => a + b, 0) / mins.length) : null,
+      };
+    })
+    .filter((bk) => bk.cleanups > 0);
 
   // Team workload — only bookkeepers with any activity
   const completedByBk = new Map<string, number>();
@@ -274,8 +327,8 @@ export default async function DashboardPage() {
             { label: "Active Jobs", value: activeJobsCount, icon: Zap, color: "#2D7A75" },
             { label: "Completed This Month", value: completedThisMonth, icon: CheckCircle2, color: "#10B981" },
             {
-              label: "Avg Days Per Cleanup",
-              value: avgDays !== null ? `${avgDays}d` : "—",
+              label: "Avg Minutes Per Cleanup",
+              value: avgMinutesThisMonth !== null ? `${avgMinutesThisMonth}m` : "—",
               icon: Timer,
               color: "#0891B2",
             },
@@ -295,6 +348,9 @@ export default async function DashboardPage() {
             );
           })}
         </div>
+
+        {/* ─── Charts ─── */}
+        <DashboardCharts weeklyData={weeklyData} bookkeepersData={bookkeepersData} />
 
         {/* ─── My Clients (junior) / My Work Queue (senior+admin) ─── */}
         {isJunior ? (
