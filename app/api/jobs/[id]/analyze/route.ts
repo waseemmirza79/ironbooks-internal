@@ -50,9 +50,26 @@ export async function POST(
     const accessToken = await getValidToken(clientLink.id, service as any);
 
     // 3. Fetch QBO COA
-    const qboAccounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
+    const allQboAccounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
 
-    // 3a. Fetch transaction counts for all accounts.
+    // 3a. Restrict cleanup to P&L accounts only.
+    //   Balance Sheet accounts (AR/AP, banks, credit cards, fixed assets,
+    //   equity, liabilities) shouldn't be renamed/deleted/merged by this tool.
+    //   Their structure is determined by QBO mechanics, not the master COA.
+    const isPnLAccountType = (t: string | undefined): boolean => {
+      if (!t) return false;
+      const norm = t.toLowerCase().replace(/\s+/g, "");
+      return (
+        norm === "income" ||
+        norm === "otherincome" ||
+        norm === "expense" ||
+        norm === "otherexpense" ||
+        norm === "costofgoodssold"
+      );
+    };
+    const qboAccounts = allQboAccounts.filter((a) => isPnLAccountType(a.AccountType));
+
+    // 3b. Fetch transaction counts for all accounts.
     // CRITICAL for production: Claude must know which accounts have transactions
     // so it suggests FLAG instead of DELETE. Otherwise it suggests deletes that
     // QBO will reject at runtime.
@@ -94,17 +111,19 @@ export async function POST(
       masterRows = fb.data;
     }
 
-    const masterCOA: MasterCOAEntry[] = (masterRows || []).map((m) => ({
-      account_name: m.account_name,
-      parent_account_name: m.parent_account_name,
-      is_parent: m.is_parent ?? false,
-      qbo_account_type: m.qbo_account_type,
-      qbo_account_subtype: m.qbo_account_subtype,
-      section: m.section,
-      notes: m.notes || "",
-      is_required: m.is_required ?? false,
-      tax_treatment: m.tax_treatment,
-    }));
+    const masterCOA: MasterCOAEntry[] = (masterRows || [])
+      .filter((m) => isPnLAccountType(m.qbo_account_type))
+      .map((m) => ({
+        account_name: m.account_name,
+        parent_account_name: m.parent_account_name,
+        is_parent: m.is_parent ?? false,
+        qbo_account_type: m.qbo_account_type,
+        qbo_account_subtype: m.qbo_account_subtype,
+        section: m.section,
+        notes: m.notes || "",
+        is_required: m.is_required ?? false,
+        tax_treatment: m.tax_treatment,
+      }));
 
     // 5. Run Claude analysis
     const analysis = await analyzeCOA({
@@ -222,7 +241,7 @@ export async function POST(
 
     await service.from("coa_jobs").update({
       status: "in_review",
-      current_coa_snapshot: qboAccounts as any,
+      current_coa_snapshot: qboAccounts as any, // P&L-only — BS accounts excluded from cleanup scope
       snapshot_pulled_at: new Date().toISOString(),
       ai_suggestions: analysis as any,
       ai_model_used: "claude-opus-4-7",
