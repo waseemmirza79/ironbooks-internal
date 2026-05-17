@@ -52,7 +52,9 @@ export function buildStripeAuthorizeUrl(params: {
     scope: "read_write",
     redirect_uri: redirectUri,
     state: params.state,
-    "stripe_user[email]": "",    // we don't have it; Stripe will prompt
+    // Land on the login screen by default — our clients already have Stripe
+    // accounts. They can switch to "create account" from there if they're new.
+    stripe_landing: "login",
   });
   if (params.suggestedCompany) {
     query.set("stripe_user[business_name]", params.suggestedCompany);
