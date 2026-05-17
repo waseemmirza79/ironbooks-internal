@@ -15,6 +15,9 @@ import {
   Search,
   ChevronDown,
   Flag,
+  Mail,
+  Send,
+  X,
 } from "lucide-react";
 
 interface ReclassJob {
@@ -95,6 +98,7 @@ export function ReclassReview({
   const [forceReconciled, setForceReconciled] = useState(job.force_reconciled);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>("");
+  const [emailModalOpen, setEmailModalOpen] = useState(false);
 
   const isAdmin = userRole === "admin";
   const isLeadOrAdmin = userRole === "admin" || userRole === "lead";
@@ -408,13 +412,13 @@ export function ReclassReview({
             {partitioned.review.length > 0 && (
               <div className="p-3 bg-amber-50 border-b border-amber-100 flex items-center justify-between">
                 <span className="text-sm text-amber-800">
-                  AI confidence 70-91%. Confirm the AI's pick or override via the dropdown.
+                  AI confidence 70-91%. Pick the right account from the dropdown — selection applies to all matching-vendor transactions automatically.
                 </span>
                 <button
                   onClick={() => bulkApprove(partitioned.review.map((r) => r.id))}
                   className="text-sm bg-amber-600 text-white px-3 py-1.5 rounded-lg hover:bg-amber-700"
                 >
-                  Approve all
+                  Approve all AI picks
                 </button>
               </div>
             )}
@@ -422,10 +426,9 @@ export function ReclassReview({
               rows={partitioned.review}
               showConfidence={true}
               showActions={true}
+              showApproveReject={false}
               masterAccounts={masterAccounts}
               onTargetChange={setTarget}
-              onApprove={(id) => updateDecision(id, "approved")}
-              onReject={(id) => updateDecision(id, "rejected")}
             />
           </>
         )}
@@ -434,18 +437,16 @@ export function ReclassReview({
           <>
             {partitioned.flagged.length > 0 && (
               <div className="p-3 bg-red-50 border-b border-red-100 text-sm text-red-800">
-                AI couldn't confidently match these. Use the dropdown to pick the right account, or
-                flag for senior review.
+                AI couldn't confidently match these. Pick the right account from the dropdown — selection auto-applies to all matching-vendor transactions.
               </div>
             )}
             <RowTable
               rows={partitioned.flagged}
               showConfidence={true}
               showActions={true}
+              showApproveReject={false}
               masterAccounts={masterAccounts}
               onTargetChange={setTarget}
-              onApprove={(id) => updateDecision(id, "approved")}
-              onReject={(id) => updateDecision(id, "rejected")}
             />
           </>
         )}
@@ -453,20 +454,28 @@ export function ReclassReview({
         {activeTab === "ask_client" && (
           <>
             {partitioned.ask.length > 0 && (
-              <div className="p-3 bg-purple-50 border-b border-purple-100 text-sm text-purple-800">
-                <HelpCircle size={14} className="inline mr-1" />
-                E-transfers / Venmo / Zelle — confirm with the client what each was for, then pick
-                the right account. These are never saved as bank rules.
+              <div className="p-3 bg-purple-50 border-b border-purple-100 flex items-center justify-between gap-3">
+                <span className="text-sm text-purple-800">
+                  <HelpCircle size={14} className="inline mr-1" />
+                  E-transfers / Venmo / Zelle — confirm with the client what each was for, then pick
+                  the right account from the dropdown.
+                </span>
+                <button
+                  onClick={() => setEmailModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 text-sm bg-purple-600 text-white px-3 py-1.5 rounded-lg hover:bg-purple-700 flex-shrink-0"
+                >
+                  <Mail size={14} />
+                  Draft Email to Client ({partitioned.ask.length})
+                </button>
               </div>
             )}
             <RowTable
               rows={partitioned.ask}
               showConfidence={false}
               showActions={true}
+              showApproveReject={false}
               masterAccounts={masterAccounts}
               onTargetChange={setTarget}
-              onApprove={(id) => updateDecision(id, "approved")}
-              onReject={(id) => updateDecision(id, "rejected")}
             />
           </>
         )}
@@ -513,6 +522,18 @@ export function ReclassReview({
           Skipped, flagged, and rejected transactions will NOT be executed.
         </p>
       </div>
+
+      {/* Email Client Modal */}
+      {emailModalOpen && (
+        <ClientEmailModal
+          jobId={job.id}
+          clientName={(job as any).client_name || "Client"}
+          dateStart={job.date_range_start}
+          dateEnd={job.date_range_end}
+          rows={partitioned.ask}
+          onClose={() => setEmailModalOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -582,6 +603,7 @@ function RowTable({
   showConfidence,
   showActions,
   showSkipReason,
+  showApproveReject = true,
   masterAccounts = [],
   onTargetChange,
   onApprove,
@@ -591,6 +613,9 @@ function RowTable({
   showConfidence: boolean;
   showActions: boolean;
   showSkipReason?: boolean;
+  /** Whether to render the Approve/Reject column. The Map-to-Master dropdown is
+   *  still shown when showActions is true regardless. Defaults to true. */
+  showApproveReject?: boolean;
   masterAccounts?: MasterAccount[];
   onTargetChange?: (rowId: string, accountName: string) => void;
   onApprove?: (id: string) => void;
@@ -601,6 +626,7 @@ function RowTable({
   }
 
   const showDropdown = showActions && masterAccounts.length > 0;
+  const showActionsCol = showActions && showApproveReject;
 
   return (
     <div className="overflow-x-auto">
@@ -620,7 +646,7 @@ function RowTable({
             {showSkipReason && (
               <th className="text-left px-4 py-2.5 font-semibold text-ink-slate">Skip reason</th>
             )}
-            {showActions && (
+            {showActionsCol && (
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Actions</th>
             )}
           </tr>
@@ -690,7 +716,7 @@ function RowTable({
                   </span>
                 </td>
               )}
-              {showActions && (
+              {showActionsCol && (
                 <td className="px-4 py-2.5 text-right">
                   <div className="flex justify-end gap-2">
                     <button
@@ -812,6 +838,184 @@ function MasterAccountSelect({
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ─────────── Client Email Modal ───────────
+
+interface VendorGroup {
+  vendor: string;
+  count: number;
+  total: number;
+}
+
+function dedupeVendors(rows: Reclassification[]): VendorGroup[] {
+  const map = new Map<string, VendorGroup>();
+  for (const r of rows) {
+    const vendor = (r.vendor_name || "Unknown vendor").trim();
+    if (!map.has(vendor)) map.set(vendor, { vendor, count: 0, total: 0 });
+    const g = map.get(vendor)!;
+    g.count++;
+    g.total += Math.abs(Number(r.transaction_amount || 0));
+  }
+  return Array.from(map.values()).sort((a, b) => b.total - a.total);
+}
+
+function ClientEmailModal({
+  jobId,
+  clientName,
+  dateStart,
+  dateEnd,
+  rows,
+  onClose,
+}: {
+  jobId: string;
+  clientName: string;
+  dateStart: string;
+  dateEnd: string;
+  rows: Reclassification[];
+  onClose: () => void;
+}) {
+  const groups = useMemo(() => dedupeVendors(rows), [rows]);
+
+  // Format helpers
+  const fmtUSD = (n: number) =>
+    n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const periodLabel = `${dateStart} → ${dateEnd}`;
+
+  // Build the default email body from the deduped vendor list
+  const defaultBody = useMemo(() => {
+    const lines: string[] = [];
+    lines.push(`Hi ${clientName.split(" ")[0] || "there"},`);
+    lines.push("");
+    lines.push(
+      `While cleaning up your books for the period ${periodLabel}, we found ${rows.length} transaction${rows.length === 1 ? "" : "s"} ` +
+      `we have questions about (these look like e-transfers, Venmo, or peer payments without a clear vendor).`
+    );
+    lines.push("");
+    lines.push("Can you reply with clarification on what each of these were for?");
+    lines.push("");
+    for (const g of groups) {
+      lines.push(
+        `• ${g.vendor} — ${g.count} transaction${g.count === 1 ? "" : "s"} totaling $${fmtUSD(g.total)}`
+      );
+    }
+    lines.push("");
+    lines.push("Please reply within 48 hours so we can complete your books.");
+    lines.push("");
+    lines.push("Kindly,");
+    lines.push("IronBooks");
+    return lines.join("\n");
+  }, [rows, groups, clientName, periodLabel]);
+
+  const [subject, setSubject] = useState<string>(
+    `Quick question on ${rows.length} transaction${rows.length === 1 ? "" : "s"} — ${clientName}`
+  );
+  const [body, setBody] = useState<string>(defaultBody);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string>("");
+
+  async function send() {
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/double/client-question", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reclass_job_id: jobId, subject, body }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Send failed");
+      setSent(true);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col">
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-navy flex items-center gap-2">
+              <Mail size={18} className="text-purple-600" />
+              Draft Email to {clientName}
+            </h3>
+            <p className="text-xs text-ink-slate mt-1">
+              {groups.length} unique sender{groups.length === 1 ? "" : "s"} across {rows.length} transaction{rows.length === 1 ? "" : "s"}.
+              Edit before sending.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-ink-slate hover:text-navy">
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-6 py-4 space-y-4 overflow-y-auto flex-1">
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
+              Subject
+            </label>
+            <input
+              type="text"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-teal outline-none text-sm text-navy"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
+              Message
+            </label>
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              rows={18}
+              className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-teal outline-none text-sm text-navy font-mono leading-relaxed"
+            />
+          </div>
+
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">
+              {error}
+            </div>
+          )}
+
+          {sent && (
+            <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
+              <CheckCircle2 size={14} className="inline mr-1.5" />
+              Sent to {clientName} via Double HQ. Closing this window will return you to the review.
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between gap-3">
+          <button
+            onClick={onClose}
+            className="text-sm font-semibold text-ink-slate hover:text-navy"
+          >
+            {sent ? "Close" : "Cancel"}
+          </button>
+          {!sent && (
+            <button
+              onClick={send}
+              disabled={sending || !subject.trim() || !body.trim()}
+              className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
+            >
+              {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+              {sending ? "Sending..." : "Send via Double HQ"}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
