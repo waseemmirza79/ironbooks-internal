@@ -16,8 +16,8 @@ export default async function ClientsPage() {
 
   const [clientsRes, linksRes, bookkeepersRes] = await Promise.all([
     supabase.from("client_list_view").select("*").order("client_name"),
-    // client_list_view doesn't expose double_client_name, so pull it from client_links and merge
-    supabase.from("client_links").select("id, double_client_name"),
+    // client_list_view doesn't expose double_client_name or stripe fields, pull from client_links and merge
+    supabase.from("client_links").select("id, double_client_name, stripe_connection_status"),
     supabase
       .from("users")
       .select("id, full_name, avatar_url")
@@ -26,13 +26,18 @@ export default async function ClientsPage() {
       .order("full_name"),
   ]);
 
+  const linksData = linksRes.data || [];
   const nameById = new Map<string, string | null>(
-    (linksRes.data || []).map((l) => [l.id, l.double_client_name ?? null])
+    linksData.map((l) => [l.id, l.double_client_name ?? null])
+  );
+  const stripeStatusById = new Map<string, string | null>(
+    linksData.map((l) => [l.id, (l as any).stripe_connection_status ?? null])
   );
 
   const enrichedClients = (clientsRes.data || []).map((c) => ({
     ...c,
     double_client_name: c.id ? nameById.get(c.id) ?? null : null,
+    stripe_connection_status: c.id ? stripeStatusById.get(c.id) ?? null : null,
   }));
 
   return (

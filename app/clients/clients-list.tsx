@@ -44,6 +44,7 @@ interface ClientRow {
   flagged_cleanups: number;
   active_rules: number;
   last_cleanup_at: string | null;
+  stripe_connection_status: string | null;
 }
 
 interface Bookkeeper {
@@ -300,7 +301,7 @@ export function ClientsList({
         <div className="rounded-xl overflow-hidden bg-white border border-gray-200">
           <div
             className="grid items-center px-5 py-3 text-xs font-bold uppercase tracking-wider bg-gray-50 text-ink-slate border-b border-gray-200"
-            style={{ gridTemplateColumns: "1.6fr 0.9fr 1.2fr 1fr 0.85fr 0.9fr 1.1fr 0.4fr" }}
+            style={{ gridTemplateColumns: "1.4fr 0.8fr 1fr 0.9fr 0.8fr 0.8fr 1fr 0.9fr 0.4fr" }}
           >
             <div>Client</div>
             <div>Status</div>
@@ -309,6 +310,7 @@ export function ClientsList({
             <div>Last Cleanup</div>
             <div>Stats</div>
             <div>Quick Actions</div>
+            <div>Stripe</div>
             <div></div>
           </div>
 
@@ -421,13 +423,57 @@ function ClientRow({
 
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [assignMenuOpen, setAssignMenuOpen] = useState(false);
+  const [stripeLoading, setStripeLoading] = useState(false);
+  const [stripeCopied, setStripeCopied] = useState(false);
+  const [stripeError, setStripeError] = useState("");
+
+  async function handleGenerateLink() {
+    setStripeLoading(true);
+    setStripeError("");
+    try {
+      const res = await fetch("/api/stripe-connect/generate-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_link_id: client.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed");
+      await navigator.clipboard.writeText(data.url);
+      setStripeCopied(true);
+      setTimeout(() => setStripeCopied(false), 2500);
+    } catch (e: any) {
+      setStripeError(e.message);
+    } finally {
+      setStripeLoading(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    if (!confirm(`Disconnect Stripe for ${client.client_name}?`)) return;
+    setStripeLoading(true);
+    setStripeError("");
+    try {
+      const res = await fetch("/api/stripe-connect/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_link_id: client.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed");
+      onUpdate({ stripe_connection_status: "not_set" } as any);
+    } catch (e: any) {
+      setStripeError(e.message);
+    } finally {
+      setStripeLoading(false);
+    }
+  }
 
   return (
     <div
       className={`grid items-center px-5 py-3 border-b border-gray-100 hover:bg-teal-lighter transition-colors ${
         !client.is_active ? "opacity-50" : ""
       }`}
-      style={{ gridTemplateColumns: "1.6fr 0.9fr 1.2fr 1fr 0.85fr 0.9fr 1.1fr 0.4fr" }}
+      style={{ gridTemplateColumns: "1.4fr 0.8fr 1fr 0.9fr 0.8fr 0.8fr 1fr 0.9fr 0.4fr" }}
     >
       <div className="flex items-center gap-3 min-w-0">
         <div className="rounded-lg flex items-center justify-center font-bold text-sm flex-shrink-0 w-9 h-9 bg-teal-light text-teal">
@@ -621,6 +667,42 @@ function ClientRow({
               Rules
             </Link>
           </>
+        )}
+      </div>
+
+      <div className="min-w-0">
+        {client.stripe_connection_status === "connected" ? (
+          <div className="space-y-1">
+            <div className="flex items-center gap-1 text-xs font-semibold text-emerald-700">
+              <CheckCircle2 size={11} />
+              Connected
+            </div>
+            <button
+              onClick={handleDisconnect}
+              disabled={stripeLoading}
+              className="text-[10px] text-red-600 hover:text-red-800 underline disabled:opacity-50"
+            >
+              {stripeLoading ? "..." : "Disconnect"}
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {client.stripe_connection_status === "pending" && (
+              <div className="text-[10px] text-amber-600 font-semibold">Pending</div>
+            )}
+            <button
+              onClick={handleGenerateLink}
+              disabled={stripeLoading}
+              className="text-[10px] font-semibold text-teal hover:underline disabled:opacity-50"
+            >
+              {stripeLoading ? <Loader2 size={10} className="animate-spin inline" /> : stripeCopied ? "Copied!" : "Copy Link"}
+            </button>
+          </div>
+        )}
+        {stripeError && (
+          <div className="text-[10px] text-red-600 mt-0.5 truncate" title={stripeError}>
+            {stripeError}
+          </div>
         )}
       </div>
 
