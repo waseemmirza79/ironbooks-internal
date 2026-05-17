@@ -603,10 +603,31 @@ async function runFullCategorization(
     }
   }
 
-  // 3. Fetch all live accounts for target options
+  // 3. Fetch all live accounts for target options.
+  //
+  // Full-categorization is a P&L cleanup workflow — we only want to consider
+  // income/expense accounts. Balance Sheet activity (AR/AP/bank transfers/CC
+  // payments/fixed-asset moves/equity entries) shouldn't be reclassified by
+  // this pipeline and the AI shouldn't be offered BS accounts as targets.
   const allAccounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
+  const isPnLAccountType = (t: string | undefined): boolean => {
+    if (!t) return false;
+    const norm = t.toLowerCase().replace(/\s+/g, "");
+    // QBO emits these as either "Income"/"Other Income"/"Cost of Goods Sold"
+    // or "OtherIncome"/"CostOfGoodsSold" depending on endpoint — normalize both.
+    return (
+      norm === "income" ||
+      norm === "otherincome" ||
+      norm === "expense" ||
+      norm === "otherexpense" ||
+      norm === "costofgoodssold"
+    );
+  };
+  const pnlAccountIds = new Set(
+    allAccounts.filter((a) => isPnLAccountType(a.AccountType)).map((a) => a.Id)
+  );
   const availableAccounts: AvailableAccount[] = allAccounts
-    .filter((a) => a.Active !== false)
+    .filter((a) => a.Active !== false && isPnLAccountType(a.AccountType))
     .map((a) => ({
       qbo_account_id: a.Id,
       account_name: a.Name,
@@ -634,6 +655,7 @@ async function runFullCategorization(
     skipClosedQbo: 0,
     skipClosedDouble: 0,
     skipAlreadyCorrect: 0,
+    skipBalanceSheet: 0,
     skipUnsupported: transactionsSkippedUnsupported,
   };
   const reclassRows: any[] = [];
@@ -641,6 +663,15 @@ async function runFullCategorization(
 
   // 4. Filter to in-scope vs skipped
   for (const line of lines) {
+    // Skip lines that hit Balance Sheet accounts — full categorization is a
+    // P&L workflow. AR/AP/bank transfers/credit-card payments/fixed-asset
+    // moves shouldn't be reclassified here.
+    if (line.current_account_id && !pnlAccountIds.has(line.current_account_id)) {
+      stats.skipBalanceSheet++;
+      reclassRows.push(buildSkipRow(jobId, line, "balance_sheet_account"));
+      continue;
+    }
+
     if (isInClosedPeriod(line.transaction_date, bookCloseDate)) {
       stats.skipClosedQbo++;
       reclassRows.push(buildSkipRow(jobId, line, "closed_period_qbo"));
@@ -911,6 +942,11 @@ async function runFullCategorization(
   if (stats.skipAlreadyCorrect > 0) {
     console.log(
       `[reclass] ${stats.skipAlreadyCorrect} transactions already in the correct account — skipped (re-run after migration).`
+    );
+  }
+  if (stats.skipBalanceSheet > 0) {
+    console.log(
+      `[reclass] ${stats.skipBalanceSheet} lines posted to Balance Sheet accounts — skipped (full categorization is P&L-only).`
     );
   }
 
