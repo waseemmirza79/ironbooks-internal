@@ -382,6 +382,7 @@ export async function reclassifyTransactionLines(
     if (!line.Id) return line;
     const update = lineUpdateMap.get(line.Id);
     if (!update) return line;
+    if (!update.new_account_id) return line;
 
     return {
       ...line,
@@ -404,12 +405,23 @@ export async function reclassifyTransactionLines(
     ? existingMemo
     : (existingMemo ? existingMemo + memoAppendDelim : "") + params.auditMemo;
 
-  // Step 4: Full update via POST with sparse=true to be safe
+  // Step 4: Strip any line that has AccountBasedExpenseLineDetail but no valid AccountRef.
+  // QBO sometimes returns these for bank-feed or legacy transactions; sending them back
+  // triggers error 2020 ("AccountRef is missing"). Lines we updated always have a valid
+  // AccountRef set above, so this only drops externally-malformed pass-through lines.
+  const safeLines = updatedLines.filter((line: any) => {
+    if (line.DetailType === "AccountBasedExpenseLineDetail") {
+      return !!(line.AccountBasedExpenseLineDetail?.AccountRef?.value);
+    }
+    return true;
+  });
+
+  // Step 5: Full update via POST
   const updatePayload = {
     ...tx,
-    Line: updatedLines,
+    Line: safeLines,
     PrivateNote: newMemo,
-    sparse: false, // full update - all lines must be present (we preserved non-matching lines above)
+    sparse: false,
   };
 
   const data: any = await qboRequest(

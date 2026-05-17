@@ -152,7 +152,21 @@ async function executeReclass(jobId: string) {
     }
   >();
 
+  let failed = 0;
+  const errors: string[] = [];
+
   for (const row of rows) {
+    const targetId = row.bookkeeper_override_target_id || row.to_account_id;
+    if (!targetId) {
+      failed++;
+      errors.push(`${row.qbo_transaction_type}/${row.qbo_transaction_id}: no target account ID for line ${row.line_id}`);
+      await service
+        .from("reclassifications")
+        .update({ status: "failed", error_message: "No target account ID set" } as any)
+        .eq("id", row.id);
+      continue;
+    }
+
     const key = `${row.qbo_transaction_type}::${row.qbo_transaction_id}`;
     let entry = txMap.get(key);
     if (!entry) {
@@ -163,7 +177,6 @@ async function executeReclass(jobId: string) {
       };
       txMap.set(key, entry);
     }
-    const targetId = row.bookkeeper_override_target_id || row.to_account_id;
     const targetName = row.bookkeeper_override_target_name || row.to_account_name;
     entry.lines.push({
       line_id: row.line_id || "",
@@ -176,8 +189,6 @@ async function executeReclass(jobId: string) {
   const auditMemo = buildAuditMemo(bookkeeperName, job.reason);
 
   let moved = 0;
-  let failed = 0;
-  const errors: string[] = [];
 
   // Execute each transaction update (sequential to respect QBO rate limits)
   const transactions = Array.from(txMap.values());
