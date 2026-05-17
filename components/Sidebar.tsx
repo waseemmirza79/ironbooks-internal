@@ -81,16 +81,18 @@ export function Sidebar() {
             const [coaRes, stripeRes] = await Promise.all([
               supabase
                 .from("coa_actions")
-                .select("id", { count: "exact", head: true })
+                .select("id, coa_jobs(id)")
                 .eq("action", "flag")
                 .eq("executed", false),
               supabase
                 .from("stripe_recon_matches")
-                .select("id", { count: "exact", head: true })
+                .select("id, stripe_recon_jobs(id)")
                 .eq("decision", "flagged")
                 .eq("executed", false),
             ]);
-            setFlaggedCount((coaRes.count || 0) + (stripeRes.count || 0));
+            const coaCount = (coaRes.data || []).filter((r: any) => r.coa_jobs !== null).length;
+            const stripeCount = (stripeRes.data || []).filter((r: any) => r.stripe_recon_jobs !== null).length;
+            setFlaggedCount(coaCount + stripeCount);
           }
         }
       }

@@ -134,19 +134,19 @@ export default async function DashboardPage() {
     const [coaFlagRes, stripeFlagRes] = await Promise.all([
       service
         .from("coa_actions")
-        .select("id", { count: "exact", head: true })
+        .select("id, coa_jobs(id)")
         .eq("action", "flag")
         .eq("executed", false),
       service
         .from("stripe_recon_matches")
-        .select("id", { count: "exact", head: true })
+        .select("id, stripe_recon_jobs(id)")
         .eq("decision", "flagged")
         .eq("executed", false),
     ]);
     flaggedCounts = {
-      coa: coaFlagRes.count || 0,
+      coa: (coaFlagRes.data || []).filter((r: any) => r.coa_jobs !== null).length,
       reclass: 0,
-      stripe: stripeFlagRes.count || 0,
+      stripe: (stripeFlagRes.data || []).filter((r: any) => r.stripe_recon_jobs !== null).length,
     };
   }
 
