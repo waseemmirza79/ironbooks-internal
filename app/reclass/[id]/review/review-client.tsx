@@ -246,11 +246,36 @@ export function ReclassReview({
   }
 
   async function bulkApprove(rowIds: string[]) {
+    // Only approve rows that actually have a target account. Approving a
+    // row with no destination causes the executor to skip it — better to
+    // surface that up-front so the bookkeeper sees the missing assignment
+    // before executing.
+    const eligible: string[] = [];
+    const blocked: string[] = [];
+    for (const id of rowIds) {
+      const row = rows.find((r) => r.id === id);
+      if (!row) continue;
+      const hasTarget =
+        !!row.bookkeeper_override_target_id ||
+        (!!row.to_account_id && row.to_account_id !== "");
+      if (hasTarget) eligible.push(id);
+      else blocked.push(id);
+    }
+
+    if (blocked.length > 0) {
+      alert(
+        `${blocked.length} row${blocked.length === 1 ? "" : "s"} still need${
+          blocked.length === 1 ? "s" : ""
+        } a target account assigned before approval. Use the dropdown to set one, then approve.`
+      );
+    }
+    if (eligible.length === 0) return;
+
     setRows((prev) =>
-      prev.map((r) => (rowIds.includes(r.id) ? { ...r, decision: "approved" } : r))
+      prev.map((r) => (eligible.includes(r.id) ? { ...r, decision: "approved" } : r))
     );
     await Promise.all(
-      rowIds.map((id) =>
+      eligible.map((id) =>
         fetch(`/api/reclass/decisions/${id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },

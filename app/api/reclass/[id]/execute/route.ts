@@ -153,16 +153,24 @@ async function executeReclass(jobId: string) {
   >();
 
   let failed = 0;
+  let needsTarget = 0;
   const errors: string[] = [];
 
   for (const row of rows) {
     const targetId = row.bookkeeper_override_target_id || row.to_account_id;
     if (!targetId) {
-      failed++;
-      errors.push(`${row.qbo_transaction_type}/${row.qbo_transaction_id}: no target account ID for line ${row.line_id}`);
+      // Row was approved (or AI-auto-approved) but has no destination account.
+      // Common cause: a needs_review row got approved in the UI without picking
+      // a target. Don't fail it — demote back to needs_review so the bookkeeper
+      // can finish it in the review screen and re-run execute. No QBO call here.
+      needsTarget++;
       await service
         .from("reclassifications")
-        .update({ status: "failed", error_message: "No target account ID set" } as any)
+        .update({
+          decision: "needs_review",
+          status: "pending",
+          error_message: "Target account required — assign in the review screen and re-run.",
+        } as any)
         .eq("id", row.id);
       continue;
     }
@@ -272,6 +280,15 @@ async function executeReclass(jobId: string) {
     errors.push(`Double sync: ${err.message}`);
   }
 
+  // Surface the needs-target count separately so the bookkeeper sees
+  // "X rows still need a target account" instead of it looking like a failure.
+  const summaryErrors = [...errors];
+  if (needsTarget > 0) {
+    summaryErrors.unshift(
+      `${needsTarget} transaction${needsTarget === 1 ? "" : "s"} sent back to Needs Review — target account not selected before approval.`
+    );
+  }
+
   // Finalize
   await service
     .from("reclass_jobs")
@@ -282,7 +299,7 @@ async function executeReclass(jobId: string) {
       transactions_moved: moved,
       transactions_failed: failed,
       double_task_id: doubleTaskId,
-      error_message: errors.length > 0 ? errors.slice(0, 10).join("; ") : null,
+      error_message: summaryErrors.length > 0 ? summaryErrors.slice(0, 10).join("; ") : null,
     } as any)
     .eq("id", jobId);
 
