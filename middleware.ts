@@ -32,8 +32,8 @@ export async function middleware(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
 
-  // Public routes
-  const publicRoutes = ["/auth/login", "/auth/callback"];
+  // Public routes — accessible without auth (clients, not internal staff)
+  const publicRoutes = ["/auth/login", "/auth/callback", "/stripe-connect"];
   const isPublic = publicRoutes.some((p) => pathname.startsWith(p));
   const isApi = pathname.startsWith("/api/");
   const isStatic = pathname.startsWith("/_next/") || pathname === "/favicon.ico";
