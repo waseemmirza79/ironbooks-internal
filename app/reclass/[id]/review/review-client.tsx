@@ -853,23 +853,33 @@ function MasterAccountSelect({
 
 // ─────────── Client Email Modal ───────────
 
-interface VendorGroup {
-  vendor: string;
-  count: number;
-  total: number;
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
-function dedupeVendors(rows: Reclassification[]): VendorGroup[] {
-  const map = new Map<string, VendorGroup>();
-  for (const r of rows) {
-    const vendor = (r.vendor_name || "Unknown vendor").trim();
-    if (!map.has(vendor)) map.set(vendor, { vendor, count: 0, total: 0 });
-    const g = map.get(vendor)!;
-    g.count++;
-    g.total += Math.abs(Number(r.transaction_amount || 0));
-  }
-  return Array.from(map.values()).sort((a, b) => b.total - a.total);
+interface TxnRow {
+  date: string;
+  vendor: string;
+  amount: number;
 }
+
+function buildTxnRows(rows: Reclassification[]): TxnRow[] {
+  return rows
+    .map((r) => ({
+      date: r.transaction_date || "",
+      vendor: (r.vendor_name || "Unknown").trim(),
+      amount: Math.abs(Number(r.transaction_amount || 0)),
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+const fmtMoney = (n: number) =>
+  n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 function ClientEmailModal({
   jobId,
@@ -886,78 +896,132 @@ function ClientEmailModal({
   rows: Reclassification[];
   onClose: () => void;
 }) {
-  const groups = useMemo(() => dedupeVendors(rows), [rows]);
-
-  // Format helpers
-  const fmtUSD = (n: number) =>
-    n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  void jobId; // legacy prop, no longer used
+  const txns = useMemo(() => buildTxnRows(rows), [rows]);
   const periodLabel = `${dateStart} → ${dateEnd}`;
 
-  // Build the default email body from the deduped vendor list
-  const defaultBody = useMemo(() => {
-    const lines: string[] = [];
-    lines.push(`Hi ${clientName.split(" ")[0] || "there"},`);
-    lines.push("");
-    lines.push(
-      `While cleaning up your books for the period ${periodLabel}, we found ${rows.length} transaction${rows.length === 1 ? "" : "s"} ` +
-      `we have questions about (these look like e-transfers, Venmo, or peer payments without a clear vendor).`
-    );
-    lines.push("");
-    lines.push("Can you reply with clarification on what each of these were for?");
-    lines.push("");
-    for (const g of groups) {
-      lines.push(
-        `• ${g.vendor} — ${g.count} transaction${g.count === 1 ? "" : "s"} totaling $${fmtUSD(g.total)}`
-      );
-    }
-    lines.push("");
-    lines.push("Please reply within 48 hours so we can complete your books.");
-    lines.push("");
-    lines.push("Kindly,");
-    lines.push("Ironbooks");
-    return lines.join("\n");
-  }, [rows, groups, clientName, periodLabel]);
+  const defaultIntro = useMemo(
+    () =>
+      `Hi ${clientName.split(" ")[0] || "there"},\n\nWhile cleaning up your books for the period ${periodLabel}, we found ${rows.length} transaction${rows.length === 1 ? "" : "s"} we have questions about. Most look like e-transfers, Venmo, or peer payments without a clear vendor.\n\nPlease fill in the "What was this for?" column in the table below so we can categorize them correctly:`,
+    [clientName, periodLabel, rows.length]
+  );
+  const defaultOutro = `Please reply within 48 hours so we can complete your books.\n\nKindly,\nIronbooks`;
 
   const [subject, setSubject] = useState<string>(
     `Quick question on ${rows.length} transaction${rows.length === 1 ? "" : "s"} — ${clientName}`
   );
-  const [body, setBody] = useState<string>(defaultBody);
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [error, setError] = useState<string>("");
+  const [intro, setIntro] = useState<string>(defaultIntro);
+  const [outro, setOutro] = useState<string>(defaultOutro);
+  const [copied, setCopied] = useState<"subject" | "body" | null>(null);
+  const [copyError, setCopyError] = useState<string>("");
 
-  async function send() {
-    setSending(true);
-    setError("");
+  // Build the HTML the bookkeeper pastes into Double's rich-text editor.
+  // Most rich-text editors handle <table> well, including Double's portal.
+  const html = useMemo(() => {
+    const introHtml = intro
+      .split("\n\n")
+      .map((p) => `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`)
+      .join("");
+    const outroHtml = outro
+      .split("\n\n")
+      .map((p) => `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`)
+      .join("");
+    const tableRows = txns
+      .map(
+        (t) => `
+        <tr>
+          <td style="border:1px solid #cbd5e1;padding:6px 10px;">${escapeHtml(t.date)}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 10px;">${escapeHtml(t.vendor)}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 10px;text-align:right;">$${fmtMoney(t.amount)}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 10px;">&nbsp;</td>
+        </tr>`
+      )
+      .join("");
+    return `${introHtml}
+<table style="border-collapse:collapse;width:100%;border:1px solid #cbd5e1;font-family:sans-serif;font-size:13px;">
+  <thead>
+    <tr style="background:#f1f5f9;">
+      <th style="border:1px solid #cbd5e1;padding:6px 10px;text-align:left;">Date</th>
+      <th style="border:1px solid #cbd5e1;padding:6px 10px;text-align:left;">Sender / Vendor</th>
+      <th style="border:1px solid #cbd5e1;padding:6px 10px;text-align:right;">Amount</th>
+      <th style="border:1px solid #cbd5e1;padding:6px 10px;text-align:left;">What was this for?</th>
+    </tr>
+  </thead>
+  <tbody>${tableRows}
+  </tbody>
+</table>
+${outroHtml}`;
+  }, [intro, outro, txns]);
+
+  // Plain-text fallback for paste destinations that don't take HTML
+  const plainText = useMemo(() => {
+    const widths = { date: 12, vendor: 28, amount: 12, note: 28 };
+    const pad = (s: string, n: number) => s.length >= n ? s : s + " ".repeat(n - s.length);
+    const padR = (s: string, n: number) => s.length >= n ? s : " ".repeat(n - s.length) + s;
+    const header =
+      pad("Date", widths.date) + " | " +
+      pad("Sender", widths.vendor) + " | " +
+      padR("Amount", widths.amount) + " | What was this for?";
+    const sep = "-".repeat(header.length);
+    const lines = txns.map((t) =>
+      pad(t.date, widths.date) + " | " +
+      pad((t.vendor || "").slice(0, widths.vendor), widths.vendor) + " | " +
+      padR("$" + fmtMoney(t.amount), widths.amount) + " | "
+    );
+    return `${intro}\n\n${header}\n${sep}\n${lines.join("\n")}\n\n${outro}`;
+  }, [intro, outro, txns]);
+
+  async function copySubject() {
     try {
-      const res = await fetch("/api/double/client-question", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reclass_job_id: jobId, subject, body }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Send failed");
-      setSent(true);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setSending(false);
+      await navigator.clipboard.writeText(subject);
+      setCopied("subject");
+      setCopyError("");
+      setTimeout(() => setCopied(null), 2000);
+    } catch (err: any) {
+      setCopyError(err?.message || "Could not access clipboard");
+    }
+  }
+
+  async function copyBody() {
+    setCopyError("");
+    // Body only — most email tools have a separate Subject field; pasting the subject
+    // inside the body would be noise. Keep the "Copy subject" button for that field.
+    try {
+      if (typeof ClipboardItem !== "undefined") {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/html": new Blob([html], { type: "text/html" }),
+            "text/plain": new Blob([plainText], { type: "text/plain" }),
+          }),
+        ]);
+      } else {
+        await navigator.clipboard.writeText(plainText);
+      }
+      setCopied("body");
+      setTimeout(() => setCopied(null), 2500);
+    } catch (err: any) {
+      try {
+        await navigator.clipboard.writeText(plainText);
+        setCopied("body");
+        setTimeout(() => setCopied(null), 2500);
+      } catch (err2: any) {
+        setCopyError(err2?.message || "Could not access clipboard");
+      }
     }
   }
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full max-h-[92vh] flex flex-col">
         {/* Header */}
         <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between">
           <div>
             <h3 className="text-lg font-bold text-navy flex items-center gap-2">
               <Mail size={18} className="text-purple-600" />
-              Draft Email to {clientName}
+              Email to {clientName}
             </h3>
             <p className="text-xs text-ink-slate mt-1">
-              {groups.length} unique sender{groups.length === 1 ? "" : "s"} across {rows.length} transaction{rows.length === 1 ? "" : "s"}.
-              Edit before sending.
+              {rows.length} transaction{rows.length === 1 ? "" : "s"}. Edit the message, then copy & paste into the Double client portal to send.
             </p>
           </div>
           <button onClick={onClose} className="text-ink-slate hover:text-navy">
@@ -965,12 +1029,27 @@ function ClientEmailModal({
           </button>
         </div>
 
+        {/* Instructions strip */}
+        <div className="px-6 py-3 bg-purple-50 border-b border-purple-100 text-xs text-purple-900">
+          <strong>How to send:</strong> Click "Copy Email" → open the Double client portal for {clientName} → paste into a new email → send. The table will render as a proper HTML table so the client can fill in the right column directly in their reply.
+        </div>
+
         {/* Body */}
         <div className="px-6 py-4 space-y-4 overflow-y-auto flex-1">
+          {/* Subject */}
           <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
-              Subject
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-bold uppercase tracking-wider text-ink-slate">
+                Subject
+              </label>
+              <button
+                onClick={copySubject}
+                className="inline-flex items-center gap-1 text-xs font-semibold text-purple-700 hover:text-purple-900"
+              >
+                {copied === "subject" ? <CheckCircle2 size={12} /> : <Send size={12} />}
+                {copied === "subject" ? "Copied" : "Copy subject"}
+              </button>
+            </div>
             <input
               type="text"
               value={subject}
@@ -979,28 +1058,69 @@ function ClientEmailModal({
             />
           </div>
 
+          {/* Intro */}
           <div>
             <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
-              Message
+              Intro
             </label>
             <textarea
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              rows={18}
-              className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-teal outline-none text-sm text-navy font-mono leading-relaxed"
+              value={intro}
+              onChange={(e) => setIntro(e.target.value)}
+              rows={5}
+              className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-teal outline-none text-sm text-navy leading-relaxed"
             />
           </div>
 
-          {error && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">
-              {error}
+          {/* Table preview */}
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
+              Transaction Table ({txns.length} rows)
+            </label>
+            <div className="rounded-lg border border-gray-200 overflow-hidden">
+              <div className="overflow-x-auto max-h-72">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-semibold text-ink-slate border-b border-gray-200">Date</th>
+                      <th className="text-left px-3 py-2 font-semibold text-ink-slate border-b border-gray-200">Sender / Vendor</th>
+                      <th className="text-right px-3 py-2 font-semibold text-ink-slate border-b border-gray-200">Amount</th>
+                      <th className="text-left px-3 py-2 font-semibold text-ink-slate border-b border-gray-200">What was this for?</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {txns.map((t, i) => (
+                      <tr key={i} className="border-b border-gray-100 last:border-0">
+                        <td className="px-3 py-1.5 text-ink-slate">{t.date}</td>
+                        <td className="px-3 py-1.5 text-navy">{t.vendor}</td>
+                        <td className="px-3 py-1.5 text-right font-mono text-navy">${fmtMoney(t.amount)}</td>
+                        <td className="px-3 py-1.5 text-ink-light italic">(client fills in)</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          )}
+            <p className="text-[11px] text-ink-light mt-1.5">
+              This table is auto-built from the {rows.length} ask-client transactions and renders as HTML when pasted.
+            </p>
+          </div>
 
-          {sent && (
-            <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800">
-              <CheckCircle2 size={14} className="inline mr-1.5" />
-              Sent to {clientName} via Double HQ. Closing this window will return you to the review.
+          {/* Outro */}
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
+              Closing
+            </label>
+            <textarea
+              value={outro}
+              onChange={(e) => setOutro(e.target.value)}
+              rows={4}
+              className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-teal outline-none text-sm text-navy leading-relaxed"
+            />
+          </div>
+
+          {copyError && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">
+              {copyError}
             </div>
           )}
         </div>
@@ -1011,18 +1131,22 @@ function ClientEmailModal({
             onClick={onClose}
             className="text-sm font-semibold text-ink-slate hover:text-navy"
           >
-            {sent ? "Close" : "Cancel"}
+            Close
           </button>
-          {!sent && (
+          <div className="flex items-center gap-2">
+            {copied === "body" && (
+              <span className="text-xs text-green-700 font-semibold flex items-center gap-1">
+                <CheckCircle2 size={12} /> Copied — paste into Double now
+              </span>
+            )}
             <button
-              onClick={send}
-              disabled={sending || !subject.trim() || !body.trim()}
-              className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
+              onClick={copyBody}
+              className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
             >
-              {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-              {sending ? "Sending..." : "Send via Double HQ"}
+              {copied === "body" ? <CheckCircle2 size={14} /> : <Send size={14} />}
+              {copied === "body" ? "Copied! Paste into Double" : "Copy Email Body + Table"}
             </button>
-          )}
+          </div>
         </div>
       </div>
     </div>
