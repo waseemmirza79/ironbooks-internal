@@ -7,6 +7,8 @@
  */
 
 import { createServiceSupabase } from "./supabase";
+import fs from "fs";
+import path from "path";
 import type {
   CleanupReportData,
   CoaChangeRow,
@@ -14,6 +16,27 @@ import type {
   VendorSummaryRow,
   StripeReconSummary,
 } from "./cleanup-report-pdf";
+
+/**
+ * Read the Ironbooks logo from the repo's public/ folder and return a base64
+ * data URL. @react-pdf's Image component accepts these directly and avoids
+ * the unreliable HTTP fetch from inside the serverless function. Cached at
+ * module-level so we don't hit the disk on every request.
+ */
+let _logoDataUrlCache: string | null = null;
+function loadLogoDataUrl(): string {
+  if (_logoDataUrlCache) return _logoDataUrlCache;
+  try {
+    const logoPath = path.join(process.cwd(), "public", "logo.png");
+    const buf = fs.readFileSync(logoPath);
+    _logoDataUrlCache = `data:image/png;base64,${buf.toString("base64")}`;
+    return _logoDataUrlCache;
+  } catch (err: any) {
+    console.warn("[cleanup-report] Could not load logo from disk:", err.message);
+    // Falling back to the HTTPS URL — @react-pdf will try to fetch it.
+    return "https://internal.ironbooks.com/logo.png";
+  }
+}
 
 interface BuildParams {
   client_link_id: string;
@@ -263,7 +286,7 @@ export async function buildCleanupReportData(
     period_end: params.period_end,
     bookkeeper_name: bookkeeperName,
     generated_at: generatedAt,
-    logo_url: `${params.origin_url.replace(/\/$/, "")}/logo.png`,
+    logo_url: loadLogoDataUrl(),
     coa_actions,
     coa_summary,
     reclass_total_count,
