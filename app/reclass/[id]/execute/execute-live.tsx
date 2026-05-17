@@ -298,7 +298,7 @@ export function ExecuteLive({
                   <Receipt className="text-teal" size={20} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-teal">Step 4 of 4 · Recommended</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-teal">Step 3 of 4 · Recommended</span>
                   <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
                     Generate Bank Rules
                   </h3>
