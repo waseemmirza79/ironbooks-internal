@@ -307,13 +307,52 @@ export function ReclassReview({
   // Move a row (or set of rows) to the Ask Client bucket — used from
   // Needs Review / Flagged when the bookkeeper realizes only the client
   // can answer this one.
+  //
+  // When called from a per-row button (single ID), we propagate by sender
+  // so all matching unresolved transactions move at once — same logic as
+  // setTarget. The bulk-button case (multiple IDs) is used as-is.
   async function moveToAskClient(rowIds: string[]) {
     if (rowIds.length === 0) return;
+
+    // Build the full propagation set
+    const unresolvedStates = new Set(["needs_review", "flagged", "ask_client"]);
+    const propagateIds = new Set<string>(rowIds);
+
+    // Only auto-propagate when the caller invoked with a single seed row.
+    // For bulk moves the bookkeeper already selected what they want.
+    if (rowIds.length === 1) {
+      const seedId = rowIds[0];
+      const seedRow = rows.find((r) => r.id === seedId);
+      if (seedRow) {
+        const seedSender = extractSender(
+          seedRow.vendor_name,
+          seedRow.description,
+          (seedRow as any).original_memo
+        );
+        const seedNorm = normalizeSender(seedSender);
+        if (seedNorm) {
+          for (const r of rows) {
+            if (r.id === seedId) continue;
+            if (!unresolvedStates.has(r.decision)) continue;
+            const rSender = extractSender(
+              r.vendor_name,
+              r.description,
+              (r as any).original_memo
+            );
+            if (normalizeSender(rSender) === seedNorm) {
+              propagateIds.add(r.id);
+            }
+          }
+        }
+      }
+    }
+
+    const ids = Array.from(propagateIds);
     setRows((prev) =>
-      prev.map((r) => (rowIds.includes(r.id) ? { ...r, decision: "ask_client" } : r))
+      prev.map((r) => (propagateIds.has(r.id) ? { ...r, decision: "ask_client" } : r))
     );
     await Promise.all(
-      rowIds.map((id) =>
+      ids.map((id) =>
         fetch(`/api/reclass/decisions/${id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
