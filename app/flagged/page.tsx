@@ -76,6 +76,13 @@ export default async function FlaggedPage() {
       .order("deposit_date", { ascending: false }),
   ]);
 
+  // Surface any query errors so they're visible during debugging
+  const queryErrors = [
+    coaQ.error && `COA: ${coaQ.error.message}`,
+    reclassQ.error && `Reclass: ${reclassQ.error.message}`,
+    stripeQ.error && `Stripe: ${stripeQ.error.message}`,
+  ].filter(Boolean);
+
   // ─────────── Group everything by (source, job_id) ───────────
   const groupedByJob = new Map<string, FlaggedJob>();
 
@@ -204,6 +211,12 @@ export default async function FlaggedPage() {
         }
       />
       <div className="px-8 py-6">
+        {queryErrors.length > 0 && (
+          <div className="mb-4 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800 space-y-1">
+            <div className="font-bold">Query errors (debug):</div>
+            {queryErrors.map((e, i) => <div key={i}>{e}</div>)}
+          </div>
+        )}
         {jobs.length === 0 ? (
           <div className="rounded-xl bg-white border border-gray-200 px-8 py-16 text-center">
             <div className="rounded-full mx-auto mb-4 flex items-center justify-center w-14 h-14 bg-teal-light">
