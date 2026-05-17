@@ -604,12 +604,10 @@ async function runFullCategorization(
     }
   }
 
-  // 3. Fetch all live accounts for target options.
-  //
-  // Full-categorization is a P&L cleanup workflow — we only want to consider
-  // income/expense accounts. Balance Sheet activity (AR/AP/bank transfers/CC
-  // payments/fixed-asset moves/equity entries) shouldn't be reclassified by
-  // this pipeline and the AI shouldn't be offered BS accounts as targets.
+  // 3. Fetch all live accounts. We pull every line regardless of source
+  //    account (we want to categorize BS-stuck transactions), but only
+  //    offer P&L accounts as TARGET options to the AI — BS accounts have
+  //    structural meaning and shouldn't be auto-suggested as a category.
   const allAccounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
   const isPnLAccountType = (t: string | undefined): boolean => {
     if (!t) return false;
@@ -624,9 +622,6 @@ async function runFullCategorization(
       norm === "costofgoodssold"
     );
   };
-  const pnlAccountIds = new Set(
-    allAccounts.filter((a) => isPnLAccountType(a.AccountType)).map((a) => a.Id)
-  );
   const availableAccounts: AvailableAccount[] = allAccounts
     .filter((a) => a.Active !== false && isPnLAccountType(a.AccountType))
     .map((a) => ({
@@ -652,11 +647,11 @@ async function runFullCategorization(
     autoApprove: 0,
     needsReview: 0,
     flagged: 0,
+    askClient: 0,
     skipReconciled: 0,
     skipClosedQbo: 0,
     skipClosedDouble: 0,
     skipAlreadyCorrect: 0,
-    skipBalanceSheet: 0,
     skipUnsupported: transactionsSkippedUnsupported,
   };
   const reclassRows: any[] = [];
@@ -664,15 +659,6 @@ async function runFullCategorization(
 
   // 4. Filter to in-scope vs skipped
   for (const line of lines) {
-    // Skip lines that hit Balance Sheet accounts — full categorization is a
-    // P&L workflow. AR/AP/bank transfers/credit-card payments/fixed-asset
-    // moves shouldn't be reclassified here.
-    if (line.current_account_id && !pnlAccountIds.has(line.current_account_id)) {
-      stats.skipBalanceSheet++;
-      reclassRows.push(buildSkipRow(jobId, line, "balance_sheet_account"));
-      continue;
-    }
-
     if (isInClosedPeriod(line.transaction_date, bookCloseDate)) {
       stats.skipClosedQbo++;
       reclassRows.push(buildSkipRow(jobId, line, "closed_period_qbo"));
@@ -727,9 +713,38 @@ async function runFullCategorization(
   let kbHits = 0;
   let cacheHits = 0;
 
+  // Bank-to-bank transfer patterns. Until we have proper bank-account-number
+  // mapping, these can't be auto-categorized — route to ask_client so the
+  // bookkeeper can confirm with the client which account it moved to/from.
+  // Catches: "ONLINE TRANSFER TO MITCHELL J", "TRANSFER FROM CHECKING",
+  // "INTERNAL TRANSFER", "FUNDS TRANSFER", "ZELLE TO/FROM", etc.
+  function isBankTransfer(line: ReclassLine): boolean {
+    const blob = `${line.vendor_name || ""} ${line.description || ""}`.toUpperCase();
+    return (
+      /\b(ONLINE\s+TRANSFER|FUNDS?\s+TRANSFER|INTERNAL\s+TRANSFER|WIRE\s+TRANSFER)\b/.test(blob) ||
+      /\bTRANSFER\s+(TO|FROM)\b/.test(blob) ||
+      /\bACH\s+TRANSFER\b/.test(blob) ||
+      /\b(XFER|TFR)\s+(TO|FROM)\b/.test(blob)
+    );
+  }
+
   for (const line of inScopeLines) {
     const refId = `${line.transaction_id}::${line.line_id}`;
     const absAmount = Math.abs(line.transaction_amount);
+
+    // 0) Bank-transfer pre-check — never auto-categorize, always ask_client.
+    if (isBankTransfer(line)) {
+      preMatched.set(refId, {
+        ref_id: refId,
+        target_account_id: null,
+        target_account_name: null,
+        confidence: 0,
+        reasoning: "Detected as a bank-to-bank transfer. Confirm with client which account this moved to/from before categorizing.",
+        decision: "ask_client",
+      });
+      stats.askClient++;
+      continue;
+    }
 
     // 1) Knowledge base lookup (static, ~200 patterns, instant)
     const kbMatch = lookupVendor(line.vendor_name, line.description, line.transaction_amount, industry);
@@ -912,10 +927,18 @@ async function runFullCategorization(
       continue;
     }
 
-    const resolvedTargetId = decision.target_account_id || uncategorizedAccount?.qbo_account_id || null;
-    const resolvedTargetName = decision.target_account_name || uncategorizedAccount?.account_name || null;
-    const resolvedDecision =
-      !decision.target_account_id && uncategorizedAccount
+    // ask_client decisions (bank transfers, etc.) must NOT be auto-routed
+    // to Uncategorized Expenses — they need explicit human review.
+    const isAskClient = decision.decision === "ask_client";
+    const resolvedTargetId = isAskClient
+      ? null
+      : decision.target_account_id || uncategorizedAccount?.qbo_account_id || null;
+    const resolvedTargetName = isAskClient
+      ? null
+      : decision.target_account_name || uncategorizedAccount?.account_name || null;
+    const resolvedDecision = isAskClient
+      ? "ask_client"
+      : !decision.target_account_id && uncategorizedAccount
         ? "auto_approve"
         : decision.decision;
 
@@ -931,6 +954,7 @@ async function runFullCategorization(
     if (row.decision === "skip") stats.skipAlreadyCorrect++;
     else if (row.decision === "auto_approve") stats.autoApprove++;
     else if (row.decision === "needs_review") stats.needsReview++;
+    else if (row.decision === "ask_client") stats.askClient++;
     else stats.flagged++;
   }
 
@@ -947,9 +971,9 @@ async function runFullCategorization(
       `[reclass] ${stats.skipAlreadyCorrect} transactions already in the correct account — skipped (re-run after migration).`
     );
   }
-  if (stats.skipBalanceSheet > 0) {
+  if (stats.askClient > 0) {
     console.log(
-      `[reclass] ${stats.skipBalanceSheet} lines posted to Balance Sheet accounts — skipped (full categorization is P&L-only).`
+      `[reclass] ${stats.askClient} lines detected as bank transfers — routed to ask_client.`
     );
   }
 
