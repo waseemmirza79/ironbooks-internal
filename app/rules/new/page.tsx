@@ -26,7 +26,7 @@ export default async function NewRulesPage() {
         title="New Bank Rules Discovery"
         subtitle="Auto-generate QBO bank feed rules from transaction history"
       />
-      <WorkflowStepper currentStep="rules" currentState="active" completedSteps={["coa", "reclass", "stripe"]} />
+      <WorkflowStepper currentStep="rules" currentState="active" completedSteps={["coa", "reclass"]} />
       <div className="px-8 py-6 max-w-3xl">
         <NewRulesForm clientLinks={clientLinks || []} recentJobs={recentJobs || []} />
       </div>

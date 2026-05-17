@@ -23,12 +23,12 @@ const STEPS: StepDef[] = [
     href: (cid) => cid ? `/reclass/new?client=${cid}&workflow=full_categorization` : "/reclass/new",
   },
   {
-    key: "stripe", num: 3, label: "Stripe Recon",
-    href: (cid) => cid ? `/stripe-recon/new?client=${cid}` : "/stripe-recon/new",
+    key: "rules", num: 3, label: "Bank Rules",
+    href: (cid) => cid ? `/rules/new?client=${cid}` : "/rules/new",
   },
   {
-    key: "rules", num: 4, label: "Bank Rules",
-    href: (cid) => cid ? `/rules/new?client=${cid}` : "/rules/new",
+    key: "stripe", num: 4, label: "Stripe Recon",
+    href: (cid) => cid ? `/stripe-recon/new?client=${cid}` : "/stripe-recon/new",
   },
 ];
 

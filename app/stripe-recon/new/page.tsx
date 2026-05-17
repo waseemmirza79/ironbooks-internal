@@ -23,7 +23,7 @@ export default async function NewStripeReconPage() {
         title="Stripe AR Reconciliation"
         subtitle="Match Stripe deposits to customer invoices · calculate fees + sales tax"
       />
-      <WorkflowStepper currentStep="stripe" currentState="active" completedSteps={["coa", "reclass"]} />
+      <WorkflowStepper currentStep="stripe" currentState="active" completedSteps={["coa", "reclass", "rules"]} />
       <div className="px-8 py-6 max-w-3xl">
         <NewStripeReconForm clientLinks={clientLinks || []} />
       </div>

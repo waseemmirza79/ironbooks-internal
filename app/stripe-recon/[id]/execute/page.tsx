@@ -40,7 +40,7 @@ export default async function StripeReconExecutePage({
       <WorkflowStepper
         currentStep="stripe"
         currentState={job.status === "complete" ? "complete" : "active"}
-        completedSteps={job.status === "complete" ? ["coa", "reclass", "stripe"] : ["coa", "reclass"]}
+        completedSteps={job.status === "complete" ? ["coa", "reclass", "rules", "stripe"] : ["coa", "reclass", "rules"]}
         clientLinkId={clientLink?.id}
       />
       <div className="px-8 py-6 max-w-4xl">

@@ -436,7 +436,7 @@ function buildReclassRow(
   if (isNoOp) {
     decision = "skip";
     status = "skipped";
-    skipReason = "already_correct";
+    skipReason = undefined;
   }
 
   return {

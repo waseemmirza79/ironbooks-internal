@@ -38,7 +38,7 @@ export default async function RulesReviewPage({
           title={`Analyzing ${clientLink?.client_name}`}
           subtitle="Pulling transactions and grouping by vendor..."
         />
-        <WorkflowStepper currentStep="rules" currentState="active" completedSteps={["coa", "reclass", "stripe"]} clientLinkId={clientLink?.id} />
+        <WorkflowStepper currentStep="rules" currentState="active" completedSteps={["coa", "reclass"]} clientLinkId={clientLink?.id} />
         <div className="px-8 py-12 flex flex-col items-center">
           <Loader2 size={48} className="animate-spin text-teal mb-4" />
           <p className="text-sm text-ink-slate text-center max-w-md">
@@ -60,7 +60,7 @@ export default async function RulesReviewPage({
       <WorkflowStepper
         currentStep="rules"
         currentState={job.status === "complete" ? "complete" : "active"}
-        completedSteps={job.status === "complete" ? ["coa", "reclass", "stripe", "rules"] : ["coa", "reclass", "stripe"]}
+        completedSteps={job.status === "complete" ? ["coa", "reclass", "rules"] : ["coa", "reclass"]}
         clientLinkId={clientLink?.id}
       />
       <div className="px-8 py-6">
