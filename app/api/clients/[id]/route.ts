@@ -23,7 +23,7 @@ export async function PATCH(
   const updates: Record<string, any> = {};
 
   // Whitelist editable fields
-  const allowed = ["status", "assigned_bookkeeper_id", "client_name", "notes", "is_active", "state_province"];
+  const allowed = ["status", "assigned_bookkeeper_id", "due_date", "client_name", "notes", "is_active", "state_province"];
   for (const k of allowed) {
     if (k in body) updates[k] = body[k];
   }

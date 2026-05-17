@@ -45,6 +45,7 @@ interface ClientRow {
   active_rules: number;
   last_cleanup_at: string | null;
   stripe_connection_status: string | null;
+  due_date: string | null;
 }
 
 interface Bookkeeper {
@@ -423,6 +424,8 @@ function ClientRow({
 
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [assignMenuOpen, setAssignMenuOpen] = useState(false);
+  const [pendingAssignee, setPendingAssignee] = useState<{ id: string; name: string } | null>(null);
+  const [pendingDueDate, setPendingDueDate] = useState("");
   const [stripeLoading, setStripeLoading] = useState(false);
   const [stripeCopied, setStripeCopied] = useState(false);
   const [stripeError, setStripeError] = useState("");
@@ -550,14 +553,26 @@ function ClientRow({
           className="flex items-center gap-2 disabled:cursor-default"
         >
           {client.assigned_bookkeeper_name ? (
-            <>
-              <div className="rounded-full flex items-center justify-center font-bold text-[10px] flex-shrink-0 w-6 h-6 bg-teal-light text-teal">
-                {client.assigned_bookkeeper_name.charAt(0)}
+            <div>
+              <div className="flex items-center gap-1.5">
+                <div className="rounded-full flex items-center justify-center font-bold text-[10px] flex-shrink-0 w-6 h-6 bg-teal-light text-teal">
+                  {client.assigned_bookkeeper_name.charAt(0)}
+                </div>
+                <span className="text-xs font-medium text-navy truncate">
+                  {client.assigned_bookkeeper_name}
+                </span>
               </div>
-              <span className="text-xs font-medium text-navy truncate">
-                {client.assigned_bookkeeper_name}
-              </span>
-            </>
+              {client.due_date && (() => {
+                const daysLeft = Math.ceil((new Date(client.due_date).getTime() - Date.now()) / 86400000);
+                return (
+                  <div className={`text-[10px] mt-0.5 font-medium ${
+                    daysLeft < 0 ? "text-red-600" : daysLeft <= 1 ? "text-amber-600" : "text-ink-slate"
+                  }`}>
+                    {daysLeft < 0 ? `Overdue ${Math.abs(daysLeft)}d` : daysLeft === 0 ? "Due today" : daysLeft === 1 ? "Due tomorrow" : `Due ${new Date(client.due_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                  </div>
+                );
+              })()}
+            </div>
           ) : (
             <span className="text-xs italic text-ink-light">Unassigned</span>
           )}
@@ -566,35 +581,78 @@ function ClientRow({
 
         {assignMenuOpen && (
           <>
-            <div className="fixed inset-0 z-10" onClick={() => setAssignMenuOpen(false)} />
-            <div className="absolute left-0 top-full mt-1 z-20 rounded-lg shadow-lg overflow-hidden bg-white border border-gray-200 min-w-[180px] max-h-[300px] overflow-y-auto">
-              <button
-                onClick={() => {
-                  onUpdate({ assigned_bookkeeper_id: null });
-                  setAssignMenuOpen(false);
-                }}
-                className="w-full px-3 py-2 text-left text-xs italic text-ink-slate hover:bg-teal-lighter"
-              >
-                Unassign
-              </button>
-              {bookkeepers.map((b) => (
-                <button
-                  key={b.id}
-                  onClick={() => {
-                    onUpdate({ assigned_bookkeeper_id: b.id });
-                    setAssignMenuOpen(false);
-                  }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-teal-lighter text-navy"
-                >
-                  <div className="rounded-full flex items-center justify-center font-bold text-[10px] flex-shrink-0 w-5 h-5 bg-teal-light text-teal">
-                    {b.full_name.charAt(0)}
+            <div
+              className="fixed inset-0 z-10"
+              onClick={() => { setAssignMenuOpen(false); setPendingAssignee(null); setPendingDueDate(""); }}
+            />
+            <div className="absolute left-0 top-full mt-1 z-20 rounded-lg shadow-lg bg-white border border-gray-200 min-w-[210px]">
+              {!pendingAssignee ? (
+                // Step 1: pick bookkeeper
+                <div className="overflow-y-auto max-h-[280px]">
+                  <button
+                    onClick={() => {
+                      onUpdate({ assigned_bookkeeper_id: null, due_date: null } as any);
+                      setAssignMenuOpen(false);
+                    }}
+                    className="w-full px-3 py-2 text-left text-xs italic text-ink-slate hover:bg-teal-lighter"
+                  >
+                    Unassign
+                  </button>
+                  {bookkeepers.map((b) => (
+                    <button
+                      key={b.id}
+                      onClick={() => setPendingAssignee({ id: b.id, name: b.full_name })}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-teal-lighter text-navy"
+                    >
+                      <div className="rounded-full flex items-center justify-center font-bold text-[10px] flex-shrink-0 w-5 h-5 bg-teal-light text-teal">
+                        {b.full_name.charAt(0)}
+                      </div>
+                      {b.full_name}
+                      {b.id === client.assigned_bookkeeper_id && (
+                        <CheckCircle2 size={11} className="ml-auto text-teal" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                // Step 2: set due date
+                <div className="p-3">
+                  <div className="text-xs font-semibold text-navy mb-1">
+                    Assign to {pendingAssignee.name}
                   </div>
-                  {b.full_name}
-                  {b.id === client.assigned_bookkeeper_id && (
-                    <CheckCircle2 size={11} className="ml-auto text-teal" />
-                  )}
-                </button>
-              ))}
+                  <div className="text-[10px] text-ink-slate mb-1.5">
+                    Due date <span className="text-red-500">*</span>
+                  </div>
+                  <input
+                    type="date"
+                    value={pendingDueDate}
+                    min={new Date().toISOString().split("T")[0]}
+                    onChange={(e) => setPendingDueDate(e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded-md mb-2.5 focus:outline-none focus:ring-1 focus:ring-teal"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { setPendingAssignee(null); setPendingDueDate(""); }}
+                      className="flex-1 px-2 py-1.5 text-xs border border-gray-200 rounded-md hover:bg-gray-50"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!pendingDueDate) return;
+                        onUpdate({ assigned_bookkeeper_id: pendingAssignee.id, due_date: pendingDueDate } as any);
+                        setAssignMenuOpen(false);
+                        setPendingAssignee(null);
+                        setPendingDueDate("");
+                      }}
+                      disabled={!pendingDueDate}
+                      className="flex-1 px-2 py-1.5 text-xs font-semibold bg-teal text-white rounded-md hover:bg-teal-dark disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Assign
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </>
         )}

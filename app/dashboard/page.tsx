@@ -57,6 +57,7 @@ export default async function DashboardPage() {
     avgDurationRes,
     bookkeepersRes,
     stripeCountRes,
+    assignedClientsRes,
   ] = await Promise.all([
     service.from("users").select("role, full_name").eq("id", user!.id).single(),
 
@@ -74,12 +75,12 @@ export default async function DashboardPage() {
 
     service
       .from("coa_jobs")
-      .select("id, status, created_at, updated_at, bookkeeper_id, client_links!client_link_id(client_name)")
+      .select("id, status, created_at, updated_at, bookkeeper_id, client_link_id, client_links!client_link_id(client_name)")
       .in("status", ACTIVE_STATUSES),
 
     service
       .from("reclass_jobs")
-      .select("id, status, created_at, updated_at, bookkeeper_id, client_links!client_link_id(client_name)")
+      .select("id, status, created_at, updated_at, bookkeeper_id, client_link_id, client_links!client_link_id(client_name)")
       .in("status", ACTIVE_STATUSES),
 
     service
@@ -107,11 +108,20 @@ export default async function DashboardPage() {
       .select("id", { count: "exact", head: true })
       .eq("stripe_connection_status", "connected")
       .eq("is_active", true),
+
+    // Assigned clients for junior view — ordered by due date soonest first
+    service
+      .from("client_links")
+      .select("id, client_name, due_date, status")
+      .eq("assigned_bookkeeper_id", user!.id)
+      .eq("is_active", true)
+      .order("due_date", { ascending: true }),
   ]);
 
   const profile = profileRes.data;
   const isSenior = profile && ["admin", "lead"].includes(profile.role);
   const isAdmin = profile?.role === "admin";
+  const isJunior = profile?.role === "bookkeeper";
 
   // Flagged counts — senior only, second round-trip is fine since it's conditional
   let flaggedCounts = { coa: 0, reclass: 0, stripe: 0 };
@@ -159,6 +169,25 @@ export default async function DashboardPage() {
   const allActiveJobs = [...allCoaJobs, ...allReclassJobs];
 
   const myJobs = allActiveJobs.filter((j) => j.bookkeeper_id === user!.id);
+
+  // Map client_link_id → active job for the junior "resume vs start" CTA
+  const activeJobByClientId = new Map<string, { href: string; status: string; jobType: string }>();
+  for (const job of allActiveJobs) {
+    if (!activeJobByClientId.has((job as any).client_link_id)) {
+      activeJobByClientId.set((job as any).client_link_id, {
+        href: job.href,
+        status: job.status,
+        jobType: job.jobType,
+      });
+    }
+  }
+
+  const myAssignedClients = (assignedClientsRes.data || []) as {
+    id: string;
+    client_name: string;
+    due_date: string | null;
+    status: string;
+  }[];
 
   const stalledJobs = allActiveJobs.filter((j) => {
     const ref = j.updated_at || j.created_at;
@@ -267,61 +296,148 @@ export default async function DashboardPage() {
           })}
         </div>
 
-        {/* ─── My Work Queue ─── */}
-        <div className="rounded-xl bg-white border border-gray-200 overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-200">
-            <h2 className="text-base font-bold text-navy">My Work Queue</h2>
-            <p className="text-xs text-ink-slate mt-0.5">
-              {myJobs.length === 0
-                ? "Nothing in progress — queue is clear"
-                : `${myJobs.length} job${myJobs.length !== 1 ? "s" : ""} in progress`}
-            </p>
-          </div>
-          {myJobs.length === 0 ? (
-            <div className="px-5 py-8 text-center">
-              <CheckCircle2 size={22} className="text-teal mx-auto mb-2" />
-              <p className="text-sm text-ink-slate">Start a new cleanup or pick up a stalled job below.</p>
+        {/* ─── My Clients (junior) / My Work Queue (senior+admin) ─── */}
+        {isJunior ? (
+          <div className="rounded-xl bg-white border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-200">
+              <h2 className="text-base font-bold text-navy">My Clients</h2>
+              <p className="text-xs text-ink-slate mt-0.5">
+                {myAssignedClients.length === 0
+                  ? "No clients assigned to you yet"
+                  : `${myAssignedClients.length} client${myAssignedClients.length !== 1 ? "s" : ""} assigned · sorted by due date`}
+              </p>
             </div>
-          ) : (
-            <div>
-              {myJobs.map((job) => {
-                const ref = job.updated_at || job.created_at;
-                const daysOld = ref ? daysBetween(ref) : null;
-                const isStalled = daysOld !== null && daysOld >= 7;
-                return (
-                  <Link
-                    key={job.id}
-                    href={job.href}
-                    className="flex items-center px-5 py-3.5 hover:bg-teal-lighter transition-colors border-b border-gray-100 last:border-0"
-                  >
-                    <div className="rounded-lg flex items-center justify-center font-bold text-sm flex-shrink-0 mr-4 w-9 h-9 bg-teal-light text-teal">
-                      {job.clientName.charAt(0)}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-semibold text-sm text-navy">{job.clientName}</div>
-                      <div className="text-xs text-ink-slate mt-0.5">
-                        {job.jobType === "coa" ? "COA Cleanup" : "Reclassify"} ·{" "}
-                        {STATUS_LABEL[job.status] || job.status}
+            {myAssignedClients.length === 0 ? (
+              <div className="px-5 py-8 text-center">
+                <CheckCircle2 size={22} className="text-teal mx-auto mb-2" />
+                <p className="text-sm text-ink-slate">A manager will assign clients to you here.</p>
+              </div>
+            ) : (
+              <div>
+                {myAssignedClients.map((c) => {
+                  const activeJob = activeJobByClientId.get(c.id);
+                  const daysLeft = c.due_date
+                    ? Math.ceil((new Date(c.due_date).getTime() - Date.now()) / 86400000)
+                    : null;
+                  const isOverdue = daysLeft !== null && daysLeft < 0;
+                  const isDueSoon = daysLeft !== null && daysLeft >= 0 && daysLeft <= 1;
+
+                  return (
+                    <div
+                      key={c.id}
+                      className="flex items-center px-5 py-3.5 border-b border-gray-100 last:border-0"
+                    >
+                      <div className="rounded-lg flex items-center justify-center font-bold text-sm flex-shrink-0 mr-4 w-9 h-9 bg-teal-light text-teal">
+                        {c.client_name.charAt(0)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-sm text-navy">{c.client_name}</div>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          {daysLeft !== null && (
+                            <span
+                              className={`text-[11px] font-semibold ${
+                                isOverdue
+                                  ? "text-red-600"
+                                  : isDueSoon
+                                  ? "text-amber-600"
+                                  : "text-ink-slate"
+                              }`}
+                            >
+                              {isOverdue
+                                ? `Overdue by ${Math.abs(daysLeft)}d`
+                                : daysLeft === 0
+                                ? "Due today"
+                                : daysLeft === 1
+                                ? "Due tomorrow"
+                                : `Due ${new Date(c.due_date!).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                            </span>
+                          )}
+                          {activeJob && (
+                            <span className="text-[11px] text-ink-slate">
+                              · {activeJob.jobType === "coa" ? "COA" : "Reclass"} in progress
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex-shrink-0">
+                        {activeJob ? (
+                          <Link
+                            href={activeJob.href}
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-teal hover:text-teal-dark"
+                          >
+                            Resume <ArrowRight size={12} />
+                          </Link>
+                        ) : (
+                          <Link
+                            href={`/jobs/new?client=${c.id}`}
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-navy hover:text-teal"
+                          >
+                            Start <ArrowRight size={12} />
+                          </Link>
+                        )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      {isStalled ? (
-                        <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
-                          Stalled {daysOld}d
-                        </span>
-                      ) : daysOld !== null ? (
-                        <span className="text-xs text-ink-slate">
-                          {daysOld === 0 ? "Today" : `${daysOld}d ago`}
-                        </span>
-                      ) : null}
-                      <ArrowRight size={14} className="text-ink-light" />
-                    </div>
-                  </Link>
-                );
-              })}
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="rounded-xl bg-white border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-200">
+              <h2 className="text-base font-bold text-navy">My Work Queue</h2>
+              <p className="text-xs text-ink-slate mt-0.5">
+                {myJobs.length === 0
+                  ? "Nothing in progress — queue is clear"
+                  : `${myJobs.length} job${myJobs.length !== 1 ? "s" : ""} in progress`}
+              </p>
             </div>
-          )}
-        </div>
+            {myJobs.length === 0 ? (
+              <div className="px-5 py-8 text-center">
+                <CheckCircle2 size={22} className="text-teal mx-auto mb-2" />
+                <p className="text-sm text-ink-slate">Start a new cleanup or pick up a stalled job below.</p>
+              </div>
+            ) : (
+              <div>
+                {myJobs.map((job) => {
+                  const ref = job.updated_at || job.created_at;
+                  const daysOld = ref ? daysBetween(ref) : null;
+                  const isStalled = daysOld !== null && daysOld >= 7;
+                  return (
+                    <Link
+                      key={job.id}
+                      href={job.href}
+                      className="flex items-center px-5 py-3.5 hover:bg-teal-lighter transition-colors border-b border-gray-100 last:border-0"
+                    >
+                      <div className="rounded-lg flex items-center justify-center font-bold text-sm flex-shrink-0 mr-4 w-9 h-9 bg-teal-light text-teal">
+                        {job.clientName.charAt(0)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-sm text-navy">{job.clientName}</div>
+                        <div className="text-xs text-ink-slate mt-0.5">
+                          {job.jobType === "coa" ? "COA Cleanup" : "Reclassify"} ·{" "}
+                          {STATUS_LABEL[job.status] || job.status}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        {isStalled ? (
+                          <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                            Stalled {daysOld}d
+                          </span>
+                        ) : daysOld !== null ? (
+                          <span className="text-xs text-ink-slate">
+                            {daysOld === 0 ? "Today" : `${daysOld}d ago`}
+                          </span>
+                        ) : null}
+                        <ArrowRight size={14} className="text-ink-light" />
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ─── Needs Attention ─── */}
         {hasAttentionItems && (

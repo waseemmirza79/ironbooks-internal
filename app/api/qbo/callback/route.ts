@@ -111,6 +111,17 @@ export async function GET(request: Request) {
         );
       }
 
+      // Check if connecting user is a junior bookkeeper — auto-assign with 2-day due date
+      const { data: connectingUser } = await serviceClient
+        .from("users")
+        .select("role")
+        .eq("id", user.id)
+        .single();
+      const isJunior = connectingUser?.role === "bookkeeper";
+      const autoDueDate = isJunior
+        ? new Date(Date.now() + 2 * 86400000).toISOString().split("T")[0]
+        : null;
+
       // Fresh insert — new QBO company we've never seen before
       const { data: inserted, error: insertErr } = await serviceClient
         .from("client_links")
@@ -126,7 +137,11 @@ export async function GET(request: Request) {
           client_email: clientEmail,
           double_client_id: `pending_${realmId}`,
           linked_by: user.id,
-        })
+          ...(isJunior && {
+            assigned_bookkeeper_id: user.id,
+            due_date: autoDueDate,
+          }),
+        } as any)
         .select("id")
         .single();
 
