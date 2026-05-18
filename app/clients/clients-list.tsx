@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, Component, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -336,14 +336,15 @@ export function ClientsList({
           </div>
 
           {filtered.map((client) => (
-            <ClientRow
-              key={client.id}
-              client={client}
-              bookkeepers={bookkeepers}
-              canEdit={canEdit}
-              onUpdate={(updates) => updateClient(client.id, updates)}
-              onDelete={canEdit ? () => setDeleteTarget(client) : undefined}
-            />
+            <RowErrorBoundary key={client.id} clientName={client.client_name || "Unknown"}>
+              <ClientRow
+                client={client}
+                bookkeepers={bookkeepers}
+                canEdit={canEdit}
+                onUpdate={(updates) => updateClient(client.id, updates)}
+                onDelete={canEdit ? () => setDeleteTarget(client) : undefined}
+              />
+            </RowErrorBoundary>
           ))}
         </div>
       )}
@@ -352,14 +353,15 @@ export function ClientsList({
       {filtered.length > 0 && view === "grid" && (
         <div className="grid grid-cols-3 gap-4">
           {filtered.map((client) => (
-            <ClientCard
-              key={client.id}
-              client={client}
-              bookkeepers={bookkeepers}
-              canEdit={canEdit}
-              onUpdate={(updates) => updateClient(client.id, updates)}
-              onDelete={canEdit ? () => setDeleteTarget(client) : undefined}
-            />
+            <RowErrorBoundary key={client.id} clientName={client.client_name || "Unknown"}>
+              <ClientCard
+                client={client}
+                bookkeepers={bookkeepers}
+                canEdit={canEdit}
+                onUpdate={(updates) => updateClient(client.id, updates)}
+                onDelete={canEdit ? () => setDeleteTarget(client) : undefined}
+              />
+            </RowErrorBoundary>
           ))}
         </div>
       )}
@@ -513,7 +515,7 @@ function ClientRow({
     >
       <div className="flex items-center gap-3 min-w-0">
         <div className="rounded-lg flex items-center justify-center font-bold text-sm flex-shrink-0 w-9 h-9 bg-teal-light text-teal">
-          {client.client_name.charAt(0)}
+          {(client.client_name || "?").charAt(0)}
         </div>
         <div className="min-w-0">
           <div className="font-semibold text-sm text-navy truncate">{client.client_name}</div>
@@ -747,35 +749,38 @@ function ClientRow({
                 client has a resumable COA job (executing, in_review, failed,
                 cancelled). The destination page handles whether to show the
                 Execute button or the post-mortem with Revert/Report. */}
-            {client.resumable_job && (
-              <Link
-                href={
-                  client.resumable_job.status === "executing"
-                    ? `/jobs/${client.resumable_job.id}/execute`
-                    : `/jobs/${client.resumable_job.id}/review`
-                }
-                className={`inline-flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold ${
-                  client.resumable_job.status === "failed" ||
-                  client.resumable_job.status === "cancelled"
-                    ? "bg-red-100 text-red-700 hover:bg-red-200"
-                    : client.resumable_job.status === "executing"
-                    ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
-                    : "bg-purple-100 text-purple-700 hover:bg-purple-200"
-                }`}
-                title={
-                  client.resumable_job.status === "failed"
-                    ? "Failed cleanup — resume from where it errored (completed actions are skipped)"
-                    : client.resumable_job.status === "cancelled"
-                    ? "Cancelled cleanup — review or restart from the existing job"
-                    : client.resumable_job.status === "executing"
-                    ? "Cleanup is running right now — view live progress"
-                    : "Cleanup in review — finish or execute"
-                }
-              >
-                <Play size={10} />
-                Continue
-              </Link>
-            )}
+            {/* Defensive — verify shape and id before rendering. A malformed
+                resumable_job (e.g. missing id) would otherwise render a
+                link to /jobs/undefined which is harmless but cluttered. */}
+            {client.resumable_job &&
+              typeof client.resumable_job === "object" &&
+              typeof client.resumable_job.id === "string" &&
+              client.resumable_job.id.length > 0 && (
+                <Link
+                  href={
+                    client.resumable_job.status === "executing"
+                      ? `/jobs/${client.resumable_job.id}/execute`
+                      : `/jobs/${client.resumable_job.id}/review`
+                  }
+                  className={`inline-flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold ${
+                    client.resumable_job.status === "failed"
+                      ? "bg-red-100 text-red-700 hover:bg-red-200"
+                      : client.resumable_job.status === "executing"
+                      ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
+                      : "bg-purple-100 text-purple-700 hover:bg-purple-200"
+                  }`}
+                  title={
+                    client.resumable_job.status === "failed"
+                      ? "Failed cleanup — resume from where it errored (completed actions are skipped)"
+                      : client.resumable_job.status === "executing"
+                      ? "Cleanup is running right now — view live progress"
+                      : "Cleanup in review — finish or execute"
+                  }
+                >
+                  <Play size={10} />
+                  Continue
+                </Link>
+              )}
             <Link
               href={`/jobs/new?client=${client.id}`}
               className="px-2 py-1 rounded text-[10px] font-semibold bg-teal-light text-teal hover:bg-teal/20"
@@ -890,7 +895,7 @@ function ClientCard({
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="rounded-lg flex items-center justify-center font-bold text-base flex-shrink-0 w-10 h-10 bg-teal-light text-teal">
-            {client.client_name.charAt(0)}
+            {(client.client_name || "?").charAt(0)}
           </div>
           <div className="min-w-0">
             <div className="font-bold text-sm text-navy truncate">{client.client_name}</div>
@@ -1090,6 +1095,49 @@ function DeleteConfirmModal({
       </div>
     </div>
   );
+}
+
+/**
+ * Per-row error boundary. If any single ClientRow throws during render
+ * (bad data, undefined property access, etc.), the row renders a small
+ * red "failed to render" placeholder instead of crashing the whole page.
+ * The error message is also logged to the browser console so we can
+ * still diagnose, but the bookkeeper can still use the rest of the list.
+ */
+class RowErrorBoundary extends Component<
+  { children: ReactNode; clientName: string },
+  { hasError: boolean; error: Error | null }
+> {
+  state: { hasError: boolean; error: Error | null } = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, info: unknown) {
+    console.error(
+      `[clients-list] Row for "${this.props.clientName}" crashed:`,
+      error,
+      info
+    );
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="px-5 py-3 border-b border-red-100 bg-red-50 text-xs text-red-800 flex items-center justify-between gap-3">
+          <span>
+            <strong>{this.props.clientName}</strong> — couldn't render this row.{" "}
+            <span className="text-red-600">
+              {this.state.error?.message || "Unknown error"}
+            </span>
+          </span>
+          <span className="text-[10px] text-red-600">Other rows still work; see console for details.</span>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function formatRelativeDate(iso: string): string {
