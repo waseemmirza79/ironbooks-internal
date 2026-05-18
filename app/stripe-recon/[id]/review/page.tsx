@@ -3,7 +3,8 @@ import { TopBar } from "@/components/TopBar";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { notFound, redirect } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import Link from "next/link";
+import { CheckCircle2, Loader2 } from "lucide-react";
 import { StripeReconReview } from "./review-client";
 
 export default async function StripeReconReviewPage({
@@ -52,6 +53,127 @@ export default async function StripeReconReviewPage({
     .select("*")
     .eq("job_id", id)
     .order("deposit_date");
+
+  // Zero-deposits short-circuit: the recon job already self-completed
+  // (lib/api/stripe-recon/discover sets status='complete' when no Stripe-
+  // origin deposits exist in the range). Render a friendly summary with
+  // CTAs to extend the date range or finish out the cleanup, instead of
+  // dropping the bookkeeper into an empty match grid.
+  const isNoDeposits =
+    job.status === "complete" &&
+    (job.stripe_deposits_found ?? 0) === 0 &&
+    (!matches || matches.length === 0);
+
+  if (isNoDeposits) {
+    // Suggest extending back another calendar year from the original start.
+    // e.g. range was 2026-01-01 → 2026-05-18, suggest 2025-01-01 → 2026-05-18.
+    const origStart = job.date_range_start as unknown as string; // "YYYY-MM-DD"
+    const origEnd = job.date_range_end as unknown as string;
+    const [yStr, mStr, dStr] = (origStart || "").split("-");
+    const extendedStart = yStr
+      ? `${Number(yStr) - 1}-${mStr}-${dStr}`
+      : origStart;
+
+    const extendQs = new URLSearchParams({
+      client: job.client_link_id as unknown as string,
+      start: extendedStart,
+      end: origEnd,
+      extending_from: id,
+      ...(job.reclass_job_id
+        ? { reclass_job_id: job.reclass_job_id as unknown as string }
+        : {}),
+    }).toString();
+
+    const customQs = new URLSearchParams({
+      client: job.client_link_id as unknown as string,
+      ...(job.reclass_job_id
+        ? { reclass_job_id: job.reclass_job_id as unknown as string }
+        : {}),
+    }).toString();
+
+    const jobWarnings: string[] = Array.isArray((job as any).warnings)
+      ? ((job as any).warnings as any[]).filter((w) => typeof w === "string")
+      : [];
+
+    return (
+      <AppShell>
+        <TopBar
+          title={`Stripe Reconciliation — ${clientLink?.client_name}`}
+          subtitle="No Stripe deposits in range"
+        />
+        <WorkflowStepper
+          currentStep="stripe"
+          currentState="active"
+          completedSteps={["coa", "reclass", "rules"]}
+        />
+        <div className="px-8 py-6 max-w-2xl">
+          <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-5">
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="text-teal flex-shrink-0 mt-0.5" size={24} />
+              <div>
+                <h2 className="text-lg font-bold text-navy">
+                  No Stripe deposits found
+                </h2>
+                <p className="text-sm text-ink-slate mt-1">
+                  We scanned QBO from{" "}
+                  <span className="font-semibold">{origStart}</span> to{" "}
+                  <span className="font-semibold">{origEnd}</span> and didn&apos;t
+                  find any Stripe-origin deposits. There&apos;s nothing to
+                  reconcile in this range.
+                </p>
+              </div>
+            </div>
+
+            {jobWarnings.length > 0 && (
+              <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-1">
+                {jobWarnings.map((w, i) => (
+                  <div key={i}>{w}</div>
+                ))}
+              </div>
+            )}
+
+            <div className="pt-2 border-t border-gray-100 space-y-3">
+              <p className="text-sm font-semibold text-navy">
+                Want to check a wider window?
+              </p>
+              <p className="text-xs text-ink-slate">
+                Sometimes Stripe deposits live further back than the cleanup
+                date range, especially if the client only started using Stripe
+                recently or if there&apos;s a gap in QBO categorization.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                <Link
+                  href={`/stripe-recon/new?${extendQs}`}
+                  className="flex-1 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-4 py-2.5 rounded-lg text-center"
+                >
+                  Try one more year back ({extendedStart} → {origEnd})
+                </Link>
+                <Link
+                  href={`/stripe-recon/new?${customQs}`}
+                  className="flex-1 bg-white border border-gray-200 hover:border-gray-300 text-navy text-sm font-semibold px-4 py-2.5 rounded-lg text-center"
+                >
+                  Pick a custom range
+                </Link>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-gray-100">
+              <Link
+                href={
+                  job.reclass_job_id
+                    ? `/reclass/${job.reclass_job_id}/execute`
+                    : `/clients`
+                }
+                className="text-sm text-ink-slate hover:text-navy underline"
+              >
+                ← Skip and finish cleanup (nothing to reconcile)
+              </Link>
+            </div>
+          </div>
+        </div>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell>

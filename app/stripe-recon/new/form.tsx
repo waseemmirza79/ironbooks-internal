@@ -27,6 +27,7 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
 
   const [clientLinkId, setClientLinkId] = useState<string>("");
   const [reclassJobId, setReclassJobId] = useState<string | null>(null);
+  const [extendingFromJobId, setExtendingFromJobId] = useState<string | null>(null);
 
   const [datePresetId, setDatePresetId] = useState<string>("fy");
   const [datePresets, setDatePresets] = useState<DateRangePreset[]>([]);
@@ -36,6 +37,10 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
 
   const [dateRangeStart, setDateRangeStart] = useState<string>("");
   const [dateRangeEnd, setDateRangeEnd] = useState<string>("");
+  // When the user lands here via the "extend" flow from a 0-deposit recon,
+  // we honor start/end from the URL and skip the auto-preset overwrite that
+  // would otherwise clobber them when datePresets finish loading.
+  const [prefilledFromUrl, setPrefilledFromUrl] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string>("");
@@ -53,12 +58,25 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
     setMethod(isStripeConnected ? "stripe_api" : "qbo_invoice_match");
   }, [isStripeConnected]);
 
-  // Auto-init from query string (handoff from reclass)
+  // Auto-init from query string (handoff from reclass, or from the
+  // "extend" CTA on a 0-deposit recon review).
   useEffect(() => {
     const cId = searchParams.get("client");
     const rId = searchParams.get("reclass_job_id");
+    const sd = searchParams.get("start");
+    const ed = searchParams.get("end");
+    const ef = searchParams.get("extending_from");
     if (cId && clientLinks.some((c) => c.id === cId)) setClientLinkId(cId);
     if (rId) setReclassJobId(rId);
+    if (ef) setExtendingFromJobId(ef);
+    // Prefill start/end if provided. We mark prefilledFromUrl so the
+    // "auto-default to FY preset when datePresets load" effect skips its
+    // overwrite for this run.
+    if (sd && ed) {
+      setDateRangeStart(sd);
+      setDateRangeEnd(ed);
+      setPrefilledFromUrl(true);
+    }
   }, [searchParams, clientLinks]);
 
   // Load fiscal year + presets when client is selected
@@ -74,12 +92,21 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
       .then((data) => {
         setDatePresets(data.date_range_presets);
         setFiscalYearStartMonthName(data.company.fiscal_year_start_month_name);
-        const def = data.date_range_presets.find((p: DateRangePreset) => p.id === "fy")
-                 || data.date_range_presets[0];
-        if (def) {
-          setDatePresetId(def.id);
-          setDateRangeStart(def.start);
-          setDateRangeEnd(def.end);
+        // Only auto-apply the FY preset if we didn't get start/end from the
+        // URL — otherwise we'd clobber the bookkeeper's "extend back" choice
+        // the moment company-info finishes loading.
+        if (!prefilledFromUrl) {
+          const def = data.date_range_presets.find((p: DateRangePreset) => p.id === "fy")
+                   || data.date_range_presets[0];
+          if (def) {
+            setDatePresetId(def.id);
+            setDateRangeStart(def.start);
+            setDateRangeEnd(def.end);
+          }
+        } else {
+          // Mark as "custom" so the preset-switch effect below doesn't
+          // overwrite the URL dates either.
+          setDatePresetId("__custom__");
         }
       })
       .catch((e) => setPresetsError(e.message))
@@ -140,6 +167,14 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
         {reclassJobId && (
           <div className="p-3 rounded-lg bg-teal-lighter border border-teal/30 text-xs text-navy">
             ↪ Continuing from a transaction reclassification job.
+          </div>
+        )}
+
+        {extendingFromJobId && (
+          <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900">
+            ↪ Extending the search window — the previous recon found 0 Stripe
+            deposits. Date range below is pre-filled to look one year further
+            back.
           </div>
         )}
 
