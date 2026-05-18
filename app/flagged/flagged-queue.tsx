@@ -233,37 +233,177 @@ export function FlaggedQueue({
   );
 }
 
-function buildContext(item: FlaggedItem): string {
-  const parts: string[] = [];
+/**
+ * Decision kinds a flagged item can fall into. Drives the card's title,
+ * fact rows, and which button set to show.
+ *
+ *  - qbo_blocked: The system tried to act and QBO refused (system-protected
+ *    account, account has historical transactions, name collision, etc.).
+ *    No Approve/Override path the API can take — bookkeeper either ignores
+ *    it or fixes it manually in QBO. Buttons collapse to "Dismiss".
+ *
+ *  - ai_uncertain: AI's confidence was below the auto-approve threshold and
+ *    the bookkeeper's actual judgment is needed. Approve / Override / Reject
+ *    all make sense.
+ *
+ *  - info_only: Something happened that's worth knowing but isn't actionable
+ *    here (e.g. "no QBO invoices within ±30 days of any Stripe deposit" for
+ *    a client that doesn't invoice through QBO). Just dismiss.
+ */
+type FlagKind = "qbo_blocked" | "ai_uncertain" | "info_only";
+
+function classifyFlag(item: FlaggedItem): FlagKind {
+  const reason = `${item.flagged_reason || ""} ${item.ai_reasoning || ""}`.toLowerCase();
+
+  // QBO platform refusals — these phrases come from lib/executor.ts and
+  // lib/qbo.ts when QBO returns a 6xxx error or refuses an action.
+  const qboBlockedPatterns = [
+    "system-protected",
+    "cannot be modified via api",
+    "qbo requires manual",
+    "manual cleanup required",
+    "qbo blocks api",
+    "qbo rejected",
+    "skipping",
+  ];
+  if (qboBlockedPatterns.some((p) => reason.includes(p))) {
+    return "qbo_blocked";
+  }
+
+  // Stripe recon "zero candidates" case — bookkeeper acknowledges and
+  // either sends a Connect link or moves on, no per-row decision needed.
+  if (item.type === "stripe" && /no qbo invoices.*within/.test(reason)) {
+    return "info_only";
+  }
+
+  return "ai_uncertain";
+}
+
+interface FlagSummary {
+  kind: FlagKind;
+  /** Short banner headline above the card body. */
+  title: string;
+  /** What the system tried to do (or what's being asked), in plain English. */
+  whatWasAttempted: string | null;
+  /** The structured fact rows shown in the card body. */
+  facts: Array<{ label: string; value: string }>;
+  /** Plain-English next step the bookkeeper should take. */
+  nextStep: string;
+}
+
+function summarizeFlag(item: FlaggedItem): FlagSummary {
+  const kind = classifyFlag(item);
+
   if (item.type === "coa") {
-    parts.push(`Account "${item.headline}"${item.subheadline ? ` (${item.subheadline})` : ""}.`);
+    const facts: Array<{ label: string; value: string }> = [];
+    facts.push({ label: "Account", value: item.headline });
+    if (item.subheadline) facts.push({ label: "Type", value: item.subheadline });
     if (item.transaction_count !== null && item.transaction_count !== undefined) {
-      parts.push(`${item.transaction_count} transactions on it.`);
-    }
-    if (item.flagged_reason) {
-      parts.push(`AI flagged: ${item.flagged_reason}`);
-    } else if (item.ai_reasoning) {
-      parts.push(`AI reasoning: ${item.ai_reasoning}`);
+      facts.push({
+        label: "Transactions",
+        value: item.transaction_count === 0
+          ? "0 (none in cleanup range)"
+          : String(item.transaction_count),
+      });
     }
     if (item.ai_suggested_target) {
-      parts.push(`AI suggested target: "${item.ai_suggested_target}".`);
+      facts.push({ label: "AI wanted to map to", value: `"${item.ai_suggested_target}"` });
     }
-  } else if (item.type === "reclass") {
-    const amt = item.amount !== null ? `$${Math.abs(item.amount).toFixed(2)}` : "";
-    parts.push(`${item.headline} charged ${amt} on ${item.date}.`);
-    if (item.subheadline) parts.push(`Currently in "${item.subheadline}".`);
-    if (item.ai_reasoning) parts.push(`AI reasoning: ${item.ai_reasoning}`);
-  } else if (item.type === "stripe") {
-    const amt = item.amount !== null ? `$${item.amount.toFixed(2)}` : "";
-    parts.push(`Stripe deposit of ${amt} on ${item.date}.`);
-    if (item.subheadline && item.subheadline !== "No customers matched") {
-      parts.push(`Customers identified: ${item.subheadline}.`);
-    } else {
-      parts.push(`No customer invoices matched.`);
+    if (item.flagged_reason || item.ai_reasoning) {
+      facts.push({
+        label: kind === "qbo_blocked" ? "Why QBO blocked it" : "Why AI flagged it",
+        value: item.flagged_reason || item.ai_reasoning || "",
+      });
     }
-    if (item.ai_reasoning) parts.push(`AI reasoning: ${item.ai_reasoning}`);
+
+    if (kind === "qbo_blocked") {
+      return {
+        kind,
+        title: "QBO blocked this — needs manual handling",
+        whatWasAttempted: item.ai_suggested_target
+          ? `Tried to map "${item.headline}" → "${item.ai_suggested_target}"`
+          : `Tried to modify "${item.headline}"`,
+        facts,
+        nextStep:
+          item.transaction_count && item.transaction_count > 0
+            ? `Open this account in QBO and either reclassify its ${item.transaction_count} transactions then inactivate, or rename manually. Click Dismiss once handled (or to ignore).`
+            : `This account can't be modified via the QBO API (system-protected or platform-locked). Click Dismiss to remove from the queue — no further action needed.`,
+      };
+    }
+
+    return {
+      kind,
+      title: "AI needs your input — confidence below auto-approve",
+      whatWasAttempted: item.ai_suggested_target
+        ? `Wants to map "${item.headline}" → "${item.ai_suggested_target}"`
+        : `Unsure how to handle "${item.headline}"`,
+      facts,
+      nextStep:
+        "Approve the AI's suggestion, Override with a different target, or Reject to leave the account as-is.",
+    };
   }
-  return parts.join(" ");
+
+  if (item.type === "reclass") {
+    const amt = item.amount !== null ? `$${Math.abs(item.amount).toFixed(2)}` : "—";
+    const facts: Array<{ label: string; value: string }> = [
+      { label: "Vendor", value: item.headline },
+      { label: "Amount", value: amt },
+      ...(item.date ? [{ label: "Date", value: item.date }] : []),
+      ...(item.subheadline ? [{ label: "Currently in", value: `"${item.subheadline}"` }] : []),
+      ...(item.ai_suggested_target
+        ? [{ label: "AI wants to move to", value: `"${item.ai_suggested_target}"` }]
+        : []),
+      ...(item.ai_reasoning
+        ? [{ label: "AI reasoning", value: item.ai_reasoning }]
+        : []),
+    ];
+    return {
+      kind: "ai_uncertain",
+      title: "Categorize this transaction",
+      whatWasAttempted: item.ai_suggested_target
+        ? `Wants to move ${item.headline} → "${item.ai_suggested_target}"`
+        : `Couldn't confidently categorize ${item.headline}`,
+      facts,
+      nextStep:
+        "Approve the AI's category, Override with a different account, or Reject to leave the transaction where it is.",
+    };
+  }
+
+  // Stripe
+  const amt = item.amount !== null ? `$${item.amount.toFixed(2)}` : "—";
+  const facts: Array<{ label: string; value: string }> = [
+    { label: "Deposit", value: amt },
+    ...(item.date ? [{ label: "Date", value: item.date }] : []),
+    {
+      label: "Customers identified",
+      value: item.subheadline && item.subheadline !== "No customers matched"
+        ? item.subheadline
+        : "None — AI couldn't match invoices",
+    },
+    ...(item.ai_reasoning
+      ? [{ label: "Why AI flagged it", value: item.ai_reasoning }]
+      : []),
+  ];
+
+  if (kind === "info_only") {
+    return {
+      kind,
+      title: "Nothing to match here",
+      whatWasAttempted: null,
+      facts,
+      nextStep:
+        "This client doesn't invoice through QBO (Payment Links / subscriptions). Click Dismiss — the deposit will need a manual handling or Stripe Connect.",
+    };
+  }
+
+  return {
+    kind: "ai_uncertain",
+    title: "Match this Stripe deposit",
+    whatWasAttempted: "Couldn't confidently match this deposit to QBO invoices",
+    facts,
+    nextStep:
+      "Approve the AI's match, Override by picking specific invoices, or Reject to leave the deposit unmatched.",
+  };
 }
 
 function ItemCard({
@@ -281,7 +421,7 @@ function ItemCard({
   const [notes, setNotes] = useState("");
 
   const confidencePct = Math.round((item.ai_confidence || 0) * 100);
-  const context = buildContext(item);
+  const summary = summarizeFlag(item);
 
   async function handle(decision: "approve" | "override" | "reject", target?: string) {
     setBusy(decision);
@@ -292,52 +432,99 @@ function ItemCard({
     }
   }
 
+  // Card accent color follows the flag kind so the eye can scan the queue
+  // and tell "this needs a real decision" from "this just needs dismissing"
+  // without reading the body text.
+  const kindStyles = {
+    qbo_blocked: {
+      iconColor: "text-red-600",
+      titleColor: "text-red-900",
+      bannerBg: "bg-red-50 border-red-200",
+    },
+    ai_uncertain: {
+      iconColor: "text-amber-600",
+      titleColor: "text-amber-900",
+      bannerBg: "bg-amber-50 border-amber-200",
+    },
+    info_only: {
+      iconColor: "text-ink-slate",
+      titleColor: "text-navy",
+      bannerBg: "bg-gray-50 border-gray-200",
+    },
+  }[summary.kind];
+
+  // "AI confidence" only makes sense when the AI's confidence is the
+  // problem. Hide it for QBO platform refusals — there the AI may have
+  // been very confident, QBO just said no.
+  const showConfidence = summary.kind === "ai_uncertain" && confidencePct > 0;
+
   return (
     <div className="px-5 py-4 hover:bg-gray-50 transition-colors">
       <div className="flex items-start gap-4">
         <div className="flex-shrink-0 mt-1">
-          <AlertTriangle size={16} className="text-amber-500" />
+          <AlertTriangle size={16} className={kindStyles.iconColor} />
         </div>
 
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <h4 className="font-bold text-sm text-navy">{item.headline}</h4>
-            {item.amount !== null && (
-              <span className="text-sm font-semibold text-navy">
-                ${Math.abs(item.amount).toFixed(2)}
-              </span>
-            )}
-            {/* Tiny job context — shows which specific job this flag came
-                from so reviewers can disambiguate when one client has
-                multiple jobs of the same source contributing flags. */}
+        <div className="flex-1 min-w-0 space-y-2.5">
+          {/* Row 1: intent header */}
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <h4 className={`font-bold text-sm ${kindStyles.titleColor}`}>
+              {summary.title}
+            </h4>
             <span
               className="text-[10px] font-semibold uppercase tracking-wider text-ink-light"
               title={`Job ${item.job_id.slice(0, 8)} · started ${new Date(item.job_created_at).toLocaleDateString()}`}
             >
               {item.job_status} · {item.bookkeeper_name}
             </span>
-            {confidencePct > 0 && (
+            {showConfidence && (
               <span
                 className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded"
                 style={{
                   color:           confidencePct >= 70 ? "#F59E0B" : "#DC2626",
                   backgroundColor: confidencePct >= 70 ? "#FEF3C7" : "#FEE2E2",
                 }}
+                title="AI's confidence in its own categorization"
               >
                 AI {confidencePct}%
               </span>
             )}
           </div>
 
-          {/* AI context summary */}
-          <div className="rounded-lg p-3 bg-amber-50 border border-amber-100 text-xs text-amber-900 leading-relaxed">
-            <Sparkles size={11} className="inline mr-1 text-amber-600" />
-            {context}
+          {/* Row 2: what was attempted */}
+          {summary.whatWasAttempted && (
+            <div className="text-xs text-ink-slate">
+              <span className="font-semibold text-navy">What happened:</span>{" "}
+              {summary.whatWasAttempted}
+            </div>
+          )}
+
+          {/* Row 3: structured facts */}
+          <div className={`rounded-lg border p-3 ${kindStyles.bannerBg}`}>
+            <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-xs leading-relaxed">
+              {summary.facts.map((f) => (
+                <div key={f.label} className="contents">
+                  <dt className="font-semibold text-navy whitespace-nowrap">
+                    {f.label}:
+                  </dt>
+                  <dd className="text-ink-slate break-words">{f.value}</dd>
+                </div>
+              ))}
+            </dl>
           </div>
 
-          {/* Override input (only when open) */}
-          {overrideOpen && (
-            <div className="mt-3 space-y-2">
+          {/* Row 4: next step prose */}
+          <div className="text-xs text-ink-slate flex items-start gap-1.5">
+            <Sparkles size={11} className="text-teal flex-shrink-0 mt-0.5" />
+            <span>
+              <span className="font-semibold text-navy">What to do: </span>
+              {summary.nextStep}
+            </span>
+          </div>
+
+          {/* Override input (only when open, only for ai_uncertain) */}
+          {overrideOpen && summary.kind === "ai_uncertain" && (
+            <div className="space-y-2">
               <input
                 type="text"
                 value={overrideValue}
@@ -371,33 +558,60 @@ function ItemCard({
             </div>
           )}
 
-          {/* Decision buttons */}
-          {!overrideOpen && (
-            <div className="mt-3 flex items-center gap-2">
+          {/* Decision buttons — set varies by flag kind */}
+          {!overrideOpen && summary.kind === "ai_uncertain" && (
+            <div className="flex items-center gap-2 flex-wrap">
               <button
                 onClick={() => handle("approve")}
                 disabled={!!busy}
                 className="inline-flex items-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold px-3 py-1.5 rounded-md disabled:opacity-50"
-                title="Accept AI's suggestion"
+                title="Use the AI's suggestion as-is"
               >
                 {busy === "approve" ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-                Approve
+                {item.ai_suggested_target
+                  ? `Approve "${item.ai_suggested_target}"`
+                  : "Approve AI suggestion"}
               </button>
               <button
                 onClick={() => setOverrideOpen(true)}
                 disabled={!!busy}
                 className="inline-flex items-center gap-1.5 bg-white hover:bg-gray-50 text-navy border border-gray-200 text-xs font-semibold px-3 py-1.5 rounded-md"
               >
-                <Edit3 size={12} /> Override
+                <Edit3 size={12} /> Pick a different target
               </button>
               <button
                 onClick={() => handle("reject")}
                 disabled={!!busy}
                 className="inline-flex items-center gap-1.5 bg-white hover:bg-red-50 text-red-700 border border-red-200 text-xs font-semibold px-3 py-1.5 rounded-md disabled:opacity-50"
-                title="Reject / keep as-is"
+                title="Leave it as-is and remove from queue"
               >
                 {busy === "reject" ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
-                Reject
+                Leave as-is
+              </button>
+            </div>
+          )}
+
+          {/* qbo_blocked + info_only: just a Dismiss button.
+              Backed by the same /api/flagged/resolve "reject" decision so
+              the row clears from every reviewer's queue. Optional notes
+              capture the audit trail. */}
+          {!overrideOpen && summary.kind !== "ai_uncertain" && (
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Notes (optional — recorded in audit log)"
+                className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-teal outline-none text-xs text-navy"
+              />
+              <button
+                onClick={() => handle("reject")}
+                disabled={!!busy}
+                className="inline-flex items-center gap-1.5 bg-white hover:bg-gray-50 disabled:opacity-60 border border-gray-200 text-navy text-xs font-semibold px-3 py-1.5 rounded-md"
+                title="Acknowledge and remove from the queue"
+              >
+                {busy === "reject" ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                Dismiss from queue
               </button>
             </div>
           )}
