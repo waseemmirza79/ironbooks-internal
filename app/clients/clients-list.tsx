@@ -152,7 +152,7 @@ export function ClientsList({
               ...updates,
               assigned_bookkeeper_name:
                 updates.assigned_bookkeeper_id !== undefined
-                  ? bookkeepers.find((b) => b.id === updates.assigned_bookkeeper_id)?.full_name || null
+                  ? (bookkeepers || []).find((b) => b.id === updates.assigned_bookkeeper_id)?.full_name || null
                   : c.assigned_bookkeeper_name,
             }
           : c
