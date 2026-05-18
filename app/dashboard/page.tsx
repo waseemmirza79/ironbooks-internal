@@ -64,6 +64,8 @@ export default async function DashboardPage() {
     assignedClientsRes,
     pendingStripeTokensRes,
     recentStripeConnectionsRes,
+    readyForCleanupRes,
+    activeCleanupClientsRes,
   ] = await Promise.all([
     service.from("users").select("role, full_name").eq("id", user!.id).single(),
 
@@ -144,6 +146,35 @@ export default async function DashboardPage() {
       .not("stripe_connected_at", "is", null)
       .gte("stripe_connected_at", new Date(now.getTime() - 14 * 86400000).toISOString())
       .order("stripe_connected_at", { ascending: false }),
+
+    // STRIPE-CONNECTED CLIENTS READY FOR CLEANUP.
+    // The full list of clients who:
+    //   1. Have Stripe connected (so the deterministic Stripe API
+    //      reconciliation path is unlocked)
+    //   2. AND either have never been marked complete, or were marked
+    //      complete BEFORE they connected Stripe (so the existing
+    //      cleanup didn't get the Stripe-side data)
+    // We exclude clients with an active cleanup separately (next query)
+    // so they don't appear here while a bookkeeper is already on it.
+    service
+      .from("client_links")
+      .select(
+        "id, client_name, jurisdiction, state_province, stripe_connected_at, cleanup_completed_at, assigned_bookkeeper_id, due_date"
+      )
+      .eq("stripe_connection_status", "connected")
+      .eq("is_active", true)
+      .not("stripe_connected_at", "is", null)
+      .order("stripe_connected_at", { ascending: false }),
+
+    // Active in-flight cleanups — used to filter clients out of the
+    // Ready-for-Cleanup widget when work is already underway. Includes
+    // every non-terminal status so a client with a failed job (which
+    // blocks new jobs via the concurrency guard) doesn't show up here
+    // either — that needs senior attention, not a fresh start.
+    service
+      .from("coa_jobs")
+      .select("client_link_id, status")
+      .in("status", ["draft", "in_review", "pending_lisa", "approved", "executing", "failed"]),
   ]);
 
   const profile = profileRes.data;
@@ -304,6 +335,53 @@ export default async function DashboardPage() {
   // "New" badge if any client connected in the past 48h
   const hasFreshStripeConnection = recentStripeConnections.some((c) => c.daysAgo <= 2);
 
+  // ─── Stripe-Connected, Ready for Cleanup ───
+  //
+  // Bookkeepers were missing newly-connected Stripe clients because the
+  // "recent connections" panel surfaces every connection regardless of
+  // cleanup status (great or not, work to do or not). This widget is
+  // narrower: clients with Stripe connected AND no cleanup yet (or whose
+  // most recent cleanup predates the Stripe connection, meaning the
+  // existing cleanup didn't benefit from Stripe data) AND no active
+  // in-flight job. Sorted with most-recent-connection-first so the
+  // freshest opportunities float to the top.
+  const activeCleanupClientIds = new Set(
+    (activeCleanupClientsRes.data || [])
+      .map((j: any) => j.client_link_id)
+      .filter(Boolean)
+  );
+  // Cast through unknown because cleanup_completed_at + due_date aren't in
+  // the regenerated supabase types yet (added by migration 19, types
+  // haven't been re-pulled). Runtime shape is correct.
+  const readyForCleanup = ((readyForCleanupRes.data || []) as unknown as Array<{
+    id: string;
+    client_name: string;
+    jurisdiction: string;
+    state_province: string | null;
+    stripe_connected_at: string;
+    cleanup_completed_at: string | null;
+    assigned_bookkeeper_id: string | null;
+    due_date: string | null;
+  }>)
+    .filter((c) => {
+      // Skip clients with active in-flight work — those already show up
+      // in the senior work queue, no need to nag.
+      if (activeCleanupClientIds.has(c.id)) return false;
+      // If never completed, definitely ready.
+      if (!c.cleanup_completed_at) return true;
+      // If connected AFTER last completion, the prior cleanup didn't
+      // have Stripe data — they're ready for a fresh pass.
+      return (
+        new Date(c.stripe_connected_at).getTime() >
+        new Date(c.cleanup_completed_at).getTime()
+      );
+    })
+    .map((c) => ({
+      ...c,
+      daysSinceConnection: daysBetween(c.stripe_connected_at),
+      hasPriorCleanup: !!c.cleanup_completed_at,
+    }));
+
   // Avg minutes per cleanup = (execution_completed_at - created_at) in minutes
   function elapsedMinutes(job: { created_at: string | null; execution_completed_at: string | null }): number | null {
     if (!job.created_at || !job.execution_completed_at) return null;
@@ -437,6 +515,100 @@ export default async function DashboardPage() {
 
         {/* ─── Charts ─── */}
         <DashboardCharts weeklyData={weeklyData} bookkeepersData={bookkeepersData} />
+
+        {/* ─── New Stripe Connections — Ready for Cleanup ───
+            Surfaces every client who has connected Stripe AND doesn't
+            have an active cleanup AND either never had a cleanup or
+            connected AFTER their last one (so the existing cleanup
+            didn't benefit from Stripe data). Sorted newest-connection
+            first so fresh opportunities are visible immediately. */}
+        {readyForCleanup.length > 0 && (
+          <div className="rounded-xl bg-white border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-200 bg-gradient-to-r from-purple-50 to-white">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-lg bg-purple-100">
+                    <CreditCard size={16} className="text-purple-700" />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-bold text-navy">
+                      New Stripe Account Connection — Ready For Cleanup
+                    </h2>
+                    <p className="text-xs text-ink-slate mt-0.5">
+                      {readyForCleanup.length} client{readyForCleanup.length !== 1 ? "s" : ""} ready for a Stripe-powered cleanup. Start these to unlock deterministic AR matching.
+                    </p>
+                  </div>
+                </div>
+                <span className="rounded-full bg-purple-600 text-white text-xs font-bold px-2.5 py-1">
+                  {readyForCleanup.length}
+                </span>
+              </div>
+            </div>
+            <div className="divide-y divide-gray-100">
+              {readyForCleanup.slice(0, 12).map((c) => {
+                const assignee = c.assigned_bookkeeper_id
+                  ? bkById.get(c.assigned_bookkeeper_id) || "Unknown"
+                  : null;
+                const isFresh = c.daysSinceConnection <= 2;
+                return (
+                  <Link
+                    key={c.id}
+                    href={`/jobs/new?client=${c.id}`}
+                    className="flex items-center gap-4 px-5 py-3 hover:bg-purple-50/40 transition-colors"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-semibold text-sm text-navy">
+                          {c.client_name}
+                        </span>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-ink-light">
+                          {c.jurisdiction}
+                          {c.state_province ? ` · ${c.state_province}` : ""}
+                        </span>
+                        {isFresh && (
+                          <span className="rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5">
+                            New
+                          </span>
+                        )}
+                        {c.hasPriorCleanup && (
+                          <span className="rounded-full bg-gray-100 text-ink-slate text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5">
+                            Re-cleanup
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-ink-slate mt-0.5 flex items-center gap-3 flex-wrap">
+                        <span className="flex items-center gap-1">
+                          <Clock size={11} />
+                          Connected{" "}
+                          {c.daysSinceConnection === 0
+                            ? "today"
+                            : `${c.daysSinceConnection}d ago`}
+                        </span>
+                        {assignee && (
+                          <span>
+                            Assigned to <span className="font-semibold text-navy">{assignee}</span>
+                          </span>
+                        )}
+                        {!assignee && (
+                          <span className="text-amber-700 font-semibold">Unassigned</span>
+                        )}
+                      </div>
+                    </div>
+                    <ArrowRight size={14} className="text-ink-light flex-shrink-0" />
+                  </Link>
+                );
+              })}
+              {readyForCleanup.length > 12 && (
+                <div className="px-5 py-3 text-xs text-ink-slate bg-gray-50">
+                  + {readyForCleanup.length - 12} more — see the{" "}
+                  <Link href="/clients" className="text-teal font-semibold hover:underline">
+                    full clients list
+                  </Link>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* ─── My Clients (junior) / My Work Queue (senior+admin) ─── */}
         {isJunior ? (
