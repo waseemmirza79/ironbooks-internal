@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Home, Sparkles, Flag, Users, Settings, LogOut, BookOpen, Clock,
+  Home, Sparkles, Flag, Users, LogOut, BookOpen, Clock,
   Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
@@ -32,10 +32,6 @@ const advancedItems = [
 const adminItems = [
   { href: "/admin", label: "Admin", icon: Shield },
   { href: "/admin/audit", label: "Audit Log", icon: BookOpen },
-];
-
-const bottomItems = [
-  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function Sidebar() {
@@ -174,11 +170,6 @@ export function Sidebar() {
           </>
         )}
 
-        <div className="mt-4 pt-4 border-t border-white/10">
-          {bottomItems.map((item) => (
-            <NavItem key={item.href} item={item} pathname={pathname} />
-          ))}
-        </div>
       </nav>
 
       {/* Stripe Connect Link — purple stylized button above the account block */}
