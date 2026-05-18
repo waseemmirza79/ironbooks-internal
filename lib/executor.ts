@@ -757,83 +757,39 @@ export async function executeJob(jobId: string): Promise<{
             ctx.dateRangeStart, ctx.dateRangeEnd
           );
 
-          // CLOSED-PERIOD GUARD — never auto-rewrite transactions in a
-          // closed accounting period. If ANY line on the source falls in
-          // QBO's closed period (per BookCloseDate) or in a Double month
-          // marked complete/closed/delivered, the entire merge gets routed
-          // to manual cleanup. The bookkeeper handles it in QBO with the
-          // closing-date password if they really want to touch closed books.
+          // SEGREGATE OPEN vs CLOSED-PERIOD LINES.
+          //
+          // When the source has lines in a closed period (QBO BookCloseDate or
+          // a Double month marked complete/closed/delivered), we don't block
+          // the merge — we do a PARTIAL merge:
+          //   - Move only the open-period lines to the target.
+          //   - Rename the source with a "(Pre-YYYY)" suffix so it's visibly
+          //     historical in the COA.
+          //   - DON'T inactivate the source — it still holds closed-period data.
+          // That way the cleanup actually consolidates current activity while
+          // preserving audit-safe history. Bookkeeper gets value, no manual
+          // intervention required.
           const closedLines = lines.filter((l) => {
             if (isInClosedPeriod(l.transaction_date, bookCloseDate)) return true;
             const dc = findDoubleClose(l.transaction_date, doubleCloses);
             if (dc && isDoubleCloseLocked(dc.status)) return true;
             return false;
           });
-          if (closedLines.length > 0) {
-            const closedDates = Array.from(
-              new Set(closedLines.map((l) => l.transaction_date.slice(0, 7)))
-            )
-              .sort()
-              .slice(0, 6)
-              .join(", ");
-            const reason =
-              `Merge "${action.current_name}" → "${action.new_name}" blocked by closed-period guard: ` +
-              `${closedLines.length} of ${lines.length} lines fall in closed accounting periods (${closedDates}${closedLines.length > 6 ? "…" : ""}). ` +
-              `Auto-rewriting closed-period transactions is an audit risk. Handle in QBO directly with the ` +
-              `closing-date password if intended, then inactivate the source.`;
-            pendingFailures.push({
-              intended_action: "rename",
-              account_id: action.qbo_account_id,
-              account_name: action.current_name || "Unknown",
-              request_body: {
-                merge_source: action.current_name,
-                merge_target: action.new_name,
-                lines_total: lines.length,
-                lines_in_closed_period: closedLines.length,
-                qbo_close_date: bookCloseDate,
-              },
-              qbo_error: reason,
-              account_snapshot: sourceAccount
-                ? {
-                    Name: sourceAccount.Name,
-                    AccountType: sourceAccount.AccountType,
-                    AccountSubType: sourceAccount.AccountSubType,
-                    CurrentBalance: sourceAccount.CurrentBalance,
-                    Active: sourceAccount.Active,
-                  }
-                : null,
-            });
-            await ctx.supabase
-              .from("coa_actions")
-              .update({
-                executed: false,
-                error_message: null,
-                flagged_reason: reason,
-              })
-              .eq("id", action.id);
-            await logActionResult(ctx, action.id, "manual_cleanup_required", {
-              name: action.current_name,
-              reason: `Closed-period guard: ${closedLines.length}/${lines.length} lines in closed periods (${closedDates})`,
-            });
-            continue;
-          }
+          const openLines = lines.filter((l) => !closedLines.includes(l));
+          const isPartialMerge = closedLines.length > 0;
 
-          // SIZE GUARD — a merge with thousands of transactions reclassed one
-          // at a time will absolutely blow past Vercel's 5-minute function
-          // limit. Flag oversized merges for the bookkeeper to handle in QBO's
-          // Reclassify Transactions tool (which does this in bulk natively).
-          //
-          // Threshold: 500 lines is a comfortable budget (~250ms × 500 = 2min
-          // for the reclass alone, leaving headroom for other merges in the
-          // same execute). Tuned to be cautious; we can raise once we batch.
+          // SIZE GUARD — applies to the lines we'll actually move
+          // (openLines for partial, all lines for full). Anything > 500
+          // would blow past the function budget; route to manual.
           const MERGE_MAX_LINES = 500;
-          if (lines.length > MERGE_MAX_LINES) {
+          const linesToMove = isPartialMerge ? openLines : lines;
+          if (linesToMove.length > MERGE_MAX_LINES) {
             const reason =
-              `Merge of "${action.current_name}" → "${action.new_name}" touches ` +
-              `${lines.length} lines (across ${transactionsPulled} transactions) — ` +
-              `too large for automated reclassification within the function timeout. ` +
+              `Merge of "${action.current_name}" → "${action.new_name}" would move ` +
+              `${linesToMove.length} lines${isPartialMerge ? ` (${openLines.length} open + ${closedLines.length} closed-period preserved)` : ""} — ` +
+              `too many for automated reclassification within the function timeout. ` +
               `Use QBO's Reclassify Transactions tool to move them in bulk, then ` +
-              `inactivate the source account manually.`;
+              `${isPartialMerge ? "rename the source with a historical marker." : "inactivate the source account manually."}`;
             pendingFailures.push({
               intended_action: "rename",
               account_id: action.qbo_account_id,
@@ -841,7 +797,8 @@ export async function executeJob(jobId: string): Promise<{
               request_body: {
                 merge_source: action.current_name,
                 merge_target: action.new_name,
-                lines: lines.length,
+                lines_to_move: linesToMove.length,
+                lines_in_closed_period: closedLines.length,
                 transactions: transactionsPulled,
               },
               qbo_error: reason,
@@ -865,22 +822,36 @@ export async function executeJob(jobId: string): Promise<{
               .eq("id", action.id);
             await logActionResult(ctx, action.id, "manual_cleanup_required", {
               name: action.current_name,
-              reason: `Too large for auto-merge (${lines.length} lines)`,
+              reason: `Too large for auto-merge (${linesToMove.length} lines)`,
             });
             continue;
           }
 
-          await logProgress(ctx, "merge_progress",
-            `Merging "${action.current_name}" → "${action.new_name}" (${lines.length} lines across ${transactionsPulled} txns)`,
-            { source: action.current_name, target: action.new_name, lines: lines.length }
+          await logProgress(
+            ctx,
+            "merge_progress",
+            isPartialMerge
+              ? `Partial merge "${action.current_name}" → "${action.new_name}" (${openLines.length} open lines moving, ${closedLines.length} closed-period lines staying on source)`
+              : `Merging "${action.current_name}" → "${action.new_name}" (${lines.length} lines across ${transactionsPulled} txns)`,
+            {
+              source: action.current_name,
+              target: action.new_name,
+              lines_to_move: linesToMove.length,
+              lines_preserved: closedLines.length,
+              partial: isPartialMerge,
+            }
           );
 
-          // Group lines by transaction so we can batch updates per transaction
-          const linesByTx = new Map<string, typeof lines>();
-          for (const line of lines) {
+          // Group lines-to-move by transaction so we can batch updates per tx
+          const linesByTx = new Map<string, typeof linesToMove>();
+          for (const line of linesToMove) {
             if (!linesByTx.has(line.transaction_id)) linesByTx.set(line.transaction_id, []);
             linesByTx.get(line.transaction_id)!.push(line);
           }
+
+          const auditMemo = isPartialMerge
+            ? `Ironbooks partial merge (open period): "${action.current_name}" → "${action.new_name}"`
+            : `Ironbooks merge: "${action.current_name}" → "${action.new_name}"`;
 
           let linesReclassed = 0;
           let lastHeartbeat = 0;
@@ -894,7 +865,7 @@ export async function executeJob(jobId: string): Promise<{
                 new_account_id: targetAccount.Id,
                 new_account_name: targetAccount.Name,
               })),
-              auditMemo: `Ironbooks merge: "${action.current_name}" → "${action.new_name}"`,
+              auditMemo,
             });
             linesReclassed += txLines.length;
 
@@ -905,33 +876,105 @@ export async function executeJob(jobId: string): Promise<{
             if (linesReclassed - lastHeartbeat >= 50) {
               lastHeartbeat = linesReclassed;
               await logProgress(ctx, "merge_progress",
-                `Merging "${action.current_name}" → "${action.new_name}" · ${linesReclassed}/${lines.length} lines reclassified`,
+                `${isPartialMerge ? "Partial merging" : "Merging"} "${action.current_name}" → "${action.new_name}" · ${linesReclassed}/${linesToMove.length} lines reclassified`,
                 {
                   source: action.current_name,
                   target: action.new_name,
                   lines_done: linesReclassed,
-                  lines_total: lines.length,
+                  lines_total: linesToMove.length,
                 }
               );
             }
           }
 
-          // Inactivate the (now-empty) source account
-          await qbo.inactivateAccount(
-            ctx.realmId, ctx.accessToken,
-            action.qbo_account_id, sourceAccount.SyncToken,
-            sourceAccount
-          );
+          if (isPartialMerge) {
+            // PARTIAL MERGE — rename source to flag it as historical,
+            // skip inactivation. Source keeps its closed-period data.
+            //
+            // Suffix uses the year of the date range start so re-runs that
+            // expand the window (e.g. last year + this year) produce a
+            // consistent label. We don't double-suffix if the source name
+            // already looks historical.
+            const yearForSuffix = (() => {
+              const y = new Date(ctx.dateRangeStart).getUTCFullYear();
+              return Number.isFinite(y) ? y : new Date().getUTCFullYear();
+            })();
+            const suffix = `(Pre-${yearForSuffix})`;
+            const currentSourceName = String(sourceAccount.Name || action.current_name || "");
+            const alreadyHistorical = /\((pre|historical|archive)[\s\-]?\d{0,4}\)|\bhistorical\b|\barchive\b|\bpre[\s\-]?\d{4}\b/i.test(
+              currentSourceName
+            );
 
-          await markActionComplete(ctx, action.id, targetAccount.Id, {
-            merged_into: action.new_name,
-            lines_moved: linesReclassed,
-          });
-          await logActionResult(ctx, action.id, "qbo_merge", {
-            from: action.current_name,
-            into: action.new_name,
-            lines_moved: linesReclassed,
-          });
+            let renamedTo: string | null = null;
+            if (!alreadyHistorical) {
+              // QBO Account.Name has a length cap (~100 chars). Truncate
+              // the base name to fit the suffix.
+              const maxLen = 100;
+              const reserve = suffix.length + 1; // +1 for the space
+              const base = currentSourceName.length + reserve > maxLen
+                ? currentSourceName.slice(0, maxLen - reserve - 1).trimEnd() + "…"
+                : currentSourceName;
+              const proposed = `${base} ${suffix}`;
+              try {
+                await qbo.renameAccount(
+                  ctx.realmId,
+                  ctx.accessToken,
+                  action.qbo_account_id,
+                  sourceAccount.SyncToken,
+                  proposed,
+                  sourceAccount
+                );
+                renamedTo = proposed;
+              } catch (renameErr: any) {
+                // Don't fail the merge if rename fails. The reclass already
+                // succeeded; the source just keeps its original name (still
+                // active, still has closed history). Log and continue.
+                console.warn(
+                  `[executor] Partial-merge rename failed for "${currentSourceName}":`,
+                  renameErr?.message || renameErr
+                );
+                await logActionResult(ctx, action.id, "partial_merge_rename_failed", {
+                  name: currentSourceName,
+                  attempted: proposed,
+                  error: String(renameErr?.message || renameErr).slice(0, 300),
+                });
+              }
+            }
+
+            await markActionComplete(ctx, action.id, targetAccount.Id, {
+              merged_into: action.new_name,
+              lines_moved: linesReclassed,
+              lines_preserved_on_source: closedLines.length,
+              source_renamed_to: renamedTo,
+              partial_merge: true,
+            });
+            await logActionResult(ctx, action.id, "qbo_partial_merge", {
+              from: action.current_name,
+              into: action.new_name,
+              lines_moved: linesReclassed,
+              lines_preserved: closedLines.length,
+              source_now_named: renamedTo || currentSourceName,
+            });
+          } else {
+            // FULL MERGE — source is fully drained, safe to inactivate.
+            await qbo.inactivateAccount(
+              ctx.realmId,
+              ctx.accessToken,
+              action.qbo_account_id,
+              sourceAccount.SyncToken,
+              sourceAccount
+            );
+            await markActionComplete(ctx, action.id, targetAccount.Id, {
+              merged_into: action.new_name,
+              lines_moved: linesReclassed,
+            });
+            await logActionResult(ctx, action.id, "qbo_merge", {
+              from: action.current_name,
+              into: action.new_name,
+              lines_moved: linesReclassed,
+            });
+          }
+
           stats.merged++;
           stats.reclassified += linesReclassed;
 
