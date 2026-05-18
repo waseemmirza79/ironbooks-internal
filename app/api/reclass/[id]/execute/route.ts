@@ -48,6 +48,29 @@ export async function POST(
     return NextResponse.json({ message: "Already complete", started: false });
   }
 
+  // SAME-CLIENT CONCURRENCY GUARD. Defense in depth: refuse to start if
+  // another reclass job for this client is already executing. Different
+  // clients in parallel is fine; same-client parallel reclass causes
+  // transaction-snapshot races (Job A moves a line, Job B can't find it).
+  const { data: rivalReclassJobs } = await service
+    .from("reclass_jobs")
+    .select("id, status")
+    .eq("client_link_id", job.client_link_id)
+    .eq("status", "executing")
+    .neq("id", id)
+    .limit(1);
+  if (rivalReclassJobs && rivalReclassJobs.length > 0) {
+    return NextResponse.json(
+      {
+        error:
+          `Another reclass job is already executing for this client ` +
+          `(job ${rivalReclassJobs[0].id}). Wait for it to finish or cancel it before re-executing this one.`,
+        rival_job_id: rivalReclassJobs[0].id,
+      },
+      { status: 409 }
+    );
+  }
+
   // Mark as executing
   await service
     .from("reclass_jobs")

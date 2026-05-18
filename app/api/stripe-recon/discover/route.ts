@@ -40,6 +40,31 @@ export async function POST(request: Request) {
   }
 
   const service = createServiceSupabase();
+
+  // SAME-CLIENT CONCURRENCY GUARD. Two stripe-recon jobs on the same
+  // client would race on the same QBO deposits — Job A rewrites a
+  // deposit, Job B can't reconcile against the now-changed state.
+  const ACTIVE_STRIPE_RECON_STATUSES = ["discovering", "in_review", "executing"];
+  const { data: rivalStripeJobs } = await service
+    .from("stripe_recon_jobs")
+    .select("id, status")
+    .eq("client_link_id", body.client_link_id)
+    .in("status", ACTIVE_STRIPE_RECON_STATUSES)
+    .limit(1);
+  if (rivalStripeJobs && rivalStripeJobs.length > 0) {
+    const rival = rivalStripeJobs[0];
+    return NextResponse.json(
+      {
+        error:
+          `Another Stripe reconciliation is already active for this client ` +
+          `(job ${rival.id}, status=${rival.status}). Finish or cancel it before ` +
+          `starting a new one — same-client parallel runs cause deposit-snapshot races.`,
+        existing_job_id: rival.id,
+      },
+      { status: 409 }
+    );
+  }
+
   const { data: job, error } = await service
     .from("stripe_recon_jobs")
     .insert({

@@ -133,6 +133,33 @@ export async function POST(request: Request) {
 
   const service = createServiceSupabase();
 
+  // SAME-CLIENT CONCURRENCY GUARD. Two reclass jobs running on the same
+  // client would race on transaction reads/writes — Job A reclassifies a
+  // line, Job B (working from a pre-A snapshot) tries to reclassify the
+  // same line and gets a "no matching line" failure. Block same-client
+  // parallel; different clients in parallel are still fully supported.
+  const ACTIVE_RECLASS_STATUSES = ["executing", "in_review"];
+  const { data: rivalReclassJobs } = await service
+    .from("reclass_jobs")
+    .select("id, status, workflow")
+    .eq("client_link_id", body.client_link_id)
+    .in("status", ACTIVE_RECLASS_STATUSES)
+    .limit(1);
+  if (rivalReclassJobs && rivalReclassJobs.length > 0) {
+    const rival = rivalReclassJobs[0];
+    return NextResponse.json(
+      {
+        error:
+          `Another reclass job is already active for this client ` +
+          `(job ${rival.id}, workflow=${rival.workflow}, status=${rival.status}). ` +
+          `Finish or cancel it before starting a new one — same-client parallel reclass ` +
+          `causes transaction-snapshot races.`,
+        existing_job_id: rival.id,
+      },
+      { status: 409 }
+    );
+  }
+
   const { data: job, error } = await service
     .from("reclass_jobs")
     .insert({

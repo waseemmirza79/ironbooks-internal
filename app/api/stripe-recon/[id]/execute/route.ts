@@ -37,6 +37,27 @@ export async function POST(
     return NextResponse.json({ error: "Job already complete" }, { status: 409 });
   }
 
+  // SAME-CLIENT CONCURRENCY GUARD. Defense in depth: another stripe-recon
+  // job executing on this client would race on the same QBO deposits.
+  const { data: rivalStripeJobs } = await service
+    .from("stripe_recon_jobs")
+    .select("id, status")
+    .eq("client_link_id", (job as any).client_link_id)
+    .eq("status", "executing")
+    .neq("id", id)
+    .limit(1);
+  if (rivalStripeJobs && rivalStripeJobs.length > 0) {
+    return NextResponse.json(
+      {
+        error:
+          `Another Stripe reconciliation is executing for this client ` +
+          `(job ${rivalStripeJobs[0].id}). Wait for it to finish or cancel it first.`,
+        rival_job_id: rivalStripeJobs[0].id,
+      },
+      { status: 409 }
+    );
+  }
+
   // Move to executing immediately so the UI shows the right state
   await service
     .from("stripe_recon_jobs")
