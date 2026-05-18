@@ -174,6 +174,40 @@ async function flagAction(ctx: ExecutionContext, action: any, reason: string) {
 }
 
 /**
+ * Auto-dismiss: silently drop an action without sending it to the senior
+ * review queue. Used for cases where flagging adds no value because
+ * nothing a human can do here will unlock QBO (e.g. system-protected
+ * accounts — QBO refuses API modification by design, not by accident).
+ *
+ * Bookkeepers were drowning in "Ask My Accountant", "Uncategorized
+ * Expense", etc. flags that they couldn't resolve from the queue and
+ * had to dismiss one by one. The right answer is to never flag them.
+ *
+ * Sets action='keep' so the row drops out of every flagged-queue filter,
+ * sets bookkeeper_override=true so it doesn't look unattended, and
+ * records the auto-dismissal in the audit_log so the trail isn't lost.
+ */
+async function autoDismissAction(
+  ctx: ExecutionContext,
+  action: any,
+  reason: string
+) {
+  await ctx.supabase
+    .from("coa_actions")
+    .update({
+      action: "keep",
+      flagged_reason: null,
+      bookkeeper_override: true,
+      executed: false,
+    } as any)
+    .eq("id", action.id);
+  await logActionResult(ctx, action.id, "auto_dismissed", {
+    name: action.current_name || action.new_name,
+    reason,
+  });
+}
+
+/**
  * Cooperative cancellation point. Returns true if the bookkeeper has hit
  * the cancel endpoint (job.status === 'cancelled'). The executor's stage
  * loops call this between actions; when it returns true the caller should
@@ -386,11 +420,15 @@ export async function executeJob(jobId: string): Promise<{
 
     for (const a of actions as any[]) {
       // -- Rule 1: System accounts cannot be modified via API.
-      // If the action targets a known QBO system account (Uncategorized, etc),
-      // flag it. Never attempt to rename/inactivate these.
+      // Auto-dismiss (don't flag) — QBO refuses these by design and there's
+      // nothing a senior reviewer can do from the queue. Recorded in
+      // audit_log as auto_dismissed so the trail is still there.
       if (a.action !== "create" && a.current_name && validate.isSystemAccount(a.current_name)) {
-        await flagAction(ctx, a, `System-protected QBO account "${a.current_name}" cannot be modified via API. Skipping.`);
-        flaggedCount++;
+        await autoDismissAction(
+          ctx,
+          a,
+          `System-protected QBO account "${a.current_name}" cannot be modified via API. Auto-dismissed (no human action possible).`
+        );
         continue;
       }
 
