@@ -46,11 +46,16 @@ export async function GET(
   const { data: logs } = await query;
 
   // Auto-recover from silent timeouts. If the job is still 'executing' but
-  // we haven't seen ANY audit log event in 90+ seconds, the background
+  // we haven't seen ANY audit log event in 5+ minutes, the background
   // function almost certainly died (Vercel killed it past maxDuration,
   // OOM, etc.). Flip the job back to in_review so the bookkeeper can
   // re-execute — the executor is idempotent and will resume where it
   // stopped. Without this the job sits "executing" forever.
+  //
+  // 5 minutes is a deliberately wide window: a single merge with ~400-500
+  // lines can take ~2 minutes of unlogged QBO calls in a row. The executor
+  // now emits a heartbeat every 50 lines inside merges, so legitimate
+  // long-running work touches the audit log well within this window.
   if (job.status === "executing") {
     const { data: lastEvent } = await supabase
       .from("audit_log")
@@ -61,7 +66,7 @@ export async function GET(
       .maybeSingle();
     const lastTs = lastEvent?.occurred_at ? new Date(lastEvent.occurred_at).getTime() : 0;
     const silenceMs = Date.now() - lastTs;
-    if (lastTs > 0 && silenceMs > 90_000) {
+    if (lastTs > 0 && silenceMs > 300_000) {
       await supabase
         .from("coa_jobs")
         .update({

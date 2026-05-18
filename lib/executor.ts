@@ -766,6 +766,7 @@ export async function executeJob(jobId: string): Promise<{
           }
 
           let linesReclassed = 0;
+          let lastHeartbeat = 0;
           for (const [txId, txLines] of linesByTx) {
             const txType = txLines[0].transaction_type;
             await reclassifyTransactionLines(ctx.realmId, ctx.accessToken, {
@@ -779,6 +780,23 @@ export async function executeJob(jobId: string): Promise<{
               auditMemo: `Ironbooks merge: "${action.current_name}" → "${action.new_name}"`,
             });
             linesReclassed += txLines.length;
+
+            // Heartbeat every 50 lines so:
+            //   - the bookkeeper sees live progress for big merges
+            //   - the stuck-job detector doesn't false-fire (it watches
+            //     for 5+ minutes of total audit-log silence)
+            if (linesReclassed - lastHeartbeat >= 50) {
+              lastHeartbeat = linesReclassed;
+              await logProgress(ctx, "merge_progress",
+                `Merging "${action.current_name}" → "${action.new_name}" · ${linesReclassed}/${lines.length} lines reclassified`,
+                {
+                  source: action.current_name,
+                  target: action.new_name,
+                  lines_done: linesReclassed,
+                  lines_total: lines.length,
+                }
+              );
+            }
           }
 
           // Inactivate the (now-empty) source account
