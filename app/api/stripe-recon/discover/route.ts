@@ -53,13 +53,14 @@ export async function POST(request: Request) {
     .limit(1);
   if (rivalStripeJobs && rivalStripeJobs.length > 0) {
     const rival = rivalStripeJobs[0];
+    // Short prose for clients that don't read structured fields; clients
+    // that do (the new-job form) get the dedicated existing_job_id +
+    // existing_status fields and render an actionable conflict panel.
     return NextResponse.json(
       {
-        error:
-          `Another Stripe reconciliation is already active for this client ` +
-          `(job ${rival.id}, status=${rival.status}). Finish or cancel it before ` +
-          `starting a new one — same-client parallel runs cause deposit-snapshot races.`,
+        error: `A Stripe reconciliation is already in progress for this client. Finish or cancel it first.`,
         existing_job_id: rival.id,
+        existing_status: rival.status,
       },
       { status: 409 }
     );

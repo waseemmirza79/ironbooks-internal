@@ -44,6 +44,13 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string>("");
+  // When the API responds 409 with an existing_job_id, we hold it here so
+  // the form can swap its generic error block for an actionable conflict
+  // panel that links directly to the in-flight job.
+  const [conflict, setConflict] = useState<{
+    jobId: string;
+    status: string;
+  } | null>(null);
 
   const selectedClient = clientLinks.find((c) => c.id === clientLinkId);
   const isStripeConnected =
@@ -125,6 +132,7 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
     if (!canSubmit || !selectedClient) return;
     setSubmitting(true);
     setSubmitError("");
+    setConflict(null);
 
     try {
       const res = await fetch("/api/stripe-recon/discover", {
@@ -141,7 +149,19 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to start job");
+      if (!res.ok) {
+        // 409 carries the existing job's id/status — render the actionable
+        // conflict panel instead of dumping the prose into the error block.
+        if (res.status === 409 && data.existing_job_id) {
+          setConflict({
+            jobId: data.existing_job_id,
+            status: data.existing_status || "in_review",
+          });
+          setSubmitting(false);
+          return;
+        }
+        throw new Error(data.error || "Failed to start job");
+      }
       router.push(`/stripe-recon/${data.job_id}/review`);
     } catch (e: any) {
       setSubmitError(e.message);
@@ -285,6 +305,49 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
               </div>
             )}
           </>
+        )}
+
+        {/* Actionable conflict panel for the 409 same-client guard. The
+            previous behavior dumped the prose error into the red block
+            and made the bookkeeper hunt down the job by ID. Now the
+            existing job is one click away. */}
+        {conflict && (
+          <div className="rounded-lg bg-amber-50 border border-amber-200 p-4 text-sm space-y-3">
+            <div className="flex items-start gap-2">
+              <AlertCircle size={16} className="text-amber-700 flex-shrink-0 mt-0.5" />
+              <div>
+                <div className="font-bold text-amber-900">
+                  A Stripe reconciliation is already in progress for{" "}
+                  {selectedClient?.client_name || "this client"}.
+                </div>
+                <div className="text-xs text-amber-900 mt-1">
+                  Status: <span className="font-semibold">{conflict.status}</span>.
+                  Finish or close out the existing run before starting a new
+                  one — same-client parallel runs cause deposit-snapshot
+                  races.
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() =>
+                  router.push(`/stripe-recon/${conflict.jobId}/review`)
+                }
+                className="inline-flex items-center gap-1.5 bg-amber-700 hover:bg-amber-800 text-white text-xs font-semibold px-3 py-1.5 rounded-md"
+              >
+                <ArrowRight size={13} />
+                Open the existing recon
+              </button>
+              <button
+                type="button"
+                onClick={() => setConflict(null)}
+                className="text-xs font-semibold text-amber-900 hover:text-amber-950 px-2 py-1.5"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
         )}
 
         {submitError && (
