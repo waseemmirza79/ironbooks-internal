@@ -36,7 +36,10 @@ export async function middleware(request: NextRequest) {
   const publicRoutes = ["/auth/login", "/auth/callback", "/stripe-connect"];
   const isPublic = publicRoutes.some((p) => pathname.startsWith(p));
   const isApi = pathname.startsWith("/api/");
-  const isStatic = pathname.startsWith("/_next/") || pathname === "/favicon.ico";
+  const isStatic =
+    pathname.startsWith("/_next/") ||
+    pathname === "/favicon.ico" ||
+    /\.(png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf)$/.test(pathname);
 
   // Redirect to login if not authenticated and not on a public route
   if (!user && !isPublic && !isApi && !isStatic) {
@@ -63,5 +66,8 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // Skip middleware for Next.js internals, favicon, and all public static assets
+  // (images, fonts, etc.) so they're served without an auth check — required for
+  // logo.png to load in emails/external contexts where there's no session cookie.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf)$).*)"],
 };

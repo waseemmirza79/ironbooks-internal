@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, AlertCircle, CheckCircle2, Search, Sparkles, Database } from "lucide-react";
+import { Loader2, AlertCircle, CheckCircle2, Search, Sparkles, Database, X } from "lucide-react";
 
 export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
   const router = useRouter();
@@ -11,8 +11,9 @@ export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
   const [error, setError] = useState<string>("");
   const [elapsed, setElapsed] = useState<number>(0);
   const [webSearchLog, setWebSearchLog] = useState<string[]>([]);
+  const [skipping, setSkipping] = useState(false);
+  const [skipped, setSkipped] = useState(false);
 
-  // Tick the elapsed-time counter (so user sees something moving)
   useEffect(() => {
     const t = setInterval(() => setElapsed((s) => s + 1), 1000);
     return () => clearInterval(t);
@@ -31,7 +32,6 @@ export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
         setStatus(data.status);
         setStats(data.stats);
 
-        // Capture web search progress written to error_message during execution
         if (data.error_message?.startsWith("[web_search]")) {
           setWebSearchLog((prev) => {
             const entry = `${new Date().toLocaleTimeString()} ${data.error_message}`;
@@ -52,7 +52,6 @@ export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
           return;
         }
 
-        // Continue polling
         setTimeout(poll, 2000);
       } catch (e: any) {
         if (!cancelled) setError(e.message);
@@ -60,10 +59,18 @@ export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
     }
 
     poll();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [jobId, router]);
+
+  async function skipWebSearch() {
+    setSkipping(true);
+    try {
+      await fetch(`/api/reclass/${jobId}/skip-web-search`, { method: "POST" });
+      setSkipped(true);
+    } finally {
+      setSkipping(false);
+    }
+  }
 
   if (error) {
     return (
@@ -79,48 +86,22 @@ export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
     );
   }
 
-  // Derive which stage we're in from elapsed time as a fallback (job status doesn't
-  // tick through stages — it's executing until done). Give the user a sense of progress.
   const stage =
     elapsed < 5 ? "pulling"
     : elapsed < 15 ? "knowledge_base"
     : elapsed < 45 ? "ai"
     : "web_search";
 
-  function StageRow({
-    icon: Icon, label, hint, active, done,
-  }: { icon: any; label: string; hint: string; active: boolean; done: boolean }) {
-    return (
-      <div className="flex items-start gap-3 py-2.5">
-        <div className="rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0"
-          style={{
-            backgroundColor: done ? "#D1FAE5" : active ? "#E8F2F0" : "#F3F4F6",
-          }}
-        >
-          {done ? (
-            <CheckCircle2 size={16} className="text-green-600" />
-          ) : active ? (
-            <Loader2 size={14} className="text-teal animate-spin" />
-          ) : (
-            <Icon size={14} className="text-ink-light" />
-          )}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className={`text-sm font-semibold ${active ? "text-navy" : done ? "text-green-700" : "text-ink-light"}`}>
-            {label}
-          </div>
-          <div className="text-xs text-ink-slate mt-0.5">{hint}</div>
-        </div>
-      </div>
-    );
-  }
+  const webSearchActive = stage === "web_search";
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-8">
       <div className="flex items-center gap-3 mb-2">
         <Loader2 className="animate-spin text-teal" size={24} />
         <h2 className="text-lg font-bold text-navy">Discovery in progress</h2>
-        <span className="ml-auto text-xs font-mono text-ink-slate">{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}</span>
+        <span className="ml-auto text-xs font-mono text-ink-slate">
+          {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
+        </span>
       </div>
       <p className="text-sm text-ink-slate mb-6">
         Each transaction goes through a 4-tier categorization pipeline. Most match instantly from
@@ -129,38 +110,114 @@ export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
 
       {/* Pipeline stages */}
       <div className="rounded-xl bg-gray-50 p-4 mb-5 border border-gray-100">
-        <StageRow
-          icon={Database}
-          label="1. Pull transactions from QuickBooks"
-          hint="Fetching all lines in the selected date range"
-          active={stage === "pulling"}
-          done={stage !== "pulling"}
-        />
-        <StageRow
-          icon={Database}
-          label="2. Knowledge base + bank rules pre-match"
-          hint="Instant matches for ~200 known vendors + your prior categorizations"
-          active={stage === "knowledge_base"}
-          done={stage !== "pulling" && stage !== "knowledge_base"}
-        />
-        <StageRow
-          icon={Sparkles}
-          label="3. AI categorization (Claude)"
-          hint="Batched call for unknown vendors"
-          active={stage === "ai"}
-          done={stage === "web_search"}
-        />
-        <StageRow
-          icon={Search}
-          label="4. Web search for low-confidence vendors"
-          hint="One search per unique unknown vendor — results cached for next time"
-          active={stage === "web_search"}
-          done={false}
-        />
+
+        {/* Row 1 */}
+        <div className="flex items-start gap-3 py-2.5">
+          <div className="rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0"
+            style={{ backgroundColor: stage !== "pulling" ? "#D1FAE5" : "#E8F2F0" }}>
+            {stage !== "pulling"
+              ? <CheckCircle2 size={16} className="text-green-600" />
+              : <Loader2 size={14} className="text-teal animate-spin" />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className={`text-sm font-semibold ${stage !== "pulling" ? "text-green-700" : "text-navy"}`}>
+              1. Pull transactions from QuickBooks
+            </div>
+            <div className="text-xs text-ink-slate mt-0.5">Fetching all lines in the selected date range</div>
+          </div>
+        </div>
+
+        {/* Row 2 */}
+        <div className="flex items-start gap-3 py-2.5">
+          <div className="rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0"
+            style={{ backgroundColor: stage !== "pulling" && stage !== "knowledge_base" ? "#D1FAE5" : stage === "knowledge_base" ? "#E8F2F0" : "#F3F4F6" }}>
+            {stage !== "pulling" && stage !== "knowledge_base"
+              ? <CheckCircle2 size={16} className="text-green-600" />
+              : stage === "knowledge_base"
+              ? <Loader2 size={14} className="text-teal animate-spin" />
+              : <Database size={14} className="text-ink-light" />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className={`text-sm font-semibold ${stage !== "pulling" && stage !== "knowledge_base" ? "text-green-700" : stage === "knowledge_base" ? "text-navy" : "text-ink-light"}`}>
+              2. Knowledge base + bank rules pre-match
+            </div>
+            <div className="text-xs text-ink-slate mt-0.5">Instant matches for ~200 known vendors + your prior categorizations</div>
+          </div>
+        </div>
+
+        {/* Row 3 */}
+        <div className="flex items-start gap-3 py-2.5">
+          <div className="rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0"
+            style={{ backgroundColor: stage === "web_search" ? "#D1FAE5" : stage === "ai" ? "#E8F2F0" : "#F3F4F6" }}>
+            {stage === "web_search"
+              ? <CheckCircle2 size={16} className="text-green-600" />
+              : stage === "ai"
+              ? <Loader2 size={14} className="text-teal animate-spin" />
+              : <Sparkles size={14} className="text-ink-light" />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className={`text-sm font-semibold ${stage === "web_search" ? "text-green-700" : stage === "ai" ? "text-navy" : "text-ink-light"}`}>
+              3. AI categorization (Claude)
+            </div>
+            <div className="text-xs text-ink-slate mt-0.5">Batched call for unknown vendors</div>
+          </div>
+        </div>
+
+        {/* Row 4 — web search with inline Skip button */}
+        <div className="flex items-center gap-3 py-2.5">
+          <div className="rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0"
+            style={{ backgroundColor: webSearchActive ? "#E8F2F0" : "#F3F4F6" }}>
+            {webSearchActive
+              ? <Loader2 size={14} className="text-teal animate-spin" />
+              : <Search size={14} className="text-ink-light" />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className={`text-sm font-semibold ${webSearchActive ? "text-navy" : "text-ink-light"}`}>
+              4. Web search for low-confidence vendors
+            </div>
+            <div className="text-xs text-ink-slate mt-0.5">
+              One search per unique unknown vendor — results cached for next time
+            </div>
+          </div>
+          {webSearchActive && (
+            skipped ? (
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#D97706", flexShrink: 0 }}>
+                Skipping…
+              </span>
+            ) : (
+              <button
+                onClick={skipWebSearch}
+                disabled={skipping}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "6px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #D1D5DB",
+                  background: "#FFFFFF",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "#374151",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                  whiteSpace: "nowrap",
+                  opacity: skipping ? 0.5 : 1,
+                }}
+              >
+                {skipping
+                  ? <Loader2 size={11} style={{ animation: "spin 1s linear infinite" }} />
+                  : <X size={11} />}
+                {skipping ? "Skipping…" : "Skip this"}
+              </button>
+            )
+          )}
+        </div>
+
       </div>
 
-      {/* Live web search log — only shown once stage 4 is active */}
-      {(stage === "web_search" || webSearchLog.length > 0) && (
+      {/* Live web search log */}
+      {(webSearchActive || webSearchLog.length > 0) && (
         <div className="rounded-lg overflow-hidden border border-gray-200 mb-5">
           <div className="bg-gray-900 px-3 py-2 flex items-center gap-2">
             <div className="flex gap-1.5">
@@ -169,9 +226,7 @@ export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
               <div className="w-2.5 h-2.5 rounded-full bg-green-500" />
             </div>
             <span className="text-xs text-gray-400 font-mono ml-1">web_search.log</span>
-            {stage === "web_search" && (
-              <Loader2 size={11} className="ml-auto text-teal animate-spin" />
-            )}
+            {webSearchActive && <Loader2 size={11} className="ml-auto text-teal animate-spin" />}
           </div>
           <div className="bg-gray-950 px-4 py-3 font-mono text-xs text-green-400 min-h-[60px] max-h-[180px] overflow-y-auto space-y-1">
             {webSearchLog.length === 0 ? (

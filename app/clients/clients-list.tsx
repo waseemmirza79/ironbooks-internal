@@ -23,6 +23,7 @@ import {
   Trash2,
   FileText,
   Play,
+  Receipt,
 } from "lucide-react";
 import { CleanupReportModal } from "@/components/CleanupReportModal";
 
@@ -844,6 +845,15 @@ function ClientRow({
       </div>
 
       <div className="flex justify-end items-center gap-1">
+        {client.jurisdiction === "CA" && (
+          <Link
+            href={`/tax-audit/${client.id}`}
+            className="p-1.5 rounded hover:bg-teal-light text-ink-light hover:text-teal transition-colors"
+            title="GST/HST Audit"
+          >
+            <Receipt size={13} />
+          </Link>
+        )}
         <a
           href={`https://app.qbo.intuit.com/app/account?cid=${client.qbo_realm_id}`}
           target="_blank"
@@ -913,6 +923,15 @@ function ClientCard({
             <StatusIcon size={9} />
             {statusCfg.label}
           </span>
+          {client.jurisdiction === "CA" && (
+            <Link
+              href={`/tax-audit/${client.id}`}
+              className="p-1 rounded hover:bg-teal-light text-ink-light hover:text-teal transition-colors"
+              title="GST/HST Audit"
+            >
+              <Receipt size={13} />
+            </Link>
+          )}
           {onDelete && (
             <button
               onClick={onDelete}

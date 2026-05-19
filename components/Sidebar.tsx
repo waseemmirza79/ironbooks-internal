@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Home, Sparkles, Flag, Users, LogOut, BookOpen, Clock,
-  Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight,
+  Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight, Receipt,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
@@ -27,6 +27,7 @@ const advancedItems = [
   { href: "/reclass/new", label: "Reclassify (standalone)", icon: Shuffle },
   { href: "/rules/new", label: "Bank Rules (standalone)", icon: Zap },
   { href: "/stripe-recon/new", label: "Stripe Recon (standalone)", icon: CreditCard },
+  { href: "/tax-audit", label: "GST/HST Audit (CA)", icon: Receipt },
 ];
 
 const adminItems = [

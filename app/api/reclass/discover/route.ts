@@ -871,14 +871,11 @@ async function runFullCategorization(
     }
     console.log(`[reclass] Web-searching ${vendorEntries.length} unique unknown vendors (concurrency=5)...`);
 
+    const CONCURRENCY = 5;
     const newBankRules: any[] = [];
     const totalBatches = Math.ceil(vendorEntries.length / CONCURRENCY);
     const WEB_SEARCH_BUDGET_MS = 90_000; // hard wall-clock limit for entire phase
     const webSearchStart = Date.now();
-
-    // Run searches in parallel with a concurrency limit of 5 so we don't
-    // blast the Anthropic API and stay well under the function timeout.
-    const CONCURRENCY = 5;
     for (let i = 0; i < vendorEntries.length; i += CONCURRENCY) {
       if (Date.now() - webSearchStart > WEB_SEARCH_BUDGET_MS) {
         const remaining = vendorEntries.length - i;
@@ -892,6 +889,18 @@ async function runFullCategorization(
       const batchNum = Math.floor(i / CONCURRENCY) + 1;
       const batch = vendorEntries.slice(i, i + CONCURRENCY);
       const batchVendorNames = batch.map(([, info]) => info.vendorName);
+
+      // Check if bookkeeper requested skip before starting this batch
+      const { data: jobCheck } = await service
+        .from("reclass_jobs")
+        .select("error_message")
+        .eq("id", jobId)
+        .single();
+      if ((jobCheck as any)?.error_message === "[skip_web_search]") {
+        const remaining = vendorEntries.length - i;
+        console.log(`[reclass] Web search skipped by user — ${remaining} vendors remain in needs_review`);
+        break;
+      }
 
       // Write live progress to error_message (cleared on success, overwritten on failure)
       await service
