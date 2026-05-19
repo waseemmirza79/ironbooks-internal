@@ -86,6 +86,34 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
     }
   }, [searchParams, clientLinks]);
 
+  // Pre-check the same-client concurrency guard when a client is picked.
+  // Catches the 409 case BEFORE submit so the form can disable itself and
+  // show the conflict panel proactively — eliminates the "Failed to load
+  // resource: 409" console errors that fire on the submit path.
+  useEffect(() => {
+    if (!clientLinkId) {
+      setConflict(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/stripe-recon/active?client_link_id=${clientLinkId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        if (data.active) {
+          setConflict({ jobId: data.active.id, status: data.active.status });
+        } else {
+          setConflict(null);
+        }
+      })
+      .catch(() => {
+        // Pre-check is best-effort; server-side guard still catches it.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clientLinkId]);
+
   // Load fiscal year + presets when client is selected
   useEffect(() => {
     if (!clientLinkId) return;
@@ -125,8 +153,16 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
     if (p) { setDateRangeStart(p.start); setDateRangeEnd(p.end); }
   }, [datePresetId, datePresets]);
 
+  // Disable submit if the pre-check (or a prior 409) has identified an
+  // active recon on this client. Belt-and-suspenders: the server guard
+  // still rejects the submit if someone bypasses this, so safety isn't
+  // dependent on the UI.
   const canSubmit =
-    !!clientLinkId && !!dateRangeStart && !!dateRangeEnd && !submitting;
+    !!clientLinkId &&
+    !!dateRangeStart &&
+    !!dateRangeEnd &&
+    !submitting &&
+    !conflict;
 
   async function handleSubmit() {
     if (!canSubmit || !selectedClient) return;
