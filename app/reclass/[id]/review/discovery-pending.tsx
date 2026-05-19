@@ -31,7 +31,7 @@ export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
         setStats(data.stats);
 
         if (data.status === "in_review") {
-          router.refresh();
+          window.location.reload();
           return;
         }
         if (data.status === "failed") {
@@ -39,7 +39,7 @@ export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
           return;
         }
         if (data.status === "complete") {
-          router.push(`/reclass/${jobId}/execute`);
+          window.location.href = `/reclass/${jobId}/execute`;
           return;
         }
 
