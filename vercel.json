@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/stripe-invite-detector",
+      "schedule": "0 6 * * *"
+    }
+  ]
+}
