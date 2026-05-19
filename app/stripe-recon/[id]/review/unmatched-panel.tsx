@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
-  AlertTriangle, CreditCard, Loader2, ArrowRight, CheckCircle2,
+  AlertTriangle, CreditCard, Loader2, ArrowRight, CheckCircle2, Calendar,
 } from "lucide-react";
 import { StripeConnectModal } from "@/components/StripeConnectModal";
 import { UpgradeToStripeApiButton } from "./upgrade-button";
@@ -33,6 +34,7 @@ export function UnmatchedPanel({
   stripeConnected,
   dateRangeStart,
   dateRangeEnd,
+  reconMethod,
 }: {
   jobId: string;
   clientLinkId: string;
@@ -49,6 +51,10 @@ export function UnmatchedPanel({
   /** Used to pre-fill the same date range on the Stripe-API re-run. */
   dateRangeStart: string | null;
   dateRangeEnd: string | null;
+  /** Which matching method this recon used. Drives which branch of the
+   *  panel renders — Stripe-API zero-payouts is a different problem
+   *  (account / mode mismatch) than QBO-AI zero-candidates. */
+  reconMethod: "stripe_api" | "qbo_invoice_match" | null;
 }) {
   const router = useRouter();
   const [connectModalOpen, setConnectModalOpen] = useState(false);
@@ -85,6 +91,37 @@ export function UnmatchedPanel({
     style: "currency",
     currency: "USD",
   }).format(totalAmount);
+
+  // "Try another period" suggestion. Logic: take the calendar year
+  // immediately before the current range's start, scan it Jan 1 → Dec 31.
+  //
+  //   Current range 2026-01-01 → 2026-05-19  →  suggest 2025-01-01 → 2025-12-31
+  //   Current range 2025-01-01 → 2026-05-19  →  suggest 2024-01-01 → 2024-12-31
+  //
+  // That matches the user's spec: "if it's just this year, ask to do the
+  // previous year; if they did this and last, ask to do the year prior."
+  // In both cases the immediately-prior calendar year is the next thing
+  // worth checking.
+  const previousPeriod = (() => {
+    if (!dateRangeStart) return null;
+    const startYear = Number(dateRangeStart.split("-")[0]);
+    if (!Number.isFinite(startYear)) return null;
+    const targetYear = startYear - 1;
+    return {
+      label: String(targetYear),
+      start: `${targetYear}-01-01`,
+      end: `${targetYear}-12-31`,
+    };
+  })();
+
+  const tryAnotherPeriodHref = previousPeriod
+    ? `/stripe-recon/new?${new URLSearchParams({
+        client: clientLinkId,
+        start: previousPeriod.start,
+        end: previousPeriod.end,
+        ...(reclassJobId ? { reclass_job_id: reclassJobId } : {}),
+      }).toString()}`
+    : null;
 
   return (
     <>
@@ -165,7 +202,39 @@ export function UnmatchedPanel({
           </div>
         )}
 
-        {/* Path 2: Acknowledge */}
+        {/* Path 2: Try a different period.
+            Scans the prior calendar year — useful when the Stripe-tagged
+            deposits in QBO span dates outside the current cleanup window
+            (e.g. the client only started using Stripe last year and the
+            current run is on this fiscal year alone). */}
+        {previousPeriod && tryAnotherPeriodHref && (
+          <div className="pt-3 border-t border-gray-100 space-y-3">
+            <div>
+              <p className="text-sm font-semibold text-navy">
+                Or: try a different period
+              </p>
+              <p className="text-xs text-ink-slate mt-1">
+                Scan{" "}
+                <strong className="text-navy">
+                  {previousPeriod.label} ({previousPeriod.start} → {previousPeriod.end})
+                </strong>{" "}
+                for Stripe-tagged deposits and any matching QBO invoices.
+                Useful if {clientName} started using Stripe earlier and the
+                current window doesn&apos;t cover those deposits.
+              </p>
+            </div>
+            <Link
+              href={tryAnotherPeriodHref}
+              className="w-full inline-flex items-center justify-center gap-2 bg-white hover:bg-gray-50 border border-gray-200 text-navy text-sm font-semibold px-5 py-2.5 rounded-lg"
+            >
+              <Calendar size={16} />
+              Try {previousPeriod.label} ({previousPeriod.start} → {previousPeriod.end})
+              <ArrowRight size={14} />
+            </Link>
+          </div>
+        )}
+
+        {/* Path 3: Acknowledge */}
         <div className="pt-3 border-t border-gray-100 space-y-3">
           <div>
             <p className="text-sm font-semibold text-navy">
