@@ -975,33 +975,39 @@ async function runFullCategorization(
       const row = buildReclassRow(jobId, line, {
         target_account_id: uncategorizedAccount?.qbo_account_id || null,
         target_account_name: uncategorizedAccount?.account_name || null,
-        decision: uncategorizedAccount ? "auto_approve" : "flagged",
+        decision: uncategorizedAccount ? "needs_review" : "flagged",
         confidence: 0,
         reasoning: uncategorizedAccount
-          ? "AI did not return a decision — routed to Uncategorized Expenses for bookkeeper review."
+          ? "AI did not return a decision — needs bookkeeper review before executing."
           : "AI did not return a decision for this line.",
       });
       reclassRows.push(row);
       if (row.decision === "skip") stats.skipAlreadyCorrect++;
-      else if (uncategorizedAccount) stats.autoApprove++;
+      else if (uncategorizedAccount) stats.needsReview++;
       else stats.flagged++;
       continue;
     }
 
-    // ask_client decisions (bank transfers, etc.) must NOT be auto-routed
-    // to Uncategorized Expenses — they need explicit human review.
+    // ask_client decisions (bank transfers) need explicit human review — never auto-route.
+    // flagged decisions (AI confidence < 60%, no good target) also need explicit review —
+    // do NOT escalate to auto_approve just because an Uncategorized Expenses account exists.
+    // Only needs_review rows without a target get a soft landing to Uncategorized Expenses
+    // so the bookkeeper can batch-handle them in QBO after execution.
     const isAskClient = decision.decision === "ask_client";
-    const resolvedTargetId = isAskClient
-      ? null
+    const isFlagged = decision.decision === "flagged";
+    const resolvedTargetId = isAskClient || isFlagged
+      ? (decision.target_account_id || null)
       : decision.target_account_id || uncategorizedAccount?.qbo_account_id || null;
-    const resolvedTargetName = isAskClient
-      ? null
+    const resolvedTargetName = isAskClient || isFlagged
+      ? (decision.target_account_name || null)
       : decision.target_account_name || uncategorizedAccount?.account_name || null;
     const resolvedDecision = isAskClient
       ? "ask_client"
-      : !decision.target_account_id && uncategorizedAccount
-        ? "auto_approve"
-        : decision.decision;
+      : isFlagged
+        ? "flagged"
+        : !decision.target_account_id && uncategorizedAccount
+          ? "needs_review"
+          : decision.decision;
 
     const row = buildReclassRow(jobId, line, {
       target_account_id: resolvedTargetId,
