@@ -2,18 +2,28 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Loader2, Flag } from "lucide-react";
+import { Send, Loader2, Flag } from "lucide-react";
 
 /**
- * Final "close the loop" action for a client cleanup cycle. Lives on the
- * stripe-recon review page (the canonical last step). When clicked, marks
- * the client_links row complete with date-range breadcrumbs so the PDF
- * report can be re-pulled later from the Completed Accounts table.
+ * "Submit for senior review" — the canonical close-out action at the end
+ * of the Stripe Recon step. Previously this button marked the client
+ * fully complete; now it routes the cleanup into the senior-review
+ * stage where an admin/lead reviews the work and sends the PDF to the
+ * client before the cycle is officially closed and the client moves to
+ * month-over-month.
  *
- * Use case: the bookkeeper just finished the recon (either matched +
- * executed, or acknowledged because AR matching wasn't possible) and is
- * ready to move on. One click here moves the client out of the active
- * queue and onto the completed list.
+ * The full pipeline:
+ *   Active cleanup
+ *     → [Submit for Review] (this button)
+ *   In Review
+ *     → senior opens the review modal on /clients
+ *     → reviewer copies branded email + PDF link to clipboard
+ *     → pastes into Double and sends to client
+ *     → reviewer clicks Approve → cleanup_completed_at set
+ *   Completed (month-over-month)
+ *
+ * The button is callable by any role — junior bookkeepers submit for
+ * review; only seniors can approve.
  */
 export function MarkCleanupCompleteButton({
   clientLinkId,
@@ -35,30 +45,37 @@ export function MarkCleanupCompleteButton({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>("");
 
-  async function handleMarkComplete() {
-    if (!confirm(
-      `Mark ${clientName}'s cleanup as complete?\n\n` +
-      `• The client will move to the Completed Accounts list below the main grid.\n` +
-      `• The PDF cleanup report will remain available to download.\n` +
-      `• You can reopen the cleanup any time if more work comes up.`
-    )) return;
+  async function handleSubmit() {
+    if (
+      !confirm(
+        `Submit ${clientName}'s cleanup for senior review?\n\n` +
+          `• The client will move to the In Review list — out of your active queue.\n` +
+          `• A senior bookkeeper will review the work + send the PDF report to the client.\n` +
+          `• Once approved, the client moves to Completed Accounts (month-over-month).\n` +
+          `• You can withdraw the submission if you realize more work is needed.`
+      )
+    )
+      return;
 
     setSubmitting(true);
     setError("");
     try {
-      const res = await fetch(`/api/clients/${clientLinkId}/complete-cleanup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          range_start: defaultRangeStart || undefined,
-          range_end: defaultRangeEnd || undefined,
-        }),
-      });
+      const res = await fetch(
+        `/api/clients/${clientLinkId}/submit-for-review`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            range_start: defaultRangeStart || undefined,
+            range_end: defaultRangeEnd || undefined,
+          }),
+        }
+      );
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       router.push("/clients");
     } catch (e: any) {
-      setError(e.message || "Failed to mark complete");
+      setError(e.message || "Failed to submit for review");
       setSubmitting(false);
     }
   }
@@ -66,18 +83,18 @@ export function MarkCleanupCompleteButton({
   const isPrimary = variant === "primary";
 
   return (
-    <div className={isPrimary ? "rounded-xl bg-green-50 border border-green-200 p-4" : ""}>
+    <div className={isPrimary ? "rounded-xl bg-teal-lighter border border-teal/30 p-4" : ""}>
       {isPrimary && (
         <div className="flex items-start gap-2 mb-3">
-          <Flag className="text-green-700 flex-shrink-0 mt-0.5" size={18} />
+          <Flag className="text-teal flex-shrink-0 mt-0.5" size={18} />
           <div className="text-sm">
-            <div className="font-semibold text-green-900">
-              Ready to close out {clientName}?
+            <div className="font-semibold text-navy">
+              Done with {clientName}? Submit for senior review.
             </div>
-            <div className="text-xs text-green-800 mt-0.5">
-              Mark the cleanup complete to move this client to the Completed
-              Accounts list. The PDF report stays available, and you can
-              reopen any time.
+            <div className="text-xs text-ink-slate mt-0.5">
+              The client moves to the In Review list. A senior reviews the
+              work, sends the PDF report to the client, and approves — then
+              the client moves to Completed Accounts (month-over-month).
             </div>
           </div>
         </div>
@@ -88,20 +105,22 @@ export function MarkCleanupCompleteButton({
         </div>
       )}
       <button
-        onClick={handleMarkComplete}
+        onClick={handleSubmit}
         disabled={submitting}
         className={
           isPrimary
-            ? "w-full inline-flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
+            ? "w-full inline-flex items-center justify-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-60 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
             : "w-full inline-flex items-center justify-center gap-2 bg-white hover:bg-gray-50 disabled:opacity-60 border border-gray-200 text-navy text-sm font-semibold px-5 py-2.5 rounded-lg"
         }
       >
         {submitting ? (
           <Loader2 size={16} className="animate-spin" />
         ) : (
-          <CheckCircle2 size={16} />
+          <Send size={16} />
         )}
-        {submitting ? "Marking complete..." : `Mark ${clientName}'s cleanup complete`}
+        {submitting
+          ? "Submitting…"
+          : `Submit ${clientName}'s cleanup for senior review`}
       </button>
     </div>
   );

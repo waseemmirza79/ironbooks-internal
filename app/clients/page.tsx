@@ -5,6 +5,7 @@ import { sweepStaleJobs } from "@/lib/stale-jobs";
 import { Plus } from "lucide-react";
 import { ClientsList } from "./clients-list";
 import { CompletedAccounts } from "./completed-accounts";
+import { InReviewAccounts } from "./in-review-accounts";
 
 export default async function ClientsPage() {
   // Watchdog: auto-fail any job that's been hung in `executing` past its
@@ -32,7 +33,7 @@ export default async function ClientsPage() {
     supabase
       .from("client_links")
       .select(
-        "id, double_client_name, stripe_connection_status, due_date, cleanup_completed_at, cleanup_completed_by, cleanup_range_start, cleanup_range_end, cleanup_completion_note"
+        "id, double_client_name, stripe_connection_status, due_date, cleanup_completed_at, cleanup_completed_by, cleanup_range_start, cleanup_range_end, cleanup_completion_note, cleanup_review_state, cleanup_review_submitted_at, cleanup_review_submitted_by"
       ),
     supabase
       .from("users")
@@ -73,14 +74,34 @@ export default async function ClientsPage() {
       cleanup_completion_note: string | null;
     }
   >();
+  // In-review markers — clients whose cleanup is submitted, awaiting
+  // senior approval. Distinct from Active and Completed.
+  const inReviewById = new Map<
+    string,
+    {
+      cleanup_review_submitted_at: string;
+      cleanup_review_submitted_by: string | null;
+      cleanup_range_start: string | null;
+      cleanup_range_end: string | null;
+    }
+  >();
   for (const l of linksData) {
     const ca = (l as any).cleanup_completed_at;
+    const rs = (l as any).cleanup_review_state;
     if (ca) {
       completionById.set(l.id, {
         cleanup_completed_at: ca,
         cleanup_range_start: (l as any).cleanup_range_start ?? null,
         cleanup_range_end: (l as any).cleanup_range_end ?? null,
         cleanup_completion_note: (l as any).cleanup_completion_note ?? null,
+      });
+    } else if (rs === "in_review") {
+      inReviewById.set(l.id, {
+        cleanup_review_submitted_at: (l as any).cleanup_review_submitted_at,
+        cleanup_review_submitted_by:
+          (l as any).cleanup_review_submitted_by || null,
+        cleanup_range_start: (l as any).cleanup_range_start ?? null,
+        cleanup_range_end: (l as any).cleanup_range_end ?? null,
       });
     }
   }
@@ -103,11 +124,41 @@ export default async function ClientsPage() {
     resumable_job: c.id ? resumableJobByClient.get(c.id) ?? null : null,
   }));
 
-  // Partition: completed clients drop out of the active "step 1 select
-  // client" list and into a separate Completed Accounts table below.
+  // Bookkeeper names — needed for the "submitted by" column in the
+  // In Review partition.
+  const bkNameById = new Map<string, string>();
+  for (const bk of bookkeepersRes.data || []) {
+    if ((bk as any).id) bkNameById.set((bk as any).id, (bk as any).full_name);
+  }
+
+  // Partition: completed → Completed Accounts; in_review → In Review;
+  // everything else → Active. A client can only be in one bucket.
   const activeClients = enrichedClients.filter(
-    (c: any) => c.id && !completionById.has(c.id)
+    (c: any) =>
+      c.id && !completionById.has(c.id) && !inReviewById.has(c.id)
   );
+  const inReviewClients = enrichedClients
+    .filter((c: any) => c.id && inReviewById.has(c.id))
+    .map((c: any) => {
+      const r = inReviewById.get(c.id)!;
+      return {
+        id: c.id as string,
+        client_name: c.client_name as string,
+        jurisdiction: c.jurisdiction as "US" | "CA",
+        state_province: (c.state_province as string | null) || null,
+        cleanup_review_submitted_at: r.cleanup_review_submitted_at,
+        cleanup_review_submitted_by_name: r.cleanup_review_submitted_by
+          ? bkNameById.get(r.cleanup_review_submitted_by) || null
+          : null,
+        cleanup_range_start: r.cleanup_range_start,
+        cleanup_range_end: r.cleanup_range_end,
+      };
+    })
+    .sort((a, b) =>
+      (b.cleanup_review_submitted_at || "").localeCompare(
+        a.cleanup_review_submitted_at || ""
+      )
+    );
   const completedClients = enrichedClients
     .filter((c: any) => c.id && completionById.has(c.id))
     .map((c: any) => ({
@@ -125,7 +176,13 @@ export default async function ClientsPage() {
     <AppShell>
       <TopBar
         title="Clients"
-        subtitle={`${activeClients.length} active · ${completedClients.length} completed`}
+        subtitle={
+          `${activeClients.length} active` +
+          (inReviewClients.length > 0
+            ? ` · ${inReviewClients.length} in review`
+            : "") +
+          ` · ${completedClients.length} completed`
+        }
         actions={
           <a
             href="/api/qbo/connect"
@@ -143,6 +200,12 @@ export default async function ClientsPage() {
           currentUserId={user?.id || ""}
           canEdit={!!canEdit}
         />
+        {inReviewClients.length > 0 && (
+          <InReviewAccounts
+            clients={inReviewClients}
+            canApprove={!!canEdit}
+          />
+        )}
         {completedClients.length > 0 && (
           <CompletedAccounts clients={completedClients} canEdit={!!canEdit} />
         )}
