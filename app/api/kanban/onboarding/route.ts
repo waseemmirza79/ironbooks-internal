@@ -17,8 +17,10 @@ import { NextResponse } from "next/server";
  *   coa_in_progress     active or failed COA job
  *   reclass_in_progress active or failed reclass job (COA done)
  *   review              cleanup_review_state='in_review' (senior pending)
- *   bs_cleanup          reclass done + (stripe done OR not required) +
- *                       cleanup not yet submitted for review
+ *   bs_cleanup          any reclass complete (regardless of stripe state) and
+ *                       no newer reclass currently active/failed. Stripe is
+ *                       parallel work — once reclass + bank rules are done,
+ *                       the client is ready to start BS Cleanup.
  *   needs_cleanup       no active jobs
  */
 export async function GET(request: Request) {
@@ -147,10 +149,17 @@ export async function GET(request: Request) {
     review: [],
   };
 
+  // Build a per-client "has any completed reclass" map so a later failed
+  // reclass (e.g., killed by the watchdog) doesn't block a client whose
+  // earlier reclass actually shipped.
+  const hasCompleteReclassByClient = new Map<string, boolean>();
+  for (const j of reclassJobs || []) {
+    if (j.status === "complete") hasCompleteReclassByClient.set(j.client_link_id, true);
+  }
+
   for (const client of activeClients) {
     const coa = latestCoa.get(client.id);
     const reclass = latestReclass.get(client.id);
-    const stripeRecon = latestStripeRecon.get(client.id);
     const bankRecon = latestBankRecon.get(client.id);
     const bk = client.assigned_bookkeeper_id ? bkById.get(client.assigned_bookkeeper_id) : null;
     const stripeConnected = client.stripe_connection_status === "connected";
@@ -158,11 +167,10 @@ export async function GET(request: Request) {
     const stripeNotRequired = !!(client as any).stripe_not_required;
     const token = latestStripeToken.get(client.id);
 
-    // "Stripe portion of the pipeline is complete" — either explicitly
-    // marked not required, OR the most recent stripe recon finished.
-    const stripeDone =
-      stripeNotRequired ||
-      (stripeRecon && stripeRecon.status === "complete");
+    // Does the client have ANY completed reclass run (not just the latest)?
+    // Used to make BS Cleanup reachable even if a later reclass failed.
+    const hasCompleteReclass = !!hasCompleteReclassByClient.get(client.id);
+    const latestReclassActive = reclass && ACTIVE_STATUSES.has(reclass.status);
 
     // BS status — if there's already a bank_recon_jobs row we surface
     // it as "in progress"; otherwise "ready to start." Used in the
@@ -197,7 +205,22 @@ export async function GET(request: Request) {
       continue;
     }
 
-    // ── PRIORITY 2: awaiting stripe (link sent, not yet connected) ──
+    // ── PRIORITY 2: active COA (must finish before anything else) ──
+    if (coa && ACTIVE_STATUSES.has(coa.status)) {
+      columns.coa_in_progress.push(card);
+      continue;
+    }
+
+    // ── PRIORITY 3: BS cleanup ──
+    // Once ANY reclass has completed AND no newer reclass is currently
+    // active, the client is ready for BS work. Stripe is parallel — a
+    // pending stripe link no longer blocks BS Cleanup.
+    if (hasCompleteReclass && !latestReclassActive) {
+      columns.bs_cleanup.push(card);
+      continue;
+    }
+
+    // ── PRIORITY 4: awaiting stripe (link sent, not yet connected) ──
     // Skipped for clients flagged stripe_not_required.
     if (
       client.stripe_request_sent_at &&
@@ -208,13 +231,13 @@ export async function GET(request: Request) {
       continue;
     }
 
-    // ── PRIORITY 3: active or failed COA ──
-    if (coa && (ACTIVE_STATUSES.has(coa.status) || coa.status === "failed")) {
+    // ── PRIORITY 5: failed COA ──
+    if (coa && coa.status === "failed") {
       columns.coa_in_progress.push(card);
       continue;
     }
 
-    // ── PRIORITY 4: active or failed reclass (COA done) ──
+    // ── PRIORITY 6: active or failed reclass (COA done, no prior complete reclass) ──
     if (reclass && (ACTIVE_STATUSES.has(reclass.status) || reclass.status === "failed")) {
       if (!coa || !ACTIVE_STATUSES.has(coa.status)) {
         columns.reclass_in_progress.push(card);
@@ -222,15 +245,7 @@ export async function GET(request: Request) {
       }
     }
 
-    // ── PRIORITY 5: BS cleanup ──
-    // Reclass done + (Stripe done OR not required). Stays here until
-    // the bookkeeper submits for senior review.
-    if (reclass && reclass.status === "complete" && stripeDone) {
-      columns.bs_cleanup.push(card);
-      continue;
-    }
-
-    // ── PRIORITY 6: needs cleanup (no active jobs) ──
+    // ── PRIORITY 7: needs cleanup (no active jobs) ──
     columns.needs_cleanup.push(card);
   }
 
