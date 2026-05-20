@@ -20,6 +20,7 @@ export function ReclassDiscoveryPending({
   const [elapsed, setElapsed] = useState<number>(0);
   const [cancelling, setCancelling] = useState(false);
   const [aiProgress, setAiProgress] = useState<{ done: number; total: number } | null>(null);
+  const [phase, setPhase] = useState<string | null>(null);
 
   useEffect(() => {
     const t = setInterval(() => setElapsed((s) => s + 1), 1000);
@@ -38,6 +39,7 @@ export function ReclassDiscoveryPending({
 
         setStats(data.stats);
         if (data.ai_progress) setAiProgress(data.ai_progress);
+        if (data.phase !== undefined) setPhase(data.phase);
 
         if (data.status === "in_review") {
           window.location.reload();
@@ -132,12 +134,28 @@ export function ReclassDiscoveryPending({
     );
   }
 
-  // Stage detection: once aiProgress arrives we're definitely in AI; before that,
-  // use elapsed time as a rough heuristic for pulling vs pre-match.
-  const stage =
-    aiProgress ? "ai"
-    : elapsed < 5 ? "pulling"
-    : "knowledge_base";
+  // Stage detection driven by server-side phase markers (more reliable than
+  // elapsed time). Falls back to time-based guess only when no phase yet.
+  function stageFromPhase(p: string | null): "pulling" | "knowledge_base" | "ai" | "saving" {
+    if (!p) return aiProgress ? "ai" : elapsed < 5 ? "pulling" : "knowledge_base";
+    if (p.startsWith("pulling")) return "pulling";
+    if (p.startsWith("fetching_accounts") || p.startsWith("pre_matching")) return "knowledge_base";
+    if (p.startsWith("running_ai")) return "ai";
+    if (p.startsWith("saving")) return "saving";
+    return aiProgress ? "ai" : "knowledge_base";
+  }
+  const stage = stageFromPhase(phase);
+
+  // Friendly label for the current phase shown under the active step.
+  function phaseLabel(p: string | null): string {
+    if (!p) return "Starting…";
+    if (p.startsWith("pulling")) return "Pulling transactions from QuickBooks";
+    if (p === "fetching_accounts") return "Fetching chart of accounts";
+    if (p === "pre_matching") return "Matching against knowledge base + bank rules";
+    if (p.startsWith("running_ai")) return `Running AI categorization — ${p.replace("running_ai", "").trim() || "starting"}`;
+    if (p.startsWith("saving")) return `Saving results — ${p.replace("saving", "").trim() || ""}`;
+    return p;
+  }
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-8">
@@ -157,10 +175,15 @@ export function ReclassDiscoveryPending({
           {cancelling ? "Cancelling…" : "Cancel job"}
         </button>
       </div>
-      <p className="text-sm text-ink-slate mb-6">
-        Transactions go through a 3-stage pipeline. Most match instantly from the knowledge
-        base or saved bank rules; the unknowns get categorized by AI in small batches.
-      </p>
+      <div className="mb-6 p-3 rounded-lg bg-teal-lighter/50 border border-teal/20 flex items-center gap-2">
+        <Loader2 className="animate-spin text-teal flex-shrink-0" size={14} />
+        <span className="text-sm font-semibold text-navy">{phaseLabel(phase)}</span>
+        {aiProgress && (
+          <span className="text-xs text-ink-slate ml-auto">
+            Batch {aiProgress.done} / {aiProgress.total}
+          </span>
+        )}
+      </div>
 
       {/* Pipeline stages */}
       <div className="rounded-xl bg-gray-50 p-4 mb-5 border border-gray-100">
@@ -184,15 +207,15 @@ export function ReclassDiscoveryPending({
         {/* Row 2 */}
         <div className="flex items-start gap-3 py-2.5">
           <div className="rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0"
-            style={{ backgroundColor: stage === "ai" ? "#D1FAE5" : stage === "knowledge_base" ? "#E8F2F0" : "#F3F4F6" }}>
-            {stage === "ai"
+            style={{ backgroundColor: stage === "ai" || stage === "saving" ? "#D1FAE5" : stage === "knowledge_base" ? "#E8F2F0" : "#F3F4F6" }}>
+            {stage === "ai" || stage === "saving"
               ? <CheckCircle2 size={16} className="text-green-600" />
               : stage === "knowledge_base"
               ? <Loader2 size={14} className="text-teal animate-spin" />
               : <Database size={14} className="text-ink-light" />}
           </div>
           <div className="flex-1 min-w-0">
-            <div className={`text-sm font-semibold ${stage === "ai" ? "text-green-700" : stage === "knowledge_base" ? "text-navy" : "text-ink-light"}`}>
+            <div className={`text-sm font-semibold ${stage === "ai" || stage === "saving" ? "text-green-700" : stage === "knowledge_base" ? "text-navy" : "text-ink-light"}`}>
               2. Knowledge base + bank rules pre-match
             </div>
             <div className="text-xs text-ink-slate mt-0.5">Instant matches for ~200 known vendors + your prior categorizations</div>
@@ -202,13 +225,15 @@ export function ReclassDiscoveryPending({
         {/* Row 3 */}
         <div className="flex items-center gap-3 py-2.5">
           <div className="rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0"
-            style={{ backgroundColor: stage === "ai" ? "#E8F2F0" : "#F3F4F6" }}>
-            {stage === "ai"
+            style={{ backgroundColor: stage === "saving" ? "#D1FAE5" : stage === "ai" ? "#E8F2F0" : "#F3F4F6" }}>
+            {stage === "saving"
+              ? <CheckCircle2 size={16} className="text-green-600" />
+              : stage === "ai"
               ? <Loader2 size={14} className="text-teal animate-spin" />
               : <Sparkles size={14} className="text-ink-light" />}
           </div>
           <div className="flex-1 min-w-0">
-            <div className={`text-sm font-semibold ${stage === "ai" ? "text-navy" : "text-ink-light"}`}>
+            <div className={`text-sm font-semibold ${stage === "saving" ? "text-green-700" : stage === "ai" ? "text-navy" : "text-ink-light"}`}>
               3. AI categorization (Claude)
             </div>
             <div className="text-xs text-ink-slate mt-0.5">

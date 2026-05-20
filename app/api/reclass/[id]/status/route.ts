@@ -74,6 +74,14 @@ export async function GET(
     aiProgress = { done: parseInt(aiMatch[1], 10), total: parseInt(aiMatch[2], 10) };
   }
 
+  // Parse the current phase marker. Format: "[phase] label_text"
+  // Phases: pulling_transactions, fetching_accounts, pre_matching,
+  // running_ai (N lines), saving (N rows). Surfaces what the worker is
+  // doing during the long pre-AI / post-AI windows when ai_progress is null.
+  let phase: string | null = null;
+  const phaseMatch = (job.error_message || "").match(/^\[phase\]\s+(.+)$/);
+  if (phaseMatch) phase = phaseMatch[1].trim();
+
   // Parse web search progress from error_message when paused/running a chunk.
   // Format: "[web_search_progress] done/total"
   let webSearchProgress: { done: number; total: number } | null = null;
@@ -110,7 +118,7 @@ export async function GET(
   // Only pass error_message to the UI for lines the UI should display.
   // Internal state tokens ([ai_progress], [web_search_progress], [skip_ai],
   // [skip_web_search]) are stripped — they're bookkeeping, not user messages.
-  const internalPrefixes = ["[ai_progress]", "[web_search_progress]", "[skip_ai]", "[skip_web_search]"];
+  const internalPrefixes = ["[ai_progress]", "[web_search_progress]", "[skip_ai]", "[skip_web_search]", "[phase]"];
   const uiErrorMessage = internalPrefixes.some((p) => (job.error_message || "").startsWith(p))
     ? null
     : job.error_message;
@@ -123,6 +131,7 @@ export async function GET(
     duration_seconds: job.execution_duration_seconds,
     error_message: uiErrorMessage,
     ai_progress: aiProgress,
+    phase,
     web_search_progress: webSearchProgress,
     progress: {
       total,

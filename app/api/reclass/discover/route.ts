@@ -583,6 +583,18 @@ async function runFullCategorization(
   clientLink: any,
   accessToken: string
 ) {
+  // Helper: write a step marker to error_message so the UI can show what's
+  // happening during the long pre-AI phases (QBO fetches, etc).
+  const setPhase = async (label: string) => {
+    console.log(`[reclass ${jobId}] ${label}`);
+    await service
+      .from("reclass_jobs")
+      .update({ error_message: `[phase] ${label}` } as any)
+      .eq("id", jobId);
+  };
+
+  await setPhase("pulling_transactions");
+
   // Refetch the job to ensure we have the threshold + dates
   const { data: job } = await service
     .from("reclass_jobs")
@@ -601,6 +613,8 @@ async function runFullCategorization(
       job.date_range_start,
       job.date_range_end
     );
+
+  await setPhase("fetching_accounts");
 
   // 2. Closed-period guards (QBO + Double)
   const bookCloseDate = await getCompanyClosingDate(clientLink.qbo_realm_id, accessToken);
@@ -690,6 +704,8 @@ async function runFullCategorization(
     inScopeLines.push(line);
   }
   stats.inScope = inScopeLines.length;
+
+  await setPhase("pre_matching");
 
   // 4.5. PRE-PASS: knowledge base + bank rules cache.
   //   Items that match here skip Claude entirely → faster, cheaper, more accurate.
@@ -809,6 +825,8 @@ async function runFullCategorization(
     `[reclass] Pre-pass: ${kbHits} knowledge-base hits, ${cacheHits} bank-rule cache hits, ${linesForClaude.length} sent to Claude.`
   );
 
+  await setPhase(`running_ai (${linesForClaude.length} lines)`);
+
   // 5. Pass remaining lines to Claude
   const aiLines: FullCategorizationLine[] = linesForClaude.map((l) => ({
     ref_id: `${l.transaction_id}::${l.line_id}`,
@@ -909,6 +927,8 @@ async function runFullCategorization(
     else stats.flagged++;
   }
 
+  await setPhase(`saving (${reclassRows.length} rows)`);
+
   // 7. Bulk insert all rows (initial AI decisions — web search will upgrade some later)
   const BATCH_SIZE = 500;
   for (let i = 0; i < reclassRows.length; i += BATCH_SIZE) {
@@ -928,7 +948,7 @@ async function runFullCategorization(
 
   // 8. AI done — go straight to in_review. Web search is no longer auto-triggered;
   //    bookkeeper can run it on-demand from the review screen for low-confidence rows.
-  await service
+  const { error: finalErr } = await service
     .from("reclass_jobs")
     .update({
       status: "in_review",
@@ -946,6 +966,8 @@ async function runFullCategorization(
       warnings: aiResult.warnings.length > 0 ? (aiResult.warnings as any) : null,
     } as any)
     .eq("id", jobId);
+  if (finalErr) throw new Error(`Final status update failed: ${finalErr.message}`);
+  console.log(`[reclass ${jobId}] DONE — moved to in_review`);
 }
 
 /**
