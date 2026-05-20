@@ -20,6 +20,16 @@ export interface KanbanCard {
   bs_recon_started?: boolean;
   /** True if a bank_recon_jobs row exists with non-complete status. */
   bs_recon_in_progress?: boolean;
+  /** Bookkeeper checked "Sent client request to identify transactions". */
+  ask_client_email_sent_at?: string | null;
+  /** Bookkeeper checked "Sent client stripe request". */
+  stripe_request_sent_confirmed_at?: string | null;
+  /**
+   * Pre-built /api/reports/cleanup link for one-click download. Null until
+   * we have a date range to feed the report (either cleanup_range_* from
+   * complete-cleanup, or the latest completed COA job as fallback).
+   */
+  cleanup_pdf_href?: string | null;
   due_date: string | null;
   note_count: number;
   bookkeeper: KanbanBookkeeper | null;

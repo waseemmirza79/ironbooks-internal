@@ -3,7 +3,7 @@
 import { useState } from "react";
 import {
   MessageSquare, Clock, Zap, AlertCircle, CheckCircle2,
-  Loader2, MoreHorizontal, PauseCircle,
+  Loader2, MoreHorizontal, PauseCircle, Download,
 } from "lucide-react";
 import type { KanbanCard } from "./types";
 
@@ -38,6 +38,31 @@ export function ClientCard({ card, stage, onOpen, onRefresh, canEdit }: ClientCa
       setActing(false);
     }
   }
+
+  /**
+   * Toggle one of the two "sent" comms-tracker checkboxes. Optimistic in
+   * spirit (refresh after) but uses the existing /comms-tracker endpoint
+   * which is idempotent — re-toggling the same value is a no-op.
+   */
+  async function toggleCommsSent(
+    field: "ask_client_sent" | "stripe_request_sent",
+    next: boolean
+  ) {
+    setActing(true);
+    try {
+      await fetch(`/api/clients/${card.id}/comms-tracker`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: next }),
+      });
+      onRefresh();
+    } finally {
+      setActing(false);
+    }
+  }
+
+  const askClientSent = !!card.ask_client_email_sent_at;
+  const stripeRequestSent = !!card.stripe_request_sent_confirmed_at;
 
   return (
     <div
@@ -108,6 +133,53 @@ export function ClientCard({ card, stage, onOpen, onRefresh, canEdit }: ClientCa
             ? "Request sent today"
             : `Waiting ${daysSinceStripeRequest}d`}
         </div>
+      )}
+
+      {/* Client comms checkboxes — bookkeeper attests these manually since
+          we can't observe outbound email. Idempotent via /comms-tracker. */}
+      <div
+        className="space-y-1 mb-2 text-[11px] text-ink-slate"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <label className="flex items-center gap-1.5 cursor-pointer hover:text-navy">
+          <input
+            type="checkbox"
+            checked={askClientSent}
+            disabled={!canEdit || acting}
+            onChange={(e) => toggleCommsSent("ask_client_sent", e.target.checked)}
+            className="h-3 w-3 rounded border-gray-300 text-teal focus:ring-teal cursor-pointer disabled:opacity-50"
+          />
+          <span className={askClientSent ? "line-through text-ink-light" : ""}>
+            Sent client request to identify transactions
+          </span>
+        </label>
+        <label className="flex items-center gap-1.5 cursor-pointer hover:text-navy">
+          <input
+            type="checkbox"
+            checked={stripeRequestSent}
+            disabled={!canEdit || acting}
+            onChange={(e) => toggleCommsSent("stripe_request_sent", e.target.checked)}
+            className="h-3 w-3 rounded border-gray-300 text-teal focus:ring-teal cursor-pointer disabled:opacity-50"
+          />
+          <span className={stripeRequestSent ? "line-through text-ink-light" : ""}>
+            Sent client stripe request
+          </span>
+        </label>
+      </div>
+
+      {/* One-click cleanup-PDF download. Visible whenever we have a range
+          to feed the report; the href is built server-side so all the
+          fallback logic lives in /api/kanban/onboarding. */}
+      {card.cleanup_pdf_href && (
+        <a
+          href={card.cleanup_pdf_href}
+          onClick={(e) => e.stopPropagation()}
+          download
+          className="flex items-center justify-center gap-1.5 mb-2 text-[11px] font-semibold text-teal hover:text-teal-dark border border-teal/30 hover:bg-teal/5 rounded-md py-1 transition-colors"
+        >
+          <Download size={11} />
+          Download Cleanup PDF
+        </a>
       )}
 
       {/* Footer: bookkeeper + notes */}
@@ -214,12 +286,47 @@ function ActionButton({
 
   if (stage === "bs_cleanup") {
     // Continue if there's already a bank_recon_jobs row; otherwise
-    // "Start BS Cleanup" (primary CTA — first thing to do).
+    // "Start BS Cleanup" (primary CTA — first thing to do). Always
+    // expose the manual-done escape hatch so a bookkeeper who already
+    // reconciled outside the app can skip the workflow.
     const inProgress = (card as any).bs_recon_in_progress;
-    return btn(
-      inProgress ? "Continue BS Cleanup →" : "Start BS Cleanup →",
-      () => (window.location.href = `/balance-sheet/${card.id}`),
-      inProgress ? undefined : "primary"
+    async function manualDone() {
+      if (!confirm(
+        "Mark balance sheet done manually and move this client to Monthly Bookkeeping?"
+      )) return;
+      // Reuses the same /complete-cleanup endpoint the senior-review path
+      // uses. It falls back to the latest complete COA job's date range
+      // when none is supplied, so the cleanup-PDF link still works after.
+      onAct("/complete-cleanup", {
+        note: "BS balance done manually — moved to monthly bookkeeping",
+      });
+    }
+    return (
+      <div className="mt-2.5 space-y-1.5" onClick={(e) => e.stopPropagation()}>
+        <button
+          disabled={acting}
+          onClick={(e) => {
+            e.stopPropagation();
+            window.location.href = `/balance-sheet/${card.id}`;
+          }}
+          className={`w-full text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors disabled:opacity-50 ${
+            inProgress
+              ? "border border-gray-200 hover:border-gray-300 text-ink-slate hover:text-navy bg-white"
+              : "bg-teal hover:bg-teal-dark text-white"
+          }`}
+        >
+          {acting
+            ? <Loader2 size={11} className="animate-spin mx-auto" />
+            : (inProgress ? "Continue BS Cleanup →" : "Start BS Cleanup →")}
+        </button>
+        <button
+          disabled={acting}
+          onClick={(e) => { e.stopPropagation(); manualDone(); }}
+          className="w-full text-[11px] font-semibold py-1.5 px-3 rounded-lg border border-amber-200 text-amber-700 hover:bg-amber-50 bg-white transition-colors disabled:opacity-50"
+        >
+          BS Balance Done Manually — Move to Monthly Bookkeeping
+        </button>
+      </div>
     );
   }
 

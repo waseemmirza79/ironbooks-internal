@@ -157,6 +157,25 @@ export async function GET(request: Request) {
     if (j.status === "complete") hasCompleteReclassByClient.set(j.client_link_id, true);
   }
 
+  // Latest completed COA job per client — used as fallback range for the
+  // one-click cleanup-PDF link before the client is fully marked complete.
+  // (Same fallback `complete-cleanup` uses, so the dates match.)
+  const completeCoaRangeQuery: any = await (service as any)
+    .from("coa_jobs")
+    .select("client_link_id, date_range_start, date_range_end, execution_completed_at")
+    .in("client_link_id", clientIds)
+    .eq("status", "complete")
+    .order("execution_completed_at", { ascending: false });
+  const completeCoaRange = new Map<string, { start: string | null; end: string | null }>();
+  for (const j of (completeCoaRangeQuery.data || []) as any[]) {
+    if (!completeCoaRange.has(j.client_link_id)) {
+      completeCoaRange.set(j.client_link_id, {
+        start: j.date_range_start,
+        end: j.date_range_end,
+      });
+    }
+  }
+
   for (const client of activeClients) {
     const coa = latestCoa.get(client.id);
     const reclass = latestReclass.get(client.id);
@@ -177,6 +196,22 @@ export async function GET(request: Request) {
     // card subtitle.
     const bsInProgress = bankRecon && bankRecon.status !== "complete";
 
+    // One-click cleanup-PDF href — prefer the persisted cleanup_range_*,
+    // fall back to the most recent completed COA job's range so the
+    // bookkeeper can still download a report mid-onboarding.
+    const rangeStart =
+      (client as any).cleanup_range_start ||
+      completeCoaRange.get(client.id)?.start ||
+      null;
+    const rangeEnd =
+      (client as any).cleanup_range_end ||
+      completeCoaRange.get(client.id)?.end ||
+      null;
+    const cleanupPdfHref =
+      rangeStart && rangeEnd
+        ? `/api/reports/cleanup/${client.id}?start=${rangeStart}&end=${rangeEnd}`
+        : null;
+
     const card = {
       id: client.id,
       client_name: client.client_name,
@@ -192,6 +227,9 @@ export async function GET(request: Request) {
       stripe_not_required: stripeNotRequired,
       bs_recon_started: !!bankRecon,
       bs_recon_in_progress: !!bsInProgress,
+      ask_client_email_sent_at: (client as any).ask_client_email_sent_at || null,
+      stripe_request_sent_confirmed_at: (client as any).stripe_request_sent_confirmed_at || null,
+      cleanup_pdf_href: cleanupPdfHref,
       due_date: client.due_date,
       note_count: noteCountMap.get(client.id) || 0,
       bookkeeper: bk ? { id: bk.id, full_name: bk.full_name, avatar_url: bk.avatar_url } : null,
