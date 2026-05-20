@@ -89,10 +89,16 @@ export async function GET(
     webSearchProgress = { done: parseInt(wsMatch[1], 10), total: parseInt(wsMatch[2], 10) };
   }
 
+  // Parse pending-web-search count. Format: "[ws_pending] N"
+  // Set after AI finishes; UI shows the "Web search N vendors or skip?" prompt.
+  let webSearchPendingCount: number | null = null;
+  const wsPendingMatch = (job.error_message || "").match(/^\[ws_pending\]\s*(\d+)/);
+  if (wsPendingMatch) webSearchPendingCount = parseInt(wsPendingMatch[1], 10);
+
   // Only pass error_message to the UI for lines the UI should display.
   // Internal state tokens ([ai_progress], [web_search_progress], [skip_ai],
   // [skip_web_search]) are stripped — they're bookkeeping, not user messages.
-  const internalPrefixes = ["[ai_progress]", "[web_search_progress]", "[skip_ai]", "[skip_web_search]", "[phase]"];
+  const internalPrefixes = ["[ai_progress]", "[web_search_progress]", "[ws_pending]", "[skip_ai]", "[skip_web_search]", "[phase]"];
   const uiErrorMessage = internalPrefixes.some((p) => (job.error_message || "").startsWith(p))
     ? null
     : job.error_message;
@@ -107,6 +113,7 @@ export async function GET(
     ai_progress: aiProgress,
     phase,
     web_search_progress: webSearchProgress,
+    web_search_pending_count: webSearchPendingCount,
     progress: {
       total,
       completed,

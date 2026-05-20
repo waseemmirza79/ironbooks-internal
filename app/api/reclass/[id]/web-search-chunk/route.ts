@@ -9,14 +9,14 @@ import { getValidToken } from "@/lib/qbo-reclass";
 /**
  * POST /api/reclass/[id]/web-search-chunk
  *
- * Runs the next chunk of web searches (up to CHUNK_SIZE unique vendors) for a
- * job that is in 'web_search_paused' state. Returns immediately; search runs
- * in the background via after().
+ * Runs web search for ALL unique vendors still needing search, in batches of
+ * BATCH_SIZE processed in parallel per batch. Returns immediately; search runs
+ * in the background via after(). Progress is written to error_message after
+ * each batch so the UI can show "Batch X of Y".
  *
- * After the chunk completes:
- *   - More vendors remain → status stays 'web_search_paused'
- *   - All vendors done OR skip was requested → status = 'in_review'
- *   - Error → status returns to 'web_search_paused' so the bookkeeper can retry
+ * After all batches:
+ *   - status = 'in_review'
+ *   - Or 'in_review' early if skip signal fired mid-run
  *
  * Skip signal: the skip-web-search route sets error_message='[skip_web_search]'.
  * A poller inside this handler checks every 2s and aborts in-flight requests via
@@ -24,8 +24,9 @@ import { getValidToken } from "@/lib/qbo-reclass";
  * current batch to finish.
  */
 
-const CHUNK_SIZE = 20; // vendors per Continue click
-const CONCURRENCY = 5; // parallel searches within a chunk
+const BATCH_SIZE = 10; // vendors per batch, processed in parallel
+const TOTAL_BUDGET_MS = 10 * 60 * 1000; // 10 min hard cap; remaining vendors stay needs_review
+const MAX_VENDORS = 200;
 
 function normalizeForBankRule(name: string): string {
   return normalizeVendorForLookup(name)
@@ -141,10 +142,9 @@ async function runWebSearchChunk(jobId: string) {
     }
   }
 
-  const allRemainingCount = uniqueVendors.size;
-  const vendorEntries = [...uniqueVendors.entries()].slice(0, CHUNK_SIZE);
+  const allVendors = [...uniqueVendors.entries()].slice(0, MAX_VENDORS);
 
-  if (vendorEntries.length === 0) {
+  if (allVendors.length === 0) {
     // Nothing left to search
     await service
       .from("reclass_jobs")
@@ -153,9 +153,11 @@ async function runWebSearchChunk(jobId: string) {
     return;
   }
 
-  // Shared abort controller for the whole chunk.
-  // The skip poller fires it when the bookkeeper clicks Skip.
-  const chunkController = new AbortController();
+  const totalBatches = Math.ceil(allVendors.length / BATCH_SIZE);
+  console.log(`[web-search-chunk ${jobId}] ${allVendors.length} vendors in ${totalBatches} batches of ${BATCH_SIZE}`);
+
+  // Shared abort controller — fired by skip poller, by budget timer, or on error.
+  const runController = new AbortController();
   let skippedByUser = false;
 
   const skipPoll = setInterval(async () => {
@@ -167,40 +169,43 @@ async function runWebSearchChunk(jobId: string) {
         .single();
       if ((data as any)?.error_message === "[skip_web_search]") {
         skippedByUser = true;
-        chunkController.abort(new Error("Skipped by user"));
+        runController.abort(new Error("Skipped by user"));
         clearInterval(skipPoll);
       }
     } catch {}
   }, 2000);
 
   const newBankRules: any[] = [];
+  const runStart = Date.now();
 
   try {
-    for (let i = 0; i < vendorEntries.length; i += CONCURRENCY) {
-      if (chunkController.signal.aborted) break;
+    for (let i = 0; i < allVendors.length; i += BATCH_SIZE) {
+      if (runController.signal.aborted) break;
+      if (Date.now() - runStart > TOTAL_BUDGET_MS) {
+        console.log(`[web-search-chunk ${jobId}] Total budget exhausted at vendor ${i}/${allVendors.length}`);
+        break;
+      }
 
-      const batch = vendorEntries.slice(i, i + CONCURRENCY);
-      const batchNames = batch.map(([, name]) => name);
+      const batch = allVendors.slice(i, i + BATCH_SIZE);
+      const batchIdx = Math.floor(i / BATCH_SIZE) + 1;
 
-      // Write live progress — use conditional update so the skip signal
-      // ([skip_web_search]) is never overwritten by a progress log.
+      // Write progress BEFORE batch — UI shows movement. Conditional update so
+      // the skip signal ([skip_web_search]) isn't overwritten.
       await service
         .from("reclass_jobs")
-        .update({
-          error_message: `[web_search] Searching: ${batchNames.join(" • ")}`,
-        } as any)
+        .update({ error_message: `[web_search_progress] ${batchIdx - 1}/${totalBatches}` } as any)
         .eq("id", jobId)
         .neq("error_message", "[skip_web_search]");
 
       const results = await Promise.all(
         batch.map(async ([normalized, vendorName]) => {
-          if (chunkController.signal.aborted) {
+          if (runController.signal.aborted) {
             return { normalized, vendorName, result: null };
           }
           try {
             const result = await webSearchVendor(
               { vendorName, clientCity, availableAccounts },
-              { signal: chunkController.signal }
+              { signal: runController.signal }
             );
             return { normalized, vendorName, result };
           } catch (err: any) {
@@ -221,7 +226,7 @@ async function runWebSearchChunk(jobId: string) {
               to_account_id: result.target_account_id,
               to_account_name: result.target_account_name,
               ai_confidence: result.confidence,
-              ai_reasoning: result.reasoning, // already prefixed "(web search) ..."
+              ai_reasoning: result.reasoning,
               decision: "needs_review",
             } as any)
             .eq("reclass_job_id", jobId)
@@ -253,8 +258,8 @@ async function runWebSearchChunk(jobId: string) {
             pushed_to_qbo: false,
           });
         } else {
-          // Mark as searched (no good result) so this vendor is excluded from
-          // future chunks and the "remaining" count decreases correctly.
+          // Mark as searched (no good result) — so the vendor is excluded if
+          // the bookkeeper retries the run later.
           await service
             .from("reclassifications")
             .update({ ai_reasoning: `(web search) no confident match found` } as any)
@@ -280,45 +285,13 @@ async function runWebSearchChunk(jobId: string) {
     }
   }
 
-  if (skippedByUser) {
-    await service
-      .from("reclass_jobs")
-      .update({ status: "in_review", error_message: null } as any)
-      .eq("id", jobId);
-    return;
-  }
-
-  // Re-count remaining unsearched vendors to decide: pause again or finish.
-  // We query distinct vendor_name values from rows still needing search.
-  const { data: stillPending } = await service
-    .from("reclassifications")
-    .select("vendor_name")
-    .eq("reclass_job_id", jobId)
-    .in("decision", ["flagged", "needs_review"])
-    .lt("ai_confidence", 0.7)
-    .not("ai_reasoning", "ilike", "(web search%")
-    .not("vendor_name", "is", null)
-    .neq("vendor_name", "");
-
-  const remaining = new Set((stillPending || []).map((r) => r.vendor_name)).size;
-  const done = allRemainingCount - remaining;
-  // Total across all chunks = done (this + previous chunks) + remaining
-  const total = done + remaining;
-
-  if (remaining > 0) {
-    await service
-      .from("reclass_jobs")
-      .update({
-        status: "web_search_paused",
-        error_message: `[web_search_progress] ${done}/${total}`,
-      } as any)
-      .eq("id", jobId);
-  } else {
-    await service
-      .from("reclass_jobs")
-      .update({ status: "in_review", error_message: null } as any)
-      .eq("id", jobId);
-  }
+  // Always transition to in_review when done (success, skip, budget exhausted,
+  // or error). The bookkeeper handles remaining unknowns in the review screen.
+  await service
+    .from("reclass_jobs")
+    .update({ status: "in_review", error_message: null } as any)
+    .eq("id", jobId);
+  console.log(`[web-search-chunk ${jobId}] DONE — moved to in_review${skippedByUser ? " (skipped)" : ""}`);
 }
 
-export const maxDuration = 300;
+export const maxDuration = 800;

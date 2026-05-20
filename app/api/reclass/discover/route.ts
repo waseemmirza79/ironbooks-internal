@@ -16,7 +16,6 @@ import { fetchAllAccounts, createAccount } from "@/lib/qbo";
 import {
   classifyVendorGroups,
   categorizeAllTransactions,
-  webSearchVendor,
   type ReclassClassification,
   type AvailableAccount,
   type FullCategorizationLine,
@@ -863,32 +862,23 @@ async function runFullCategorization(
   for (const [ref, d] of preMatched) decisionByRef.set(ref, d);
   for (const d of aiResult.decisions) decisionByRef.set(d.ref_id, d);
 
-  // 6.5. WEB SEARCH PHASE — for any vendor the AI couldn't confidently
-  //   categorize, look it up online and try to upgrade the decision. Runs
-  //   inline (simple, sequential), in batches of 10 vendors processed in
-  //   parallel per batch. Each vendor has a 25s timeout. Whole phase is
-  //   capped at a soft budget so it can't eat the function's runtime.
+  // 6.5. Identify vendors that COULD benefit from web search — used to drive
+  //   the "Web search N vendors or continue to review?" choice screen after
+  //   AI completes. The actual searches don't run here; the bookkeeper makes
+  //   the call from the UI after seeing the count.
   //
-  //   Only searches rows that are:
-  //     - flagged or needs_review
-  //     - low confidence (< 0.7)
-  //     - have a real vendor name (not "Unknown vendor", not empty)
+  //   Eligible vendors:
+  //     - decision is flagged or needs_review
+  //     - confidence < 0.7
+  //     - real vendor name (not empty, not "Unknown vendor")
   //   Skipped for ask_client (peer payments) and skip rows.
-  const WS_BATCH_SIZE = 10;
-  const WS_BUDGET_MS = 5 * 60 * 1000; // 5 min total cap
-  const WS_MAX_VENDORS = 150;
-
   const refIdToLine = new Map<string, ReclassLine>();
   for (const l of inScopeLines) {
     refIdToLine.set(`${l.transaction_id}::${l.line_id}`, l);
   }
-
-  // Group unknown-but-real-named vendors → all the ref_ids that share them.
-  // Dedupe: one web search per unique vendor name, applied to every row.
-  const vendorToRefIds = new Map<string, string[]>();
+  const uniqueWsVendors = new Set<string>();
   for (const [refId, decision] of decisionByRef) {
     if (decision.decision === "ask_client") continue;
-    if (decision.decision === "auto_approve" && decision.confidence >= 0.7) continue;
     if ((decision.confidence ?? 0) >= 0.7) continue;
     const line = refIdToLine.get(refId);
     if (!line) continue;
@@ -896,78 +886,7 @@ async function runFullCategorization(
     if (!v) continue;
     if (v.toLowerCase() === "unknown vendor") continue;
     if (v.length < 2) continue;
-    if (!vendorToRefIds.has(v)) vendorToRefIds.set(v, []);
-    vendorToRefIds.get(v)!.push(refId);
-  }
-
-  const uniqueVendors = Array.from(vendorToRefIds.keys()).slice(0, WS_MAX_VENDORS);
-  const totalWsBatches = Math.ceil(uniqueVendors.length / WS_BATCH_SIZE);
-
-  if (uniqueVendors.length > 0) {
-    await setPhase(`web_searching (${uniqueVendors.length} vendors)`);
-    console.log(`[reclass ${jobId}] Web search: ${uniqueVendors.length} unique vendors in ${totalWsBatches} batches`);
-    const wsStart = Date.now();
-
-    for (let i = 0; i < uniqueVendors.length; i += WS_BATCH_SIZE) {
-      const elapsed = Date.now() - wsStart;
-      if (elapsed > WS_BUDGET_MS) {
-        console.log(`[reclass ${jobId}] Web search budget exhausted at ${i} / ${uniqueVendors.length} vendors`);
-        break;
-      }
-
-      const batchVendors = uniqueVendors.slice(i, i + WS_BATCH_SIZE);
-      const batchIdx = Math.floor(i / WS_BATCH_SIZE) + 1;
-
-      // Update progress BEFORE the batch so the UI sees movement
-      await service
-        .from("reclass_jobs")
-        .update({ error_message: `[web_search_progress] ${batchIdx - 1}/${totalWsBatches}` } as any)
-        .eq("id", jobId);
-
-      // Parallel within batch — 10 vendors at once, each with its own 25s timeout
-      const results = await Promise.all(
-        batchVendors.map(async (vendor) => {
-          try {
-            const r = await webSearchVendor({
-              vendorName: vendor,
-              clientCity: clientLink.state_province || undefined,
-              availableAccounts,
-            });
-            return { vendor, result: r };
-          } catch (err: any) {
-            console.warn(`[reclass ${jobId}] Web search failed for "${vendor}": ${err?.message || err}`);
-            return { vendor, result: null };
-          }
-        })
-      );
-
-      // Apply results — upgrade all ref_ids that share the vendor
-      for (const { vendor, result } of results) {
-        if (!result || !result.target_account_id) continue;
-        const refIds = vendorToRefIds.get(vendor) || [];
-        for (const refId of refIds) {
-          const line = refIdToLine.get(refId);
-          if (!line) continue;
-          const absAmount = Math.abs(line.transaction_amount || 0);
-          const newDecision: "auto_approve" | "needs_review" =
-            result.confidence >= 0.80 && absAmount < threshold ? "auto_approve" : "needs_review";
-          decisionByRef.set(refId, {
-            ref_id: refId,
-            target_account_id: result.target_account_id,
-            target_account_name: result.target_account_name,
-            confidence: result.confidence,
-            reasoning: result.reasoning,
-            decision: newDecision,
-          });
-        }
-      }
-    }
-
-    // Final progress write so the UI shows X/X complete momentarily
-    await service
-      .from("reclass_jobs")
-      .update({ error_message: `[web_search_progress] ${totalWsBatches}/${totalWsBatches}` } as any)
-      .eq("id", jobId);
+    uniqueWsVendors.add(v);
   }
 
   for (const line of inScopeLines) {
@@ -1047,28 +966,33 @@ async function runFullCategorization(
 
   const uniqueVendors = new Set(lines.map((l) => l.vendor_name).filter(Boolean)).size;
 
-  // 8. AI done — go straight to in_review. Web search is no longer auto-triggered;
-  //    bookkeeper can run it on-demand from the review screen for low-confidence rows.
+  // 8. AI done. If there are vendors that could benefit from web search, pause
+  //    at web_search_paused with the count — the bookkeeper picks "Web search"
+  //    or "Skip to manual review" from the UI. Otherwise go straight to in_review.
+  const wsCount = uniqueWsVendors.size;
+  const baseUpdate: any = {
+    transactions_pulled: transactionsPulled,
+    transactions_in_scope: stats.inScope,
+    transactions_auto_approve: stats.autoApprove,
+    transactions_needs_review: stats.needsReview,
+    transactions_flagged: stats.flagged,
+    transactions_skipped_reconciled: stats.skipReconciled,
+    transactions_skipped_closed: stats.skipClosedQbo + stats.skipClosedDouble,
+    transactions_skipped_unsupported: stats.skipUnsupported,
+    unique_vendors_count: uniqueVendors,
+    ai_completed_at: new Date().toISOString(),
+    warnings: aiResult.warnings.length > 0 ? (aiResult.warnings as any) : null,
+  };
+  const finalState: any = wsCount > 0
+    ? { ...baseUpdate, status: "web_search_paused", error_message: `[ws_pending] ${wsCount}` }
+    : { ...baseUpdate, status: "in_review", error_message: null };
+
   const { error: finalErr } = await service
     .from("reclass_jobs")
-    .update({
-      status: "in_review",
-      error_message: null,
-      transactions_pulled: transactionsPulled,
-      transactions_in_scope: stats.inScope,
-      transactions_auto_approve: stats.autoApprove,
-      transactions_needs_review: stats.needsReview,
-      transactions_flagged: stats.flagged,
-      transactions_skipped_reconciled: stats.skipReconciled,
-      transactions_skipped_closed: stats.skipClosedQbo + stats.skipClosedDouble,
-      transactions_skipped_unsupported: stats.skipUnsupported,
-      unique_vendors_count: uniqueVendors,
-      ai_completed_at: new Date().toISOString(),
-      warnings: aiResult.warnings.length > 0 ? (aiResult.warnings as any) : null,
-    } as any)
+    .update(finalState)
     .eq("id", jobId);
   if (finalErr) throw new Error(`Final status update failed: ${finalErr.message}`);
-  console.log(`[reclass ${jobId}] DONE — moved to in_review`);
+  console.log(`[reclass ${jobId}] DONE — moved to ${finalState.status}${wsCount > 0 ? ` (${wsCount} vendors pending web search)` : ""}`);
 }
 
 /**

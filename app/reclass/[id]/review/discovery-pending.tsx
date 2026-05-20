@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Loader2, AlertCircle, CheckCircle2, Sparkles, Search, Database, RotateCcw, XCircle } from "lucide-react";
+import { Loader2, AlertCircle, CheckCircle2, Sparkles, Search, Database, RotateCcw, XCircle, PlayCircle } from "lucide-react";
 
 export function ReclassDiscoveryPending({
   jobId,
@@ -22,6 +22,11 @@ export function ReclassDiscoveryPending({
   const [aiProgress, setAiProgress] = useState<{ done: number; total: number } | null>(null);
   const [wsProgress, setWsProgress] = useState<{ done: number; total: number } | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
+  const [status, setStatus] = useState<string>("starting");
+  const [wsPendingCount, setWsPendingCount] = useState<number | null>(null);
+  const [wsStarting, setWsStarting] = useState(false);
+  const [wsSkipping, setWsSkipping] = useState(false);
+  const [wsError, setWsError] = useState<string>("");
 
   useEffect(() => {
     const t = setInterval(() => setElapsed((s) => s + 1), 1000);
@@ -38,10 +43,14 @@ export function ReclassDiscoveryPending({
         const data = await res.json();
         if (cancelled) return;
 
+        setStatus(data.status);
         setStats(data.stats);
         if (data.ai_progress) setAiProgress(data.ai_progress);
         if (data.web_search_progress) setWsProgress(data.web_search_progress);
         if (data.phase !== undefined) setPhase(data.phase);
+        if (data.web_search_pending_count !== undefined && data.web_search_pending_count !== null) {
+          setWsPendingCount(data.web_search_pending_count);
+        }
 
         if (data.status === "in_review") {
           window.location.reload();
@@ -55,6 +64,10 @@ export function ReclassDiscoveryPending({
           window.location.href = `/reclass/${jobId}/execute`;
           return;
         }
+        // web_search_paused: stop polling and show the choice prompt.
+        // Polling resumes when the bookkeeper clicks "Web search" (status flips
+        // back to executing).
+        if (data.status === "web_search_paused") return;
 
         setTimeout(poll, 2000);
       } catch (e: any) {
@@ -74,6 +87,68 @@ export function ReclassDiscoveryPending({
       window.location.reload();
     } catch {
       setCancelling(false);
+    }
+  }
+
+  async function runWebSearch() {
+    setWsStarting(true);
+    setWsError("");
+    try {
+      const res = await fetch(`/api/reclass/${jobId}/web-search-chunk`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setWsError(data.error || `Failed (${res.status})`);
+        setWsStarting(false);
+        return;
+      }
+      // Backend flipped status back to executing; trigger a fresh poll cycle.
+      setStatus("executing");
+      setWsStarting(false);
+      // Re-enter poll loop
+      async function pollAfterStart() {
+        try {
+          const r = await fetch(`/api/reclass/${jobId}/status`);
+          if (!r.ok) return;
+          const d = await r.json();
+          setStatus(d.status);
+          setStats(d.stats);
+          if (d.web_search_progress) setWsProgress(d.web_search_progress);
+          if (d.phase !== undefined) setPhase(d.phase);
+          if (d.status === "in_review") {
+            window.location.reload();
+            return;
+          }
+          if (d.status === "failed") {
+            setError(d.error_message || "Web search failed");
+            return;
+          }
+          if (d.status === "web_search_paused") return; // shouldn't happen with new flow
+          setTimeout(pollAfterStart, 2000);
+        } catch {}
+      }
+      pollAfterStart();
+    } catch {
+      setWsError("Network error — try again");
+      setWsStarting(false);
+    }
+  }
+
+  async function skipWebSearch() {
+    setWsSkipping(true);
+    setWsError("");
+    try {
+      const res = await fetch(`/api/reclass/${jobId}/skip-web-search`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setWsError(data.error || `Failed (${res.status})`);
+        setWsSkipping(false);
+        return;
+      }
+      // skip-web-search instantly flips paused → in_review. Reload to review.
+      window.location.reload();
+    } catch {
+      setWsError("Network error — try again");
+      setWsSkipping(false);
     }
   }
 
@@ -132,6 +207,72 @@ export function ReclassDiscoveryPending({
             Download error report
           </a>
         </div>
+      </div>
+    );
+  }
+
+  // ── WEB SEARCH CHOICE PROMPT ───────────────────────────────────────────
+  // AI categorization just finished and there are N vendors that could benefit
+  // from web search. Bookkeeper decides: run it, or skip to manual review.
+  if (status === "web_search_paused" && !wsStarting) {
+    const n = wsPendingCount ?? 0;
+    return (
+      <div className="bg-white rounded-2xl border border-gray-100 p-8 space-y-5">
+        <div className="flex items-start gap-3 p-4 bg-teal-lighter/50 text-navy rounded-lg border border-teal/20">
+          <CheckCircle2 className="flex-shrink-0 mt-0.5 text-teal" size={20} />
+          <div>
+            <div className="font-semibold mb-1">AI categorization complete</div>
+            <div className="text-sm text-ink-slate">
+              {n > 0
+                ? `There ${n === 1 ? "is" : "are"} ${n} uncategorized vendor${n === 1 ? "" : "s"} the AI couldn't confidently place. Web search can look them up online and try to upgrade them automatically.`
+                : "Some vendors couldn't be confidently categorized. Run web search to try to upgrade them, or skip to manual review."}
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-2 text-sm">
+          <div className="flex justify-between py-2 border-b border-gray-100">
+            <span className="text-ink-slate">Transactions auto-approved</span>
+            <span className="font-semibold text-navy">{stats?.auto_approve || 0}</span>
+          </div>
+          <div className="flex justify-between py-2 border-b border-gray-100">
+            <span className="text-ink-slate">Needs review</span>
+            <span className="font-semibold text-navy">{stats?.needs_review || 0}</span>
+          </div>
+          <div className="flex justify-between py-2">
+            <span className="text-ink-slate">Vendors to web-search</span>
+            <span className="font-semibold text-navy">{n}</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={runWebSearch}
+            disabled={wsStarting || wsSkipping}
+            className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-5 py-2.5 rounded-lg disabled:opacity-50"
+          >
+            {wsStarting ? <Loader2 size={14} className="animate-spin" /> : <PlayCircle size={15} />}
+            Web search {n} vendor{n === 1 ? "" : "s"}
+            <span className="text-xs opacity-80">(~{Math.max(1, Math.ceil(n / 10) * 0.5)} min)</span>
+          </button>
+
+          <button
+            onClick={skipWebSearch}
+            disabled={wsStarting || wsSkipping}
+            className="inline-flex items-center gap-2 text-sm font-semibold text-ink-slate hover:text-navy border border-gray-200 px-4 py-2.5 rounded-lg disabled:opacity-50"
+          >
+            {wsSkipping ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} />}
+            Continue to manual review
+          </button>
+
+          {wsError && (
+            <span className="text-sm font-semibold text-red-600">{wsError}</span>
+          )}
+        </div>
+
+        <p className="text-xs text-ink-slate leading-relaxed">
+          Web search uses Claude with internet access to identify unknown vendors and map them to the right account. Runs 10 vendors at a time in parallel — you can skip at any point if it's taking too long. Successful matches get cached as bank rules for future jobs.
+        </p>
       </div>
     );
   }
