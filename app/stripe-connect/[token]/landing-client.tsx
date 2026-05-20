@@ -34,7 +34,7 @@ export function LandingClient({
           </div>
           <h1 className="text-2xl font-bold text-navy mb-2">You're all connected</h1>
           <p className="text-sm text-ink-slate mb-6">
-            Your SNAP bookkeeper can now match your Stripe deposits to invoices automatically.
+            Your Ironbooks bookkeeper can now match your Stripe deposits to invoices automatically.
             You can close this window.
           </p>
           <div className="rounded-lg bg-teal-lighter border border-teal/30 p-4 text-left">
@@ -55,7 +55,7 @@ export function LandingClient({
   // Error states from the OAuth callback
   if (status === "denied" || status === "error" || status === "expired" || status === "already_used") {
     const meta = {
-      denied:        { title: "Connection canceled",     hint: "You declined to authorize SNAP on Stripe. No data was shared. If this was a mistake, ask your bookkeeper for a fresh link." },
+      denied:        { title: "Connection canceled",     hint: "You declined to authorize Ironbooks on Stripe. No data was shared. If this was a mistake, ask your bookkeeper for a fresh link." },
       error:         { title: "Something went wrong",    hint: message || "We hit an unexpected error completing the connection. Please ask your bookkeeper to send you a new link." },
       expired:       { title: "This link has expired",   hint: "Connect links are valid for 7 days. Ask your bookkeeper to send you a fresh one." },
       already_used:  { title: "This link is no longer valid", hint: "It looks like this link has already been used. If you need to reconnect, ask your bookkeeper for a fresh link." },
@@ -145,7 +145,7 @@ export function LandingClient({
           Connect Stripe for <span className="text-teal">{validity.clientName}</span>
         </h1>
         <p className="text-sm text-ink-slate leading-relaxed max-w-md mx-auto">
-          Your SNAP bookkeeper is cleaning up your books and would like to connect to your
+          Your Ironbooks bookkeeper is cleaning up your books and would like to connect to your
           Stripe account so they can match deposits to customer invoices automatically. This
           takes 30 seconds, and you can disconnect anytime.
         </p>
@@ -154,7 +154,7 @@ export function LandingClient({
       {/* What we can / can't do */}
       <div className="rounded-xl bg-teal-lighter border border-teal/30 p-5 mb-5">
         <div className="font-bold text-sm text-teal mb-3 flex items-center gap-1.5">
-          <Shield size={15} /> What this gives SNAP
+          <Shield size={15} /> What this gives Ironbooks
         </div>
         <div className="space-y-2.5 text-sm text-ink-slate">
           <div className="flex items-start gap-2">
@@ -168,7 +168,7 @@ export function LandingClient({
           <div className="flex items-start gap-2">
             <Lock size={14} className="text-teal mt-0.5 flex-shrink-0" />
             <div>
-              <span className="font-semibold text-navy">No charges, no transfers</span> — SNAP
+              <span className="font-semibold text-navy">No charges, no transfers</span> — Ironbooks
               won't issue refunds, move money, or charge your customers. We're just here to
               reconcile your books.
             </div>
@@ -177,7 +177,7 @@ export function LandingClient({
             <CheckCircle2 size={14} className="text-teal mt-0.5 flex-shrink-0" />
             <div>
               <span className="font-semibold text-navy">Disconnect anytime</span> — you can remove
-              SNAP in one click from your Stripe Dashboard (Settings → Connected
+              Ironbooks in one click from your Stripe Dashboard (Settings → Connected
               applications), or just ask your bookkeeper.
             </div>
           </div>
@@ -233,11 +233,11 @@ function Shell({ children }: { children: React.ReactNode }) {
         <div className="flex items-center justify-center gap-3 mb-8">
           <img
             src="/logo.png"
-            alt="SNAP"
+            alt="Ironbooks"
             className="w-12 h-12 object-contain"
           />
           <div>
-            <div className="font-bold text-2xl tracking-tight text-navy leading-none">SNAP</div>
+            <div className="font-bold text-2xl tracking-tight text-navy leading-none">Ironbooks</div>
             <div className="text-[10px] uppercase tracking-[0.18em] text-ink-light mt-1">
               Bookkeeping · Cleanup
             </div>
@@ -250,7 +250,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         </div>
 
         <p className="text-[11px] text-center text-ink-light mt-6">
-          Powered by SNAP · Bookkeeper OS for trades businesses
+          Powered by Ironbooks · Bookkeeper OS for trades businesses
         </p>
       </div>
     </main>

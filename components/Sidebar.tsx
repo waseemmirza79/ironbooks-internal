@@ -108,11 +108,11 @@ export function Sidebar() {
         <div className="flex items-center gap-2.5">
           <img
             src="/logo.png"
-            alt="SNAP"
+            alt="Ironbooks SNAP"
             className="w-10 h-10 object-contain flex-shrink-0"
           />
           <div>
-            <div className="font-bold text-lg tracking-tight leading-none">SNAP</div>
+            <div className="font-bold text-lg tracking-tight leading-none">Ironbooks SNAP</div>
             <div className="text-xs mt-0.5 text-white/50">Bookkeeper OS</div>
           </div>
         </div>
