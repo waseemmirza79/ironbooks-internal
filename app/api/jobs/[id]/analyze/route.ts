@@ -316,15 +316,18 @@ export async function POST(
       summary: analysis.summary,
     });
   } catch (error: any) {
-    console.error("Analysis failed:", error);
+    // Capture full stack so bare ReferenceErrors like "accountType is not defined"
+    // point us at the actual source line instead of forcing us to grep blindly.
+    const stack = error?.stack || "(no stack)";
+    console.error(`[analyze ${jobId}] FATAL: ${error?.message || error}\n${stack}`);
 
     await service.from("coa_jobs").update({
       status: "failed",
-      error_message: error.message,
+      error_message: `${error?.message || error} | at ${stack.split("\n")[1]?.trim() || "(unknown)"}`,
     }).eq("id", jobId);
 
     return NextResponse.json(
-      { error: error.message },
+      { error: error?.message || String(error), stack_first_frame: stack.split("\n")[1]?.trim() || null },
       { status: 500 }
     );
   }
