@@ -42,10 +42,10 @@ export default function LoginPage() {
         <div className="flex items-center gap-3 mb-10 justify-center">
           <img
             src="/logo.png"
-            alt="Ironbooks"
+            alt="SNAP"
             className="w-12 h-12 object-contain"
           />
-          <div className="font-bold text-2xl tracking-tight text-navy">Ironbooks</div>
+          <div className="font-bold text-2xl tracking-tight text-navy">SNAP</div>
         </div>
 
         <div className="bg-white rounded-2xl border border-gray-200 p-8 shadow-sm">
@@ -95,7 +95,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-xs text-center text-ink-slate mt-6">
-          Internal tool for Ironbooks team members only.
+          Internal tool for SNAP team members only.
         </p>
       </div>
     </main>

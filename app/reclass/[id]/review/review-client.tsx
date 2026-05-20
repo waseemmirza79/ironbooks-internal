@@ -1271,7 +1271,7 @@ function ClientEmailModal({
       `Hi ${clientName.split(" ")[0] || "there"},\n\nWhile cleaning up your books for the period ${periodLabel}, we found ${rows.length} transaction${rows.length === 1 ? "" : "s"} from ${groups.length} sender${groups.length === 1 ? "" : "s"} that we have questions about. These look like e-transfers, Venmo, or peer payments without a clear category.\n\nPlease fill in the "What were these for?" column in the table below — one answer per sender is fine (e.g., "rent payments" or "materials reimbursement"):`,
     [clientName, periodLabel, rows.length, groups.length]
   );
-  const defaultOutro = `Please reply within 48 hours so we can complete your books.\n\nKindly,\nIronbooks`;
+  const defaultOutro = `Please reply within 48 hours so we can complete your books.\n\nKindly,\nSNAP`;
 
   const [subject, setSubject] = useState<string>(
     `Quick question on ${rows.length} transaction${rows.length === 1 ? "" : "s"} — ${clientName}`
@@ -1335,10 +1335,10 @@ function ClientEmailModal({
     <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
       <tr>
         <td style="vertical-align:middle;width:54px;padding-right:14px;">
-          <img src="https://internal.ironbooks.com/logo.png" alt="Ironbooks" width="44" height="44" style="display:block;width:44px;height:auto;" />
+          <img src="https://internal.ironbooks.com/logo.png" alt="SNAP" width="44" height="44" style="display:block;width:44px;height:auto;" />
         </td>
         <td style="vertical-align:middle;color:${BRAND.white};">
-          <div style="font-size:20px;font-weight:700;letter-spacing:-0.01em;line-height:1.1;color:${BRAND.white};">Ironbooks</div>
+          <div style="font-size:20px;font-weight:700;letter-spacing:-0.01em;line-height:1.1;color:${BRAND.white};">SNAP</div>
           <div style="font-size:11px;color:rgba(255,255,255,0.65);margin-top:3px;letter-spacing:0.06em;text-transform:uppercase;">Bookkeeping &middot; Cleanup</div>
         </td>
       </tr>
@@ -1370,7 +1370,7 @@ function ClientEmailModal({
     <!-- Branded signature divider -->
     <div style="border-top:2px solid ${BRAND.teal};margin:24px 0 12px 0;width:60px;"></div>
     <div style="color:${BRAND.lightSlate};font-size:11px;line-height:1.5;">
-      This message was prepared with <span style="color:${BRAND.teal};font-weight:600;">Ironbooks</span> as part of your bookkeeping cleanup. Reply directly to this email with your answers in the table above.
+      This message was prepared with <span style="color:${BRAND.teal};font-weight:600;">SNAP</span> as part of your bookkeeping cleanup. Reply directly to this email with your answers in the table above.
     </div>
   </div>
 </div>`;
