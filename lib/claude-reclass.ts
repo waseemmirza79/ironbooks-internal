@@ -472,9 +472,8 @@ Return STRICTLY valid JSON:
 
 No markdown, no preamble. Just the JSON.`;
 
-const FULL_CAT_BATCH_SIZE = 20;
-const BATCH_TIMEOUT_MS = 90_000;
-const BATCH_MAX_RETRIES = 1;
+const FULL_CAT_BATCH_SIZE = 15;
+const BATCH_TIMEOUT_MS = 75_000;
 
 /**
  * Classify every transaction line against the new COA.
@@ -570,15 +569,14 @@ export async function categorizeAllTransactions(params: {
   const accountById = new Map(params.availableAccounts.map((a) => [a.qbo_account_id, a]));
   const accountByName = new Map(params.availableAccounts.map((a) => [a.account_name.toLowerCase(), a]));
 
-  // Batch through Claude
+  // Batch through Claude. Simple sequential loop: one call per batch with a
+  // per-batch timeout. If a batch fails for any reason, those lines fall
+  // through to needs_review and we move to the next batch. No retries, no
+  // signal forwarding, no skip handling — just steady forward progress.
   const totalBatches = Math.ceil(linesToClassify.length / FULL_CAT_BATCH_SIZE);
   for (let i = 0; i < linesToClassify.length; i += FULL_CAT_BATCH_SIZE) {
-    // Check external abort (skip AI signal) before starting each batch
-    if (params.signal?.aborted) {
-      warnings.push(`AI categorization cancelled by user after ${i} lines — remaining lines will go to needs_review.`);
-      break;
-    }
     const batch = linesToClassify.slice(i, i + FULL_CAT_BATCH_SIZE);
+    const batchIdx = Math.floor(i / FULL_CAT_BATCH_SIZE) + 1;
     const compactBatch = batch.map((l) => ({
       ref_id: l.ref_id,
       vendor: l.vendor_name,
@@ -601,58 +599,38 @@ ${JSON.stringify(compactBatch, null, 2)}
 
 Classify each line. Return JSON only.`;
 
-    // Hard per-batch timeout with one automatic retry.
-    // AbortController cancels the underlying HTTP request. External signal
-    // (skip AI) is forwarded so the bookkeeper can cancel the whole AI phase.
-    let response: Awaited<ReturnType<typeof client.messages.create>> | null = null;
-    let batchErr: any = null;
-    for (let attempt = 0; attempt <= BATCH_MAX_RETRIES; attempt++) {
-      if (params.signal?.aborted) break;
-      const controller = new AbortController();
-      const timer = setTimeout(
-        () => controller.abort(new Error(`Anthropic batch timeout after ${BATCH_TIMEOUT_MS}ms`)),
-        BATCH_TIMEOUT_MS
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new Error(`Anthropic batch timeout after ${BATCH_TIMEOUT_MS}ms`)),
+      BATCH_TIMEOUT_MS
+    );
+    let response: Awaited<ReturnType<typeof client.messages.create>>;
+    try {
+      response = await withRetry(() =>
+        client.messages.create(
+          {
+            model: MODEL,
+            max_tokens: 16000,
+            system: FULL_CAT_SYSTEM_PROMPT,
+            messages: [{ role: "user", content: userMessage }],
+          },
+          { signal: controller.signal }
+        )
       );
-      if (params.signal) {
-        params.signal.addEventListener("abort", () => {
-          controller.abort(params.signal!.reason || new Error("AI step cancelled"));
-        }, { once: true });
-      }
-      try {
-        response = await withRetry(() =>
-          client.messages.create(
-            {
-              model: MODEL,
-              max_tokens: 16000,
-              system: FULL_CAT_SYSTEM_PROMPT,
-              messages: [{ role: "user", content: userMessage }],
-            },
-            { signal: controller.signal }
-          )
-        );
-        batchErr = null;
-        break; // success
-      } catch (err: any) {
-        batchErr = err;
-        if (params.signal?.aborted) break; // user cancelled — stop retrying
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-    if (params.signal?.aborted) {
-      warnings.push(`AI categorization cancelled by user after ${i} lines.`);
-      break;
-    }
-    if (batchErr || !response) {
+    } catch (err: any) {
       warnings.push(
-        `Batch ${Math.floor(i / FULL_CAT_BATCH_SIZE) + 1}: ${batchErr?.message || "no response"} (tried ${BATCH_MAX_RETRIES + 1}x). Lines will fall through to web-search or stay unclassified.`
+        `Batch ${batchIdx}/${totalBatches}: ${err?.message || "request failed"}. Lines fall through to needs_review.`
       );
+      if (params.onProgress) await params.onProgress(batchIdx, totalBatches).catch(() => {});
       continue;
+    } finally {
+      clearTimeout(timer);
     }
 
     const textBlock = response.content.find((c) => c.type === "text");
     if (!textBlock || textBlock.type !== "text") {
-      warnings.push(`Batch ${i / FULL_CAT_BATCH_SIZE + 1}: no text response from Claude`);
+      warnings.push(`Batch ${batchIdx}/${totalBatches}: no text response from Claude`);
+      if (params.onProgress) await params.onProgress(batchIdx, totalBatches).catch(() => {});
       continue;
     }
     const raw = textBlock.text
@@ -666,7 +644,8 @@ Classify each line. Return JSON only.`;
     try {
       parsed = JSON.parse(raw);
     } catch (err: any) {
-      warnings.push(`Batch ${i / FULL_CAT_BATCH_SIZE + 1}: JSON parse failed (${err.message})`);
+      warnings.push(`Batch ${batchIdx}/${totalBatches}: JSON parse failed (${err.message})`);
+      if (params.onProgress) await params.onProgress(batchIdx, totalBatches).catch(() => {});
       continue;
     }
 
@@ -708,11 +687,7 @@ Classify each line. Return JSON only.`;
       });
     }
 
-    // Report progress after each successful batch
-    if (params.onProgress) {
-      const doneBatches = Math.floor(i / FULL_CAT_BATCH_SIZE) + 1;
-      await params.onProgress(doneBatches, totalBatches).catch(() => {});
-    }
+    if (params.onProgress) await params.onProgress(batchIdx, totalBatches).catch(() => {});
   }
 
   const counts = {

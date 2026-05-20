@@ -137,7 +137,7 @@ export async function POST(request: Request) {
   // line, Job B (working from a pre-A snapshot) tries to reclassify the
   // same line and gets a "no matching line" failure. Block same-client
   // parallel; different clients in parallel are still fully supported.
-  const ACTIVE_RECLASS_STATUSES = ["executing", "in_review", "web_search_paused"];
+  const ACTIVE_RECLASS_STATUSES = ["executing", "in_review", "web_search_paused"] as any;
   const { data: rivalReclassJobs } = await service
     .from("reclass_jobs")
     .select("id, status, workflow")
@@ -820,41 +820,24 @@ async function runFullCategorization(
     current_account_name: l.current_account_name,
   }));
 
-  // Poller: check every 2s for a skip-AI signal ([skip_ai] in error_message).
-  // Fires the external AbortController which forwards into each batch's
-  // internal controller — the current HTTP request is cancelled immediately.
-  const aiController = new AbortController();
-  const aiSkipPoll = setInterval(async () => {
-    try {
-      const { data } = await service.from("reclass_jobs").select("error_message").eq("id", jobId).single();
-      if ((data as any)?.error_message === "[skip_ai]") {
-        aiController.abort(new Error("AI step skipped by user"));
-        clearInterval(aiSkipPoll);
-      }
-    } catch {}
-  }, 2000);
-
-  let aiResult: Awaited<ReturnType<typeof categorizeAllTransactions>>;
-  try {
-    aiResult = await categorizeAllTransactions({
-      clientName: clientLink.client_name,
-      jurisdiction: clientLink.jurisdiction,
-      stateProvince: clientLink.state_province || "",
-      lines: aiLines,
-      availableAccounts,
-      autoApproveThreshold: threshold,
-      signal: aiController.signal,
-      onProgress: async (done, total) => {
-        await service
-          .from("reclass_jobs")
-          .update({ error_message: `[ai_progress] ${done}/${total}` } as any)
-          .eq("id", jobId)
-          .neq("error_message", "[skip_ai]");
-      },
-    });
-  } finally {
-    clearInterval(aiSkipPoll);
-  }
+  // Run AI categorization. Simple sequential flow: each batch writes its
+  // progress to error_message, the UI polls /status every 2s to display it.
+  // No skip-AI signal, no abort wiring — the job runs to completion. If the
+  // bookkeeper truly needs out, they cancel the whole job.
+  const aiResult = await categorizeAllTransactions({
+    clientName: clientLink.client_name,
+    jurisdiction: clientLink.jurisdiction,
+    stateProvince: clientLink.state_province || "",
+    lines: aiLines,
+    availableAccounts,
+    autoApproveThreshold: threshold,
+    onProgress: async (done, total) => {
+      await service
+        .from("reclass_jobs")
+        .update({ error_message: `[ai_progress] ${done}/${total}` } as any)
+        .eq("id", jobId);
+    },
+  });
 
   // 6. Build reclass rows — merge AI decisions with pre-matched ones
   const decisionByRef = new Map<string, FullCategorizationDecision>();
@@ -943,68 +926,26 @@ async function runFullCategorization(
 
   const uniqueVendors = new Set(lines.map((l) => l.vendor_name).filter(Boolean)).size;
 
-  // 8. Check if any rows need web search (flagged or low-confidence needs_review).
-  //    If yes: pause here and let the bookkeeper drive web search in chunks via
-  //    /api/reclass/[id]/web-search-chunk. If no: go straight to in_review.
-  //    Exception: if the bookkeeper clicked "Skip AI", bypass web search entirely
-  //    so they land directly on the review screen without an extra click.
-  const aiWasSkipped = aiController.signal.aborted;
-  const needsWebSearch = !aiWasSkipped && reclassRows.some(
-    (r) =>
-      (r.decision === "flagged" || r.decision === "needs_review") &&
-      (r.ai_confidence ?? 0) < 0.7 &&
-      r.vendor_name &&
-      r.vendor_name !== ""
-  );
-
-  // Dedupe vendor names for the count shown in the UI
-  const webSearchVendorSet = new Set<string>();
-  for (const r of reclassRows) {
-    if (
-      (r.decision === "flagged" || r.decision === "needs_review") &&
-      (r.ai_confidence ?? 0) < 0.7 &&
-      r.vendor_name
-    ) {
-      webSearchVendorSet.add(r.vendor_name);
-    }
-  }
-
-  const baseUpdate = {
-    transactions_pulled: transactionsPulled,
-    transactions_in_scope: stats.inScope,
-    transactions_auto_approve: stats.autoApprove,
-    transactions_needs_review: stats.needsReview,
-    transactions_flagged: stats.flagged,
-    transactions_skipped_reconciled: stats.skipReconciled,
-    transactions_skipped_closed: stats.skipClosedQbo + stats.skipClosedDouble,
-    transactions_skipped_unsupported: stats.skipUnsupported,
-    unique_vendors_count: uniqueVendors,
-    ai_completed_at: new Date().toISOString(),
-    warnings: aiResult.warnings.length > 0 ? (aiResult.warnings as any) : null,
-  };
-
-  if (needsWebSearch) {
-    await service
-      .from("reclass_jobs")
-      .update({
-        ...baseUpdate,
-        status: "web_search_paused",
-        // Store total vendor count in error_message for UI display.
-        // The web-search-chunk route will update this as chunks complete.
-        error_message: `[web_search_progress] 0/${webSearchVendorSet.size}`,
-      } as any)
-      .eq("id", jobId);
-    console.log(`[reclass] AI done — ${webSearchVendorSet.size} vendors need web search. Pausing for bookkeeper.`);
-  } else {
-    await service
-      .from("reclass_jobs")
-      .update({
-        ...baseUpdate,
-        status: "in_review",
-        error_message: null,
-      } as any)
-      .eq("id", jobId);
-  }
+  // 8. AI done — go straight to in_review. Web search is no longer auto-triggered;
+  //    bookkeeper can run it on-demand from the review screen for low-confidence rows.
+  await service
+    .from("reclass_jobs")
+    .update({
+      status: "in_review",
+      error_message: null,
+      transactions_pulled: transactionsPulled,
+      transactions_in_scope: stats.inScope,
+      transactions_auto_approve: stats.autoApprove,
+      transactions_needs_review: stats.needsReview,
+      transactions_flagged: stats.flagged,
+      transactions_skipped_reconciled: stats.skipReconciled,
+      transactions_skipped_closed: stats.skipClosedQbo + stats.skipClosedDouble,
+      transactions_skipped_unsupported: stats.skipUnsupported,
+      unique_vendors_count: uniqueVendors,
+      ai_completed_at: new Date().toISOString(),
+      warnings: aiResult.warnings.length > 0 ? (aiResult.warnings as any) : null,
+    } as any)
+    .eq("id", jobId);
 }
 
 /**
@@ -1037,4 +978,4 @@ async function buildAutoReason(
   return `Ironbooks Categorization, ${month} ${year}${initials ? `, ${initials}` : ""}`;
 }
 
-export const maxDuration = 300;
+export const maxDuration = 800;
