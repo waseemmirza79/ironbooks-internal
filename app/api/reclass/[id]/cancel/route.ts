@@ -42,9 +42,9 @@ export async function POST(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  if (job.status !== "executing") {
+  if (!["executing", "in_review"].includes(job.status)) {
     return NextResponse.json(
-      { error: `Job is in '${job.status}' status — only executing jobs can be cancelled` },
+      { error: `Job is in '${job.status}' status — only executing or in_review jobs can be cancelled` },
       { status: 400 }
     );
   }
