@@ -43,21 +43,9 @@ export async function GET(request: Request) {
 
   let query = service
     .from("client_links")
-    .select(`
-      id,
-      client_name,
-      jurisdiction,
-      state_province,
-      assigned_bookkeeper_id,
-      stripe_connection_status,
-      stripe_detected,
-      kanban_on_hold,
-      due_date,
-      cleanup_completed_at
-    `)
+    .select("*")
     .eq("is_active", true)
-    .not("cleanup_completed_at", "is", null)
-    .eq("kanban_on_hold", false);
+    .not("cleanup_completed_at", "is", null);
 
   if (bookkeeperFilter) {
     query = query.eq("assigned_bookkeeper_id", bookkeeperFilter);
@@ -65,9 +53,11 @@ export async function GET(request: Request) {
 
   const { data: clients, error } = await query.order("client_name");
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  if (!clients?.length) return NextResponse.json({ columns: emptyColumns(), month: { year, month } });
 
-  const clientIds = clients.map((c) => c.id);
+  const activeClients = (clients || []).filter((c: any) => !c.kanban_on_hold);
+  if (!activeClients.length) return NextResponse.json({ columns: emptyColumns(), month: { year, month } });
+
+  const clientIds = activeClients.map((c) => c.id);
 
   // Reclass jobs for the target month
   const { data: reclassJobs } = await service
@@ -112,7 +102,7 @@ export async function GET(request: Request) {
     month_closed: [],
   };
 
-  for (const client of clients) {
+  for (const client of activeClients) {
     const reclass = latestReclass.get(client.id);
     const bk = client.assigned_bookkeeper_id ? bkById.get(client.assigned_bookkeeper_id) : null;
 

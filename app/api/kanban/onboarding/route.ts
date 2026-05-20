@@ -35,19 +35,7 @@ export async function GET(request: Request) {
   // Pull all active onboarding clients (cleanup not yet complete, not on hold)
   let query = service
     .from("client_links")
-    .select(`
-      id,
-      client_name,
-      jurisdiction,
-      state_province,
-      assigned_bookkeeper_id,
-      stripe_connection_status,
-      stripe_detected,
-      stripe_request_sent_at,
-      kanban_on_hold,
-      due_date,
-      qbo_realm_id
-    `)
+    .select("*")
     .eq("is_active", true)
     .is("cleanup_completed_at", null);
 
