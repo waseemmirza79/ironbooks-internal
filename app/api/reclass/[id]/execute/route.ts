@@ -7,6 +7,7 @@ import {
   getValidToken,
   type SupportedTxType,
 } from "@/lib/qbo-reclass";
+import { fetchAllAccounts } from "@/lib/qbo";
 import { postReclassComplete } from "@/lib/double";
 
 /**
@@ -137,13 +138,25 @@ async function executeReclass(jobId: string) {
 
   const accessToken = await getValidToken(clientLink.id, service as any);
 
-  // Fetch rows to process: decision in (auto_approve, approved)
-  // Already-skipped rows stay skipped. Rejected rows don't execute.
+  // Fetch live QBO accounts once to resolve name-only overrides.
+  // When the bookkeeper picks from the master COA dropdown we store only the
+  // account name (no QBO ID). This map lets us resolve the ID at execute time.
+  const allQboAccounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
+  const accountNameToId = new Map<string, string>(
+    allQboAccounts
+      .filter((a) => a.Active !== false)
+      .map((a) => [a.Name.toLowerCase(), a.Id])
+  );
+
+  // Fetch rows to process: approved/auto_approve that haven't executed yet.
+  // Filtering out already-executed rows means this route is safe to call again
+  // after a partial run without re-touching QBO for completed lines.
   const { data: rows } = await service
     .from("reclassifications")
     .select("*")
     .eq("reclass_job_id", jobId)
-    .in("decision", ["auto_approve", "approved"]);
+    .in("decision", ["auto_approve", "approved"])
+    .neq("status", "executed");
 
   if (!rows || rows.length === 0) {
     await service
@@ -180,12 +193,22 @@ async function executeReclass(jobId: string) {
   const errors: string[] = [];
 
   for (const row of rows) {
-    const targetId = row.bookkeeper_override_target_id || row.to_account_id;
+    // Resolve target: prefer explicit ID, then try resolving the stored name
+    // against live QBO accounts (bookkeeper picked from master COA by name).
+    const overrideName = row.bookkeeper_override_target_name || null;
+    const overrideId = row.bookkeeper_override_target_id || null;
+    let targetId: string | null = overrideId || row.to_account_id || null;
+    let targetNameResolved: string | null = overrideName || row.to_account_name || null;
+
+    if (!targetId && targetNameResolved) {
+      const resolvedId = accountNameToId.get(targetNameResolved.toLowerCase());
+      if (resolvedId) targetId = resolvedId;
+    }
+
     if (!targetId) {
-      // Row was approved (or AI-auto-approved) but has no destination account.
-      // Common cause: a needs_review row got approved in the UI without picking
-      // a target. Don't fail it — demote back to needs_review so the bookkeeper
-      // can finish it in the review screen and re-run execute. No QBO call here.
+      // Row was approved but has no destination account — no ID and name didn't
+      // match any live QBO account. Demote back to needs_review so the bookkeeper
+      // can assign a valid target before re-running.
       needsTarget++;
       await service
         .from("reclassifications")
@@ -208,11 +231,10 @@ async function executeReclass(jobId: string) {
       };
       txMap.set(key, entry);
     }
-    const targetName = row.bookkeeper_override_target_name || row.to_account_name;
     entry.lines.push({
       line_id: row.line_id || "",
       new_account_id: targetId,
-      new_account_name: targetName,
+      new_account_name: targetNameResolved || "",
       reclass_row_id: row.id,
     });
   }

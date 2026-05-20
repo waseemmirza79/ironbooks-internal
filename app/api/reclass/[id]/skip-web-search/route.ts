@@ -20,9 +20,18 @@ export async function POST(
     .single();
 
   if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 });
-  if (job.bookkeeper_id !== user.id) {
+
+  const { data: actor } = await service
+    .from("users")
+    .select("role")
+    .eq("id", user.id)
+    .single();
+  const isSenior = ["admin", "lead"].includes(actor?.role ?? "");
+  const isOwner = job.bookkeeper_id === user.id;
+  if (!isOwner && !isSenior) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
+
   if (job.status !== "executing") {
     return NextResponse.json({ error: "Job is not currently executing" }, { status: 400 });
   }

@@ -862,9 +862,9 @@ async function runFullCategorization(
   }
 
   if (uniqueVendorsToSearch.size > 0) {
-    // Cap at 50 vendors per run — anything beyond that is diminishing returns
-    // and risks hitting the 300s function timeout.
-    const MAX_SEARCHES = 30;
+    // Cap at 20 vendors per run — each search can take up to 25s;
+    // beyond 20 the marginal value drops and total time would exceed budget.
+    const MAX_SEARCHES = 20;
     const vendorEntries = [...uniqueVendorsToSearch.entries()].slice(0, MAX_SEARCHES);
     if (uniqueVendorsToSearch.size > MAX_SEARCHES) {
       console.log(`[reclass] Capping web search at ${MAX_SEARCHES} of ${uniqueVendorsToSearch.size} vendors`);
@@ -874,7 +874,7 @@ async function runFullCategorization(
     const CONCURRENCY = 5;
     const newBankRules: any[] = [];
     const totalBatches = Math.ceil(vendorEntries.length / CONCURRENCY);
-    const WEB_SEARCH_BUDGET_MS = 90_000; // hard wall-clock limit for entire phase
+    const WEB_SEARCH_BUDGET_MS = 120_000; // hard wall-clock limit for entire phase (20 vendors × 25s max = 100s worst-case, plus buffer)
     const webSearchStart = Date.now();
     for (let i = 0; i < vendorEntries.length; i += CONCURRENCY) {
       if (Date.now() - webSearchStart > WEB_SEARCH_BUDGET_MS) {
@@ -926,6 +926,16 @@ async function runFullCategorization(
         })
       );
 
+      // Post-batch skip check — catches the case where the user clicked Skip
+      // while this batch was running (common for single-batch jobs where the
+      // pre-batch check fires before the user has a chance to click).
+      const { data: postBatchCheck } = await service
+        .from("reclass_jobs")
+        .select("error_message")
+        .eq("id", jobId)
+        .single();
+      const skipAfterBatch = (postBatchCheck as any)?.error_message === "[skip_web_search]";
+
       for (const { normalized, info, result } of results) {
         if (!result || !result.target_account_id || result.confidence < 0.65) continue;
         for (const refId of info.refIds) {
@@ -952,6 +962,14 @@ async function runFullCategorization(
           created_by: job.bookkeeper_id,
           pushed_to_qbo: false,
         });
+      }
+
+      if (skipAfterBatch) {
+        const remaining = vendorEntries.length - i - CONCURRENCY;
+        if (remaining > 0) {
+          console.log(`[reclass] Web search skipped by user after batch ${batchNum} — ${remaining} vendors remain in needs_review`);
+        }
+        break;
       }
     }
 

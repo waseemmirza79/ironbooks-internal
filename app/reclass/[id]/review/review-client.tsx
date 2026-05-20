@@ -18,10 +18,12 @@ import {
   Mail,
   Send,
   X,
+  RefreshCw,
 } from "lucide-react";
 
 interface ReclassJob {
   id: string;
+  status: string;
   workflow: string;
   source_account_name: string;
   target_account_name: string | null;
@@ -109,6 +111,8 @@ export function ReclassReview({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>("");
   const [emailModalOpen, setEmailModalOpen] = useState(false);
+  const [reExecuting, setReExecuting] = useState(false);
+  const [reExecuteError, setReExecuteError] = useState("");
 
   const isAdmin = userRole === "admin";
   const isLeadOrAdmin = userRole === "admin" || userRole === "lead";
@@ -274,9 +278,13 @@ export function ReclassReview({
     for (const id of rowIds) {
       const row = rows.find((r) => r.id === id);
       if (!row) continue;
+      // A row has a target if any of: explicit override ID, override name (resolved
+      // at execute time), AI-assigned ID, or AI-assigned name.
       const hasTarget =
         !!row.bookkeeper_override_target_id ||
-        (!!row.to_account_id && row.to_account_id !== "");
+        !!(row.bookkeeper_override_target_name && row.bookkeeper_override_target_name !== "") ||
+        (!!row.to_account_id && row.to_account_id !== "") ||
+        !!(row.to_account_name && row.to_account_name !== "");
       if (hasTarget) eligible.push(id);
       else blocked.push(id);
     }
@@ -426,6 +434,25 @@ export function ReclassReview({
       setSubmitting(false);
     }
   }
+
+  async function handleReExecute() {
+    setReExecuting(true);
+    setReExecuteError("");
+    try {
+      const res = await fetch(`/api/reclass/${job.id}/re-execute`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Re-execute failed");
+      router.push(`/reclass/${job.id}/execute`);
+    } catch (e: any) {
+      setReExecuteError(e.message);
+      setReExecuting(false);
+    }
+  }
+
+  // Count approved rows still pending execution (bounced from a prior run)
+  const pendingApprovedCount = rows.filter(
+    (r) => (r.decision === "approved" || r.decision === "auto_approve") && (r as any).status === "pending"
+  ).length;
 
   return (
     <div className="space-y-6 max-w-7xl">
@@ -705,6 +732,39 @@ export function ReclassReview({
           Skipped, flagged, and rejected transactions will NOT be executed.
         </p>
       </div>
+
+      {/* Re-execute card — only shown when the job already ran and rows are still pending */}
+      {job.status === "complete" && pendingApprovedCount > 0 && (
+        <div className="bg-white rounded-2xl border-2 border-amber-200 p-6">
+          <div className="flex items-start gap-3 mb-4">
+            <RefreshCw size={20} className="text-amber-600 flex-shrink-0 mt-0.5" />
+            <div>
+              <h3 className="font-bold text-navy">
+                {pendingApprovedCount} row{pendingApprovedCount === 1 ? "" : "s"} ready to re-execute
+              </h3>
+              <p className="text-sm text-ink-slate mt-1">
+                These rows have a target account assigned but weren't executed in the first run.
+                Click below to push them to QBO now.
+              </p>
+            </div>
+          </div>
+          {reExecuteError && (
+            <div className="mb-3 p-3 bg-red-50 text-red-800 rounded-lg text-sm">{reExecuteError}</div>
+          )}
+          <button
+            onClick={handleReExecute}
+            disabled={reExecuting}
+            className="w-full bg-amber-500 hover:bg-amber-600 text-white font-semibold px-6 py-3 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {reExecuting ? (
+              <Loader2 className="animate-spin" size={18} />
+            ) : (
+              <RefreshCw size={18} />
+            )}
+            {reExecuting ? "Starting…" : `Execute ${pendingApprovedCount} pending row${pendingApprovedCount === 1 ? "" : "s"} in QBO`}
+          </button>
+        </div>
+      )}
 
       {/* Email Client Modal */}
       {emailModalOpen && (

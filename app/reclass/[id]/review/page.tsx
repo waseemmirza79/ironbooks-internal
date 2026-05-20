@@ -58,8 +58,10 @@ export default async function ReclassReviewPage({
     );
   }
 
-  // If executing/complete, redirect to execute page
-  if (job.execution_started_at) {
+  // While actively executing, redirect to the live progress page.
+  // After completion ("complete") the bookkeeper may return here to assign
+  // targets to bounced rows and trigger a re-execute — don't redirect them away.
+  if (job.status === "executing") {
     redirect(`/reclass/${id}/execute`);
   }
 

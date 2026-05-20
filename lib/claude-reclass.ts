@@ -450,7 +450,7 @@ Return STRICTLY valid JSON:
 
 No markdown, no preamble. Just the JSON.`;
 
-const FULL_CAT_BATCH_SIZE = 30;
+const FULL_CAT_BATCH_SIZE = 20;
 
 /**
  * Classify every transaction line against the new COA.
@@ -568,36 +568,31 @@ ${JSON.stringify(compactBatch, null, 2)}
 
 Classify each line. Return JSON only.`;
 
-    // Hard per-batch timeout. Without this, one stalled Anthropic call
-    // (network hiccup, model degradation, rate-limit retry storm) hangs
-    // the entire reclass discovery — which then gets killed by the
-    // 15-min stale-job watchdog with no audit trail. 90s is generous —
-    // typical batches finish in 5-15s. If a batch genuinely times out,
-    // we skip it with a warning rather than nuking the whole job;
-    // those lines fall through to web-search fallback or stay
-    // unclassified for the bookkeeper to handle in review.
-    const BATCH_TIMEOUT_MS = 90_000;
+    // Hard per-batch timeout using AbortController so the underlying HTTP
+    // request is actually cancelled (Promise.race + setTimeout leaves ghost
+    // connections that starve subsequent batches). 45s covers the 99th
+    // percentile for a 20-line batch — typical is 5-15s.
+    const BATCH_TIMEOUT_MS = 45_000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`Anthropic batch timeout after ${BATCH_TIMEOUT_MS}ms`)), BATCH_TIMEOUT_MS);
     let response: Awaited<ReturnType<typeof client.messages.create>>;
     try {
-      response = await Promise.race([
-        client.messages.create({
+      response = await client.messages.create(
+        {
           model: MODEL,
           max_tokens: 16000,
           system: FULL_CAT_SYSTEM_PROMPT,
           messages: [{ role: "user", content: userMessage }],
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () => reject(new Error(`Anthropic batch timeout after ${BATCH_TIMEOUT_MS}ms`)),
-            BATCH_TIMEOUT_MS
-          )
-        ),
-      ]);
+        },
+        { signal: controller.signal }
+      );
     } catch (err: any) {
       warnings.push(
         `Batch ${i / FULL_CAT_BATCH_SIZE + 1}: ${err?.message || err}. Lines skipped — will fall through to web-search or stay unclassified.`
       );
       continue;
+    } finally {
+      clearTimeout(timer);
     }
 
     const textBlock = response.content.find((c) => c.type === "text");
@@ -723,34 +718,38 @@ Return STRICTLY valid JSON, no other text:
   "reasoning": "short sentence — what is this vendor and why this account"
 }`;
 
-  // Hard per-vendor timeout. The web_search tool can hang indefinitely if a
-  // particular search query stalls upstream (Anthropic's search backend, a
-  // slow target site, rate-limit retry storms). Without this race, ONE bad
-  // vendor freezes the entire reclass job in `status='executing'` forever
-  // (see Interial Painting incident, May 2026). 45s is generous — typical
-  // calls finish in 5–15s.
-  const WEB_SEARCH_TIMEOUT_MS = 12_000;
+  // Hard per-vendor timeout. AbortController actually cancels the underlying
+  // HTTP request — unlike Promise.race+setTimeout which leaves ghost connections
+  // accumulating across batches and starving the worker.
+  // 25s covers the 95th-percentile call (typical: 5–15s). The outer
+  // WEB_SEARCH_BUDGET_MS in the discover route is a second safety net.
+  const WEB_SEARCH_TIMEOUT_MS = 25_000;
   try {
-    const response = await Promise.race([
-      client.messages.create({
-        model: MODEL,
-        max_tokens: 1500,
-        tools: [
-          {
-            type: "web_search_20250305" as any,
-            name: "web_search",
-            max_uses: 2,
-          } as any,
-        ],
-        messages: [{ role: "user", content: userMessage }],
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error(`web_search timeout after ${WEB_SEARCH_TIMEOUT_MS}ms`)),
-          WEB_SEARCH_TIMEOUT_MS
-        )
-      ),
-    ]);
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new Error(`web_search timeout after ${WEB_SEARCH_TIMEOUT_MS}ms`)),
+      WEB_SEARCH_TIMEOUT_MS
+    );
+    let response: Awaited<ReturnType<typeof client.messages.create>>;
+    try {
+      response = await client.messages.create(
+        {
+          model: MODEL,
+          max_tokens: 1500,
+          tools: [
+            {
+              type: "web_search_20250305" as any,
+              name: "web_search",
+              max_uses: 2,
+            } as any,
+          ],
+          messages: [{ role: "user", content: userMessage }],
+        },
+        { signal: controller.signal }
+      );
+    } finally {
+      clearTimeout(timer);
+    }
 
     // The final text block is the JSON result (after any tool use)
     const textBlocks = response.content.filter((c: any) => c.type === "text");

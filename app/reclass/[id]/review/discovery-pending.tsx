@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Loader2, AlertCircle, CheckCircle2, Search, Sparkles, Database, X, RotateCcw } from "lucide-react";
+import { Loader2, AlertCircle, CheckCircle2, Search, Sparkles, Database, X, RotateCcw, XCircle } from "lucide-react";
 
 export function ReclassDiscoveryPending({
   jobId,
@@ -22,6 +22,8 @@ export function ReclassDiscoveryPending({
   const [webSearchLog, setWebSearchLog] = useState<string[]>([]);
   const [skipping, setSkipping] = useState(false);
   const [skipped, setSkipped] = useState(false);
+  const [skipError, setSkipError] = useState("");
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     const t = setInterval(() => setElapsed((s) => s + 1), 1000);
@@ -71,11 +73,30 @@ export function ReclassDiscoveryPending({
     return () => { cancelled = true; };
   }, [jobId, router]);
 
+  async function cancelJob() {
+    if (!confirm("Cancel this job? It will be marked as failed and you can start a new one.")) return;
+    setCancelling(true);
+    try {
+      await fetch(`/api/reclass/${jobId}/cancel`, { method: "POST" });
+      window.location.reload();
+    } catch {
+      setCancelling(false);
+    }
+  }
+
   async function skipWebSearch() {
     setSkipping(true);
+    setSkipError("");
     try {
-      await fetch(`/api/reclass/${jobId}/skip-web-search`, { method: "POST" });
-      setSkipped(true);
+      const res = await fetch(`/api/reclass/${jobId}/skip-web-search`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setSkipError(data.error || `Failed (${res.status})`);
+      } else {
+        setSkipped(true);
+      }
+    } catch {
+      setSkipError("Network error — try again");
     } finally {
       setSkipping(false);
     }
@@ -140,11 +161,14 @@ export function ReclassDiscoveryPending({
     );
   }
 
+  // Drive stage from actual server progress, not a fixed time schedule.
+  // Once the server starts emitting [web_search] log lines we know we're in
+  // that stage. Earlier stages fall back to elapsed as a rough indicator.
   const stage =
-    elapsed < 5 ? "pulling"
+    webSearchLog.length > 0 ? "web_search"
+    : elapsed < 5 ? "pulling"
     : elapsed < 15 ? "knowledge_base"
-    : elapsed < 45 ? "ai"
-    : "web_search";
+    : "ai";
 
   const webSearchActive = stage === "web_search";
 
@@ -153,9 +177,18 @@ export function ReclassDiscoveryPending({
       <div className="flex items-center gap-3 mb-2">
         <Loader2 className="animate-spin text-teal" size={24} />
         <h2 className="text-lg font-bold text-navy">Discovery in progress</h2>
-        <span className="ml-auto text-xs font-mono text-ink-slate">
+        <span className="text-xs font-mono text-ink-slate">
           {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}
         </span>
+        <button
+          onClick={cancelJob}
+          disabled={cancelling}
+          className="ml-auto flex items-center gap-1 text-xs text-ink-slate hover:text-red-600 disabled:opacity-50"
+          title="Cancel this job and start a fresh one"
+        >
+          {cancelling ? <Loader2 size={11} className="animate-spin" /> : <XCircle size={13} />}
+          {cancelling ? "Cancelling…" : "Cancel job"}
+        </button>
       </div>
       <p className="text-sm text-ink-slate mb-6">
         Each transaction goes through a 4-tier categorization pipeline. Most match instantly from
@@ -237,6 +270,10 @@ export function ReclassDiscoveryPending({
             skipped ? (
               <span style={{ fontSize: 12, fontWeight: 600, color: "#D97706", flexShrink: 0 }}>
                 Skipping…
+              </span>
+            ) : skipError ? (
+              <span style={{ fontSize: 11, fontWeight: 600, color: "#DC2626", flexShrink: 0 }}>
+                {skipError}
               </span>
             ) : (
               <button
