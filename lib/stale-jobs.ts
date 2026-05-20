@@ -35,6 +35,13 @@ const NEVER_STARTED_MS = 15 * 60 * 1000;
 // genuine hangs.
 const NEVER_STARTED_RECLASS_MS = 25 * 60 * 1000;
 
+// Reclass discovery actively writes progress to error_message after every
+// batch (`[ai_progress] X/Y`) and at each phase boundary. So updated_at is
+// the real "is it doing anything" signal — created_at alone falsely kills
+// 80-batch jobs that take 30+ minutes but are making steady progress.
+// We require BOTH: job is at least 25 min old AND no progress in 5 min.
+const RECLASS_SILENT_MS = 5 * 60 * 1000;
+
 // 45 min: QBO write phases run serially per action with rate-limit waits.
 // Even a giant cleanup (hundreds of actions) finishes well inside this.
 const STARTED_STALE_MS = 45 * 60 * 1000;
@@ -50,12 +57,13 @@ export async function sweepStaleJobs(): Promise<SweepResult> {
   const now = Date.now();
   const neverStartedCutoff = new Date(now - NEVER_STARTED_MS).toISOString();
   const neverStartedReclassCutoff = new Date(now - NEVER_STARTED_RECLASS_MS).toISOString();
+  const reclassSilentCutoff = new Date(now - RECLASS_SILENT_MS).toISOString();
   const startedStaleCutoff = new Date(now - STARTED_STALE_MS).toISOString();
 
   const errorMsgNeverStarted =
     "Auto-failed by watchdog: stuck in executing status with no execution_started_at for >15 min (likely AI discovery / web_search hang).";
   const errorMsgNeverStartedReclass =
-    "Auto-failed by watchdog: stuck in executing status with no execution_started_at for >25 min (likely AI categorization or web_search hang).";
+    "Auto-failed by watchdog: reclass discovery has been silent for >5 min after >25 min total runtime (likely AI categorization or web-search hang).";
   const errorMsgStartedStale =
     "Auto-failed by watchdog: execution_started_at older than 45 min with no completion (likely crashed mid-loop).";
 
@@ -83,9 +91,15 @@ export async function sweepStaleJobs(): Promise<SweepResult> {
     .lt("execution_started_at", startedStaleCutoff)
     .select("id");
 
-  // reclass_jobs — same two modes, but with the more lenient
-  // 25-min never-started cutoff (vendor-batched + web-search can
-  // legitimately push past 15 min on busy clients).
+  // reclass_jobs — never-started mode. Now requires BOTH conditions:
+  //   - created_at older than 25 min (NEVER_STARTED_RECLASS_MS), AND
+  //   - updated_at older than 5 min (RECLASS_SILENT_MS).
+  // The discovery worker writes `[phase] ...` and `[ai_progress] X/Y`
+  // markers after every batch, which bumps updated_at. So a job that's
+  // mid-batch and still progressing stays alive even past 25 min —
+  // only jobs that have gone silent for 5+ minutes get killed.
+  // (Splash of Colour, May 2026: 80 batches × ~20-30s = ~30 min total
+  // legitimate runtime; old watchdog killed it at 25.)
   const { data: reclassA } = await service
     .from("reclass_jobs")
     .update({
@@ -96,6 +110,7 @@ export async function sweepStaleJobs(): Promise<SweepResult> {
     .eq("status", "executing")
     .is("execution_started_at", null)
     .lt("created_at", neverStartedReclassCutoff)
+    .lt("updated_at", reclassSilentCutoff)
     .select("id");
 
   const { data: reclassB } = await service
