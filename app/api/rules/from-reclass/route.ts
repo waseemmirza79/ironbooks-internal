@@ -23,13 +23,16 @@ export async function POST(request: Request) {
 
   const service = createServiceSupabase();
 
+  // Include every decision type that came in with a vendor + target. The
+  // page surfaces them all; the POST has to accept them all too, otherwise
+  // selected vendors silently drop out at create time.
   const { data: rows } = await service
     .from("reclassifications")
     .select(
       "vendor_name, vendor_pattern_normalized, to_account_id, to_account_name, bookkeeper_override_target_id, bookkeeper_override_target_name, transaction_amount"
     )
     .eq("reclass_job_id", reclass_job_id)
-    .in("decision", ["auto_approve", "approved"])
+    .in("decision", ["auto_approve", "approved", "needs_review", "flagged", "ask_client"])
     .not("vendor_name", "is", null);
 
   type ReclassRow = {

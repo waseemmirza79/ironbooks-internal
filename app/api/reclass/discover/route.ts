@@ -635,27 +635,33 @@ async function runFullCategorization(
   //    offer P&L accounts as TARGET options to the AI — BS accounts have
   //    structural meaning and shouldn't be auto-suggested as a category.
   const allAccounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
-  const isPnLAccountType = (t: string | undefined): boolean => {
+  // Eligible target types for full-categorization: P&L plus Equity. Equity
+  // belongs here because Owner Draw / Owner Contributions are legitimate
+  // categorization destinations for painter clients (often commingled
+  // accounts where personal expenses get paid from business funds).
+  const isReclassTargetType = (t: string | undefined): boolean => {
     if (!t) return false;
     const norm = t.toLowerCase().replace(/\s+/g, "");
-    // QBO emits these as either "Income"/"Other Income"/"Cost of Goods Sold"
-    // or "OtherIncome"/"CostOfGoodsSold" depending on endpoint — normalize both.
     return (
       norm === "income" ||
       norm === "otherincome" ||
       norm === "expense" ||
       norm === "otherexpense" ||
-      norm === "costofgoodssold"
+      norm === "costofgoodssold" ||
+      norm === "equity"
     );
   };
   const availableAccounts: AvailableAccount[] = allAccounts
-    .filter((a) => a.Active !== false && isPnLAccountType(a.AccountType))
+    .filter((a) => a.Active !== false && isReclassTargetType(a.AccountType))
     .map((a) => ({
       qbo_account_id: a.Id,
       account_name: a.Name,
       account_type: a.AccountType || "",
       account_subtype: a.AccountSubType || "",
     }));
+  console.log(
+    `[reclass ${jobId}] QBO accounts: ${allAccounts.length} total, ${availableAccounts.length} eligible. Types present: ${[...new Set(allAccounts.map((a) => a.AccountType))].join(", ")}`
+  );
 
   // Get or create the "Uncategorized Expenses" catch-all account in QBO
   const uncategorizedAccount = await getOrCreateUncategorizedAccount(

@@ -155,6 +155,25 @@ export default async function BankRulesFromReclassPage({
     }
   }
 
+  // Pull existing bank rules for this client so we can exclude vendors that
+  // already have a rule pushed to QBO — no point re-creating the same rule.
+  // Vendors with a local-only bank_rules row (pushed_to_qbo=false) DO stay
+  // visible so the bookkeeper can re-push them.
+  const { data: existingRules } = await service
+    .from("bank_rules")
+    .select("vendor_pattern, pushed_to_qbo")
+    .eq("client_link_id", job.client_link_id);
+
+  function normalizePattern(s: string): string {
+    return s.toUpperCase().replace(/\s+/g, " ").trim();
+  }
+  const alreadyInQbo = new Set<string>();
+  for (const r of (existingRules || []) as Array<{ vendor_pattern: string | null; pushed_to_qbo: boolean | null }>) {
+    if (r.pushed_to_qbo && r.vendor_pattern) {
+      alreadyInQbo.add(normalizePattern(r.vendor_pattern));
+    }
+  }
+
   const proposedRules = Array.from(groupMap.entries())
     .map(([vendorPattern, group]) => {
       let bestTarget = { id: "", name: "" };
@@ -166,6 +185,8 @@ export default async function BankRulesFromReclassPage({
         }
       }
       if (!bestTarget.name) return null;
+      // Skip vendors that already have a rule pushed to QBO.
+      if (alreadyInQbo.has(normalizePattern(vendorPattern))) return null;
       return {
         vendorPattern,
         vendorDisplay: group.vendorDisplay,
@@ -184,6 +205,9 @@ export default async function BankRulesFromReclassPage({
     txCount: number;
     totalAmount: number;
   }>;
+  console.log(
+    `[bank-rules ${id}] Proposed: ${proposedRules.length} (excluded ${alreadyInQbo.size} already pushed to QBO)`
+  );
 
   // Build the FINAL dropdown list: live QBO P&L accounts UNION the targets the
   // AI/bookkeeper picked in this job's rows. Catches accounts the AI chose but
