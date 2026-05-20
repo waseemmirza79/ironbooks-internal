@@ -79,7 +79,7 @@ export async function GET(request: Request) {
   // Most recent stripe connect token per client (for attribution)
   const { data: stripeTokens } = await service
     .from("stripe_connect_tokens")
-    .select("client_link_id, created_at, created_by, users!created_by(full_name)")
+    .select("client_link_id, created_at, created_by")
     .in("client_link_id", clientIds)
     .order("created_at", { ascending: false });
 
@@ -144,7 +144,7 @@ export async function GET(request: Request) {
       stripe_connected: stripeConnected,
       stripe_pending: stripePending,
       stripe_request_sent_at: client.stripe_request_sent_at,
-      stripe_link_sent_by: token ? (token.users as any)?.full_name ?? null : null,
+      stripe_link_sent_by: token ? (bkById.get(token.created_by)?.full_name ?? null) : null,
       stripe_link_sent_at: token?.created_at ?? null,
       due_date: client.due_date,
       note_count: noteCountMap.get(client.id) || 0,
