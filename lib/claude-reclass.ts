@@ -464,6 +464,8 @@ export async function categorizeAllTransactions(params: {
   lines: FullCategorizationLine[];
   availableAccounts: AvailableAccount[];
   autoApproveThreshold: number;
+  signal?: AbortSignal;
+  onProgress?: (doneBatches: number, totalBatches: number) => Promise<void>;
 }): Promise<{
   decisions: FullCategorizationDecision[];
   warnings: string[];
@@ -544,7 +546,13 @@ export async function categorizeAllTransactions(params: {
   const accountById = new Map(params.availableAccounts.map((a) => [a.qbo_account_id, a]));
 
   // Batch through Claude
+  const totalBatches = Math.ceil(linesToClassify.length / FULL_CAT_BATCH_SIZE);
   for (let i = 0; i < linesToClassify.length; i += FULL_CAT_BATCH_SIZE) {
+    // Check external abort (skip AI signal) before starting each batch
+    if (params.signal?.aborted) {
+      warnings.push(`AI categorization cancelled by user after ${i} lines — remaining lines will go to needs_review.`);
+      break;
+    }
     const batch = linesToClassify.slice(i, i + FULL_CAT_BATCH_SIZE);
     const compactBatch = batch.map((l) => ({
       ref_id: l.ref_id,
@@ -568,13 +576,17 @@ ${JSON.stringify(compactBatch, null, 2)}
 
 Classify each line. Return JSON only.`;
 
-    // Hard per-batch timeout using AbortController so the underlying HTTP
-    // request is actually cancelled (Promise.race + setTimeout leaves ghost
-    // connections that starve subsequent batches). 45s covers the 99th
-    // percentile for a 20-line batch — typical is 5-15s.
+    // Hard per-batch timeout. AbortController cancels the underlying HTTP
+    // request. External signal (skip AI) is forwarded so the bookkeeper can
+    // cancel the whole AI phase immediately.
     const BATCH_TIMEOUT_MS = 45_000;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error(`Anthropic batch timeout after ${BATCH_TIMEOUT_MS}ms`)), BATCH_TIMEOUT_MS);
+    if (params.signal) {
+      params.signal.addEventListener("abort", () => {
+        controller.abort(params.signal!.reason || new Error("AI step cancelled"));
+      }, { once: true });
+    }
     let response: Awaited<ReturnType<typeof client.messages.create>>;
     try {
       response = await client.messages.create(
@@ -587,6 +599,10 @@ Classify each line. Return JSON only.`;
         { signal: controller.signal }
       );
     } catch (err: any) {
+      if (params.signal?.aborted) {
+        warnings.push(`AI categorization cancelled by user after ${i} lines.`);
+        break;
+      }
       warnings.push(
         `Batch ${i / FULL_CAT_BATCH_SIZE + 1}: ${err?.message || err}. Lines skipped — will fall through to web-search or stay unclassified.`
       );
@@ -647,6 +663,12 @@ Classify each line. Return JSON only.`;
         decision,
         flagged_reason: !targetAccount ? "AI could not confidently pick a target account" : undefined,
       });
+    }
+
+    // Report progress after each successful batch
+    if (params.onProgress) {
+      const doneBatches = Math.floor(i / FULL_CAT_BATCH_SIZE) + 1;
+      await params.onProgress(doneBatches, totalBatches).catch(() => {});
     }
   }
 

@@ -820,14 +820,41 @@ async function runFullCategorization(
     current_account_name: l.current_account_name,
   }));
 
-  const aiResult = await categorizeAllTransactions({
-    clientName: clientLink.client_name,
-    jurisdiction: clientLink.jurisdiction,
-    stateProvince: clientLink.state_province || "",
-    lines: aiLines,
-    availableAccounts,
-    autoApproveThreshold: threshold,
-  });
+  // Poller: check every 2s for a skip-AI signal ([skip_ai] in error_message).
+  // Fires the external AbortController which forwards into each batch's
+  // internal controller — the current HTTP request is cancelled immediately.
+  const aiController = new AbortController();
+  const aiSkipPoll = setInterval(async () => {
+    try {
+      const { data } = await service.from("reclass_jobs").select("error_message").eq("id", jobId).single();
+      if ((data as any)?.error_message === "[skip_ai]") {
+        aiController.abort(new Error("AI step skipped by user"));
+        clearInterval(aiSkipPoll);
+      }
+    } catch {}
+  }, 2000);
+
+  let aiResult: Awaited<ReturnType<typeof categorizeAllTransactions>>;
+  try {
+    aiResult = await categorizeAllTransactions({
+      clientName: clientLink.client_name,
+      jurisdiction: clientLink.jurisdiction,
+      stateProvince: clientLink.state_province || "",
+      lines: aiLines,
+      availableAccounts,
+      autoApproveThreshold: threshold,
+      signal: aiController.signal,
+      onProgress: async (done, total) => {
+        await service
+          .from("reclass_jobs")
+          .update({ error_message: `[ai_progress] ${done}/${total}` } as any)
+          .eq("id", jobId)
+          .neq("error_message", "[skip_ai]");
+      },
+    });
+  } finally {
+    clearInterval(aiSkipPoll);
+  }
 
   // 6. Build reclass rows — merge AI decisions with pre-matched ones
   const decisionByRef = new Map<string, FullCategorizationDecision>();

@@ -27,6 +27,9 @@ export function ReclassDiscoveryPending({
   const [continuing, setContinuing] = useState(false);
   const [continueError, setContinueError] = useState("");
   const [webSearchProgress, setWebSearchProgress] = useState<{ done: number; total: number } | null>(null);
+  const [aiProgress, setAiProgress] = useState<{ done: number; total: number } | null>(null);
+  const [skippingAi, setSkippingAi] = useState(false);
+  const [skipAiError, setSkipAiError] = useState("");
 
   useEffect(() => {
     const t = setInterval(() => setElapsed((s) => s + 1), 1000);
@@ -46,6 +49,7 @@ export function ReclassDiscoveryPending({
         setStatus(data.status);
         setStats(data.stats);
         if (data.web_search_progress) setWebSearchProgress(data.web_search_progress);
+        if (data.ai_progress) setAiProgress(data.ai_progress);
 
         if (data.error_message?.startsWith("[web_search]")) {
           setWebSearchLog((prev) => {
@@ -111,6 +115,24 @@ export function ReclassDiscoveryPending({
       setSkipError("Network error — try again");
     } finally {
       setSkipping(false);
+    }
+  }
+
+  async function skipAi() {
+    setSkippingAi(true);
+    setSkipAiError("");
+    try {
+      const res = await fetch(`/api/reclass/${jobId}/skip-ai`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setSkipAiError(data.error || `Failed (${res.status})`);
+      }
+      // On success the AI loop will finish its current batch (≤45s) then
+      // transition to web_search_paused. Polling continues normally.
+    } catch {
+      setSkipAiError("Network error — try again");
+    } finally {
+      setSkippingAi(false);
     }
   }
 
@@ -365,7 +387,7 @@ export function ReclassDiscoveryPending({
         </div>
 
         {/* Row 3 */}
-        <div className="flex items-start gap-3 py-2.5">
+        <div className="flex items-center gap-3 py-2.5">
           <div className="rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0"
             style={{ backgroundColor: stage === "web_search" ? "#D1FAE5" : stage === "ai" ? "#E8F2F0" : "#F3F4F6" }}>
             {stage === "web_search"
@@ -378,8 +400,38 @@ export function ReclassDiscoveryPending({
             <div className={`text-sm font-semibold ${stage === "web_search" ? "text-green-700" : stage === "ai" ? "text-navy" : "text-ink-light"}`}>
               3. AI categorization (Claude)
             </div>
-            <div className="text-xs text-ink-slate mt-0.5">Batched call for unknown vendors</div>
+            <div className="text-xs text-ink-slate mt-0.5">
+              {stage === "ai" && aiProgress
+                ? `Batch ${aiProgress.done} of ${aiProgress.total} complete`
+                : "Batched call for unknown vendors"}
+            </div>
           </div>
+          {stage === "ai" && !skippingAi && (
+            <button
+              onClick={skipAi}
+              disabled={skippingAi}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "6px 12px", borderRadius: 8,
+                border: "1px solid #D1D5DB", background: "#FFFFFF",
+                fontSize: 12, fontWeight: 600, color: "#374151",
+                cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap",
+              }}
+            >
+              <X size={11} />
+              Skip AI
+            </button>
+          )}
+          {stage === "ai" && skippingAi && (
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#D97706", flexShrink: 0 }}>
+              Skipping…
+            </span>
+          )}
+          {skipAiError && (
+            <span style={{ fontSize: 11, fontWeight: 600, color: "#DC2626", flexShrink: 0 }}>
+              {skipAiError}
+            </span>
+          )}
         </div>
 
         {/* Row 4 — web search with inline Skip button */}
