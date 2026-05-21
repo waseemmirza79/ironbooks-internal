@@ -75,6 +75,30 @@ export interface ManualCleanupItem {
  * REST API does not. We detect these and route them to the Manual Cleanup
  * Report instead of treating them as errors.
  */
+/**
+ * Thrown by checkBudget() when we're approaching Vercel's 800s ceiling.
+ * Caught in the outer executor handler to flip the job into a resumable
+ * paused state instead of letting the runtime kill the function and
+ * leave the job stuck in 'executing'.
+ */
+class GracefulPauseError extends Error {
+  constructor(public elapsedMs: number) {
+    super(`Graceful pause after ${Math.round(elapsedMs / 1000)}s — exiting before Vercel timeout`);
+    this.name = "GracefulPauseError";
+  }
+}
+
+// 720s = 12 min. Leaves 80s of headroom before Vercel's 800s hard kill so
+// the executor can write its paused state + audit log without truncation.
+const GRACEFUL_PAUSE_MS = 720_000;
+
+function checkBudget(startTime: number) {
+  const elapsed = Date.now() - startTime;
+  if (elapsed > GRACEFUL_PAUSE_MS) {
+    throw new GracefulPauseError(elapsed);
+  }
+}
+
 function isQboLimitationError(err: any): boolean {
   const msg = String(err?.message || err || "");
   return (
@@ -562,7 +586,10 @@ export async function executeJob(jobId: string): Promise<{
     const liveActions = (validatedActions || actions) as any[];
 
     // STAGE 1: Create parents
-    const parentCreations = liveActions.filter((a) => a.action === "create" && !a.new_parent_name);
+    // Filter out already-executed actions in every stage — makes the executor
+    // idempotent so a paused-and-resumed run picks up where it left off
+    // without re-attempting actions that already shipped to QBO.
+    const parentCreations = liveActions.filter((a) => a.action === "create" && !a.new_parent_name && !a.executed);
     const parentIdMap = new Map<string, string>();
 
     if (parentCreations.length > 0) {
@@ -570,6 +597,7 @@ export async function executeJob(jobId: string): Promise<{
         { stage: "create_parents", total: parentCreations.length });
 
       for (const action of parentCreations) {
+        checkBudget(startTime);
         if (await shouldCancel(ctx)) {
           await logProgress(ctx, "cancellation_acknowledged", "Cancelled mid-run — exiting create-parents stage cleanly");
           return { success: false, errors, stats };
@@ -597,7 +625,7 @@ export async function executeJob(jobId: string): Promise<{
     // STAGE 1.5: Auto-create any missing parent accounts referenced by child creations.
     // Claude's analysis sometimes assumes parents like "Vehicle Expenses" exist when they don't.
     // We look up the parent's QBO type from the master COA and create it on the fly.
-    const childCreations = liveActions.filter((a) => a.action === "create" && a.new_parent_name);
+    const childCreations = liveActions.filter((a) => a.action === "create" && a.new_parent_name && !a.executed);
     if (childCreations.length > 0) {
       const allAccountsCache = await qbo.fetchAllAccounts(ctx.realmId, ctx.accessToken);
       const existingNames = new Set(allAccountsCache.map((a) => a.Name));
@@ -674,6 +702,7 @@ export async function executeJob(jobId: string): Promise<{
         { stage: "create_children", total: childCreations.length });
 
       for (const action of childCreations) {
+        checkBudget(startTime);
         if (await shouldCancel(ctx)) {
           await logProgress(ctx, "cancellation_acknowledged", "Cancelled mid-run — exiting create-children stage cleanly");
           return { success: false, errors, stats };
@@ -752,7 +781,7 @@ export async function executeJob(jobId: string): Promise<{
     }
 
     // STAGE 3: Rename
-    const renames = liveActions.filter((a) => a.action === "rename");
+    const renames = liveActions.filter((a) => a.action === "rename" && !a.executed);
 
     if (renames.length > 0) {
       await logProgress(ctx, "stage_start", `Renaming ${renames.length} accounts`,
@@ -762,6 +791,7 @@ export async function executeJob(jobId: string): Promise<{
       const accountMap = new Map(allAccounts.map((a) => [a.Id, a]));
 
       for (const action of renames) {
+        checkBudget(startTime);
         if (await shouldCancel(ctx)) {
           await logProgress(ctx, "cancellation_acknowledged", "Cancelled mid-run — exiting rename stage cleanly");
           return { success: false, errors, stats };
@@ -843,7 +873,7 @@ export async function executeJob(jobId: string): Promise<{
     // target account (which was just renamed into existence in Stage 3), then
     // inactivate the source. Uses the same line-level reclassification engine as
     // the Reclass module.
-    const merges = liveActions.filter((a) => a.action === "merge");
+    const merges = liveActions.filter((a) => a.action === "merge" && !a.executed);
 
     if (merges.length > 0) {
       await logProgress(ctx, "stage_start", `Merging ${merges.length} accounts`,
@@ -883,6 +913,7 @@ export async function executeJob(jobId: string): Promise<{
       const postRenameById = new Map(postRenameAccounts.map((a) => [a.Id, a]));
 
       for (const action of merges) {
+        checkBudget(startTime);
         if (await shouldCancel(ctx)) {
           await logProgress(ctx, "cancellation_acknowledged", "Cancelled mid-run — exiting merge stage cleanly");
           return { success: false, errors, stats };
@@ -1057,7 +1088,8 @@ export async function executeJob(jobId: string): Promise<{
               // Mid-merge cancel check — piggybacks on the heartbeat so a
               // user cancel during a big merge stops within ~50 lines
               // instead of waiting for the whole merge to finish.
-              if (await shouldCancel(ctx)) {
+              checkBudget(startTime);
+        if (await shouldCancel(ctx)) {
                 await logProgress(ctx, "cancellation_acknowledged",
                   `Cancelled mid-merge — ${linesReclassed} lines already moved, exiting cleanly`);
                 return { success: false, errors, stats };
@@ -1197,7 +1229,7 @@ export async function executeJob(jobId: string): Promise<{
     }
 
     // STAGE 4: Inactivate
-    const deletions = liveActions.filter((a) => a.action === "delete");
+    const deletions = liveActions.filter((a) => a.action === "delete" && !a.executed);
 
     if (deletions.length > 0) {
       await logProgress(ctx, "stage_start", `Inactivating ${deletions.length} accounts`,
@@ -1207,6 +1239,7 @@ export async function executeJob(jobId: string): Promise<{
       const accountMap = new Map(allAccounts.map((a) => [a.Id, a]));
 
       for (const action of deletions) {
+        checkBudget(startTime);
         if (await shouldCancel(ctx)) {
           await logProgress(ctx, "cancellation_acknowledged", "Cancelled mid-run — exiting inactivate stage cleanly");
           return { success: false, errors, stats };
@@ -1330,6 +1363,31 @@ export async function executeJob(jobId: string): Promise<{
 
     return { success: errors.length === 0, errors, stats };
   } catch (fatalError: any) {
+    // ── Graceful pause path ─────────────────────────────────────────────
+    // checkBudget() throws this when we're approaching Vercel's 800s ceiling.
+    // We exit cleanly, leaving the job in 'executing' with a paused marker —
+    // the bookkeeper can re-click Execute to resume from the next un-done
+    // action (idempotent because all stage filters skip a.executed=true).
+    if (fatalError instanceof GracefulPauseError) {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      console.log(
+        `[executor ${jobId}] Gracefully paused at ${elapsed}s — resume by clicking Execute again`
+      );
+      await supabase.from("coa_jobs").update({
+        // Keep status='in_review' so the bookkeeper can re-trigger Execute.
+        // Already-executed actions stay marked executed=true and will be
+        // skipped on the next run.
+        status: "in_review",
+        execution_completed_at: null,
+        execution_duration_seconds: elapsed,
+        error_message: `[paused_for_resume] Cleanup paused at ${elapsed}s before Vercel's runtime limit. Click Execute again to resume — done actions stay applied.`,
+      }).eq("id", jobId);
+      await logProgress(ctx, "job_paused_for_resume",
+        `Paused after ${elapsed}s to stay under Vercel's runtime limit. Re-click Execute to resume.`,
+        { elapsed_seconds: elapsed, stats });
+      return { success: false, errors: ["Paused for resume"], stats };
+    }
+
     // Log the FULL error + stack trace to Vercel — bare ReferenceErrors like
     // "accountType is not defined" don't tell us where they came from from the
     // job's error_message field alone. The stack is what lets us pinpoint
