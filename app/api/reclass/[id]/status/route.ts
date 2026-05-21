@@ -15,15 +15,26 @@ export async function GET(
   const { searchParams } = new URL(request.url);
   const since = searchParams.get("since");
 
+  // Outer try/catch so any thrown error becomes a structured 500 instead of a
+  // silent failure that the UI just labels "Status check failed". Caught
+  // errors include the message + (in dev) the stack so we can diagnose what
+  // actually broke in the polling loop.
+  try {
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!user) return NextResponse.json({ error: "Session expired — reload the page and sign in again." }, { status: 401 });
 
-  const { data: job } = await supabase
+  const { data: job, error: jobErr } = await supabase
     .from("reclass_jobs")
     .select("*")
     .eq("id", jobId)
     .single();
+  if (jobErr) {
+    return NextResponse.json(
+      { error: `Job lookup failed: ${jobErr.message}` },
+      { status: 500 }
+    );
+  }
   if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 });
 
   let logsQuery = supabase
@@ -132,4 +143,14 @@ export async function GET(
     },
     events: events || [],
   });
+  } catch (err: any) {
+    console.error(`[status ${jobId}] FATAL:`, err?.stack || err);
+    return NextResponse.json(
+      {
+        error: `Status endpoint threw: ${err?.message || String(err)}`,
+        stack_first_frame: err?.stack?.split("\n")[1]?.trim() || null,
+      },
+      { status: 500 }
+    );
+  }
 }

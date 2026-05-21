@@ -36,10 +36,29 @@ export function ReclassDiscoveryPending({
   useEffect(() => {
     let cancelled = false;
 
+    let consecutiveFailures = 0;
     async function poll() {
       try {
         const res = await fetch(`/api/reclass/${jobId}/status`);
-        if (!res.ok) throw new Error("Status check failed");
+        if (!res.ok) {
+          // Surface the real error from the body. Auth expiry (401) is the
+          // most common cause when discovery has been running a long time.
+          const body = await res.json().catch(() => ({}));
+          const msg = body?.error || `Status check returned HTTP ${res.status}`;
+          // Transient blips (502/503/504, occasional network errors) shouldn't
+          // tank the poll loop on the first hit. Retry 2 times before giving up.
+          consecutiveFailures++;
+          if (consecutiveFailures < 3 && res.status >= 500 && res.status !== 401) {
+            if (!cancelled) setTimeout(poll, 2000);
+            return;
+          }
+          throw new Error(
+            res.status === 401
+              ? "Your session expired. Reload the page and sign in again — discovery is still running in the background."
+              : `${msg}${body?.stack_first_frame ? ` (at ${body.stack_first_frame})` : ""}`
+          );
+        }
+        consecutiveFailures = 0;
         const data = await res.json();
         if (cancelled) return;
 
