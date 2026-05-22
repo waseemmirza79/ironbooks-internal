@@ -311,15 +311,27 @@ export function ReclassDiscoveryPending({
   const stage: Stage = stageFromPhase(phase);
 
   // Friendly label for the current phase shown under the active step.
+  //
+  // The error_message field is shared between [phase] markers and
+  // [ai_progress] / [web_search_progress] writes — so once AI batches
+  // start running, the [phase] marker gets overwritten and `p` reads null.
+  // Fall back to deriving the label from whichever progress counter is
+  // active so the UI doesn't mis-show "Starting…" while AI is at batch
+  // 61/102. (Lionetti Painting, May 2026.)
   function phaseLabel(p: string | null): string {
-    if (!p) return "Starting…";
-    if (p.startsWith("pulling")) return "Pulling transactions from QuickBooks";
-    if (p === "fetching_accounts") return "Fetching chart of accounts";
-    if (p === "pre_matching") return "Matching against knowledge base + bank rules";
-    if (p.startsWith("running_ai")) return `Running AI categorization — ${p.replace("running_ai", "").trim() || "starting"}`;
-    if (p.startsWith("web_searching")) return `Web-searching unknown vendors — ${p.replace("web_searching", "").trim() || ""}`;
-    if (p.startsWith("saving")) return `Saving results — ${p.replace("saving", "").trim() || ""}`;
-    return p;
+    if (p) {
+      if (p.startsWith("pulling")) return "Pulling transactions from QuickBooks";
+      if (p === "fetching_accounts") return "Fetching chart of accounts";
+      if (p === "pre_matching") return "Matching against knowledge base + bank rules";
+      if (p.startsWith("running_ai")) return `Running AI categorization — ${p.replace("running_ai", "").trim() || "starting"}`;
+      if (p.startsWith("web_searching")) return `Web-searching unknown vendors — ${p.replace("web_searching", "").trim() || ""}`;
+      if (p.startsWith("saving")) return `Saving results — ${p.replace("saving", "").trim() || ""}`;
+      return p;
+    }
+    // Fallback when phase marker was overwritten by a progress write
+    if (wsProgress) return "Web-searching unknown vendors";
+    if (aiProgress) return "Running AI categorization";
+    return "Starting…";
   }
 
   // Right-side counter on the phase banner — shows whichever progress is active.

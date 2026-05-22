@@ -23,11 +23,16 @@ export default async function NewStripeReconPage() {
   // Exclude clients flagged as "doesn't use Stripe" — the entire
   // recon flow is suppressed for them. (Bookkeepers can re-enable from
   // the comms-tracker on the client card if circumstances change.)
+  // Filter: include clients where stripe_not_required is false OR null.
+  // The .eq("stripe_not_required", false) variant excludes NULL rows in
+  // Postgres, which silently dropped any client created before that column
+  // existed (Power Painting, May 2026 — Stripe connected, but stripe_not_required
+  // was NULL, so the client never showed up in this picker).
   const { data: clientLinks } = await service
     .from("client_links")
     .select("id, client_name, jurisdiction, state_province, qbo_realm_id, double_client_id, double_client_name, stripe_connection_status, cleanup_completed_at, stripe_has_payouts, stripe_last_payout_at, stripe_payouts_checked_at")
     .eq("is_active", true)
-    .eq("stripe_not_required" as any, false)
+    .or("stripe_not_required.is.null,stripe_not_required.eq.false" as any)
     .order("client_name");
 
   return (
