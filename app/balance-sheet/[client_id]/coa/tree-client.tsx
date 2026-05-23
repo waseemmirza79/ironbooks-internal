@@ -5,7 +5,7 @@ import Link from "next/link";
 import {
   Loader2, RefreshCw, ChevronDown, ChevronRight, ArrowRight, AlertTriangle,
   Wallet, CreditCard, FileSpreadsheet, Briefcase, Layers, BookOpen, Landmark,
-  Edit2, Check, X, Plus, Pause, PlayCircle, MoveRight, List, Send,
+  Edit2, Check, X, Plus, Pause, PlayCircle, MoveRight, List, Send, Sparkles,
 } from "lucide-react";
 
 interface BsCoaAccount {
@@ -179,12 +179,20 @@ export function BsCoaTreeClient({
           />
           Show inactive
         </label>
+        <Link
+          href={`/balance-sheet/${clientLinkId}/coa/ai-fix`}
+          className="ml-auto inline-flex items-center gap-1.5 bg-teal hover:bg-teal-dark text-white text-xs font-bold px-3 py-1.5 rounded-lg"
+          title="Have Claude analyze the BS and propose fixes — review, accept/modify/reject, then push to QBO in one click"
+        >
+          <Sparkles size={12} />
+          Use AI to fix
+        </Link>
         <button
           onClick={fetchData}
-          className="ml-auto inline-flex items-center gap-1 text-xs text-ink-slate hover:text-navy"
+          className="inline-flex items-center gap-1 text-xs text-ink-slate hover:text-navy"
         >
           <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
-          Refresh from QBO
+          Refresh
         </button>
       </div>
 

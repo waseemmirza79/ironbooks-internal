@@ -425,6 +425,84 @@ export async function reparentAccount(
   return data.Account;
 }
 
+// ============== JOURNAL ENTRIES ==============
+
+export interface JournalEntryLine {
+  posting_type: "Debit" | "Credit";
+  amount: number;
+  account_id: string;
+  account_name?: string;
+  description?: string;
+}
+
+export interface CreatedJournalEntry {
+  Id: string;
+  DocNumber?: string;
+  TxnDate: string;
+  TotalAmt: number;
+  PrivateNote?: string;
+}
+
+/**
+ * Post a Journal Entry to QBO.
+ *
+ * Used by the AI BS cleanup finalize step to write Opening-Balance-Equity
+ * zeroing entries, A/R bad-debt write-offs, A/P stale-credit reversals, etc.
+ *
+ * Validates debits = credits server-side before sending — QBO rejects
+ * unbalanced JEs with a confusing 6000 error otherwise.
+ */
+export async function createJournalEntry(
+  realmId: string,
+  accessToken: string,
+  params: {
+    txn_date: string;            // YYYY-MM-DD
+    doc_number?: string;
+    private_note?: string;
+    lines: JournalEntryLine[];
+  }
+): Promise<CreatedJournalEntry> {
+  if (!params.lines || params.lines.length < 2) {
+    throw new Error("Journal Entry must have at least 2 lines (one debit + one credit)");
+  }
+  const debitSum = params.lines
+    .filter((l) => l.posting_type === "Debit")
+    .reduce((s, l) => s + l.amount, 0);
+  const creditSum = params.lines
+    .filter((l) => l.posting_type === "Credit")
+    .reduce((s, l) => s + l.amount, 0);
+  // Allow 1¢ rounding drift; anything bigger is a bug
+  if (Math.abs(debitSum - creditSum) > 0.01) {
+    throw new Error(
+      `JE not balanced: debits=$${debitSum.toFixed(2)} vs credits=$${creditSum.toFixed(2)}`
+    );
+  }
+
+  const body: any = {
+    TxnDate: params.txn_date,
+    PrivateNote: params.private_note || undefined,
+    DocNumber: params.doc_number || undefined,
+    Line: params.lines.map((l) => ({
+      DetailType: "JournalEntryLineDetail",
+      Amount: Number(l.amount.toFixed(2)),
+      Description: l.description || undefined,
+      JournalEntryLineDetail: {
+        PostingType: l.posting_type,
+        AccountRef: { value: l.account_id, name: l.account_name },
+      },
+    })),
+  };
+
+  const data = await qboRequest<{ JournalEntry: CreatedJournalEntry }>(
+    realmId,
+    accessToken,
+    '/journalentry?minorversion=70',
+    { method: 'POST', body: JSON.stringify(body) }
+  );
+
+  return data.JournalEntry;
+}
+
 // ============== TRANSACTIONS ==============
 
 /**
