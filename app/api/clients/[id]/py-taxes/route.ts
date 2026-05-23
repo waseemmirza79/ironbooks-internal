@@ -75,6 +75,28 @@ export async function PATCH(
     }
   }
 
+  // Data-integrity guard: filed=true requires a year (and conversely
+  // filed=false forces year=null, which we already do above). Catches
+  // direct-PATCH callers with partial bodies — the widget always sends
+  // both fields together so this shouldn't fire from normal use.
+  if (update.py_taxes_filed === true && update.py_taxes_filed_through_year == null) {
+    return NextResponse.json(
+      { error: "py_taxes_filed=true requires py_taxes_filed_through_year (year)" },
+      { status: 400 }
+    );
+  }
+
+  // Bail out if there's nothing to actually change (body had no
+  // recognized fields). Avoids a no-op write that bumps updated_at.
+  const hasFieldUpdate =
+    "py_taxes_filed" in update || "py_taxes_filed_through_year" in update;
+  if (!hasFieldUpdate) {
+    return NextResponse.json(
+      { error: "No recognized fields in body (expected py_taxes_filed and/or py_taxes_filed_through_year)" },
+      { status: 400 }
+    );
+  }
+
   const { error } = await service
     .from("client_links")
     .update(update as any)

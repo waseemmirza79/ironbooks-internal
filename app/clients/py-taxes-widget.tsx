@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Calendar, Check, Loader2, AlertTriangle, X } from "lucide-react";
+import { Calendar, Check, Loader2, AlertTriangle, X, RotateCcw } from "lucide-react";
 
 interface Props {
   clientLinkId: string;
@@ -15,11 +15,15 @@ interface Props {
 /**
  * Prior-year taxes indicator — one-time client setting.
  *
- * If unset (NULL on the client_links row), nudges the bookkeeper to record
- * whether the client's PY taxes are filed. When set, surfaces the filed-
- * through year so the bookkeeper knows to only reclass current year.
+ * Two stable states + an inline edit mode:
+ *   Filed (green)   — taxes filed through year Y; reclass Y+1 and later only
+ *   Not filed (amber) — taxes NOT filed; reclass any year
  *
- * Editable inline by anyone with access to the client.
+ * The "not filed" state covers both "haven't asked the client yet" and
+ * "client confirmed they haven't filed". We collapse them because they
+ * behave identically downstream (reclass-any-year). When the bookkeeper
+ * confirms taxes have been filed, they click Edit and enter the year —
+ * widget jumps to green and shows the reclass guidance.
  */
 export function PyTaxesWidget({
   clientLinkId,
@@ -36,6 +40,7 @@ export function PyTaxesWidget({
   const [error, setError] = useState<string>("");
 
   const thisYear = new Date().getFullYear();
+  const isFiled = pyTaxesFiled && pyTaxesFiledThroughYear !== null;
 
   async function save(filed: boolean, throughYear: number | null) {
     setBusy(true);
@@ -69,36 +74,11 @@ export function PyTaxesWidget({
     save(true, yr);
   }
 
-  // ── Unset state — needs attention
-  if (!pyTaxesFiled && pyTaxesFiledThroughYear === null && !editing) {
-    return (
-      <div
-        className={`flex items-center gap-2 rounded-md border px-2 py-1.5 bg-amber-50 border-amber-200 ${
-          compact ? "text-[11px]" : "text-xs"
-        }`}
-      >
-        <AlertTriangle size={13} className="text-amber-600 flex-shrink-0" />
-        <span className="text-amber-900 font-semibold flex-1 truncate">
-          PY taxes filed?
-        </span>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            setEditing(true);
-          }}
-          className="text-[10px] font-bold uppercase tracking-wider text-amber-700 hover:text-amber-900 px-1.5"
-        >
-          Set
-        </button>
-      </div>
-    );
-  }
-
   // ── Editing mode
   if (editing) {
     return (
       <div
-        className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 bg-white border-teal/30 ${
+        className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 bg-white border-teal/30 flex-wrap ${
           compact ? "text-[11px]" : "text-xs"
         }`}
         onClick={(e) => e.stopPropagation()}
@@ -128,16 +108,21 @@ export function PyTaxesWidget({
           className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-teal text-white text-[10px] font-bold disabled:opacity-50"
         >
           {busy ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />}
-          OK
+          Save
         </button>
-        <button
-          onClick={() => save(false, null)}
-          disabled={busy}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 text-[10px] font-semibold disabled:opacity-50"
-          title="Mark as NOT filed yet"
-        >
-          Not yet
-        </button>
+        {isFiled && (
+          // Only show "Clear" when currently filed — lets the bookkeeper
+          // un-mark a client whose year was set in error.
+          <button
+            onClick={() => save(false, null)}
+            disabled={busy}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 text-[10px] font-semibold disabled:opacity-50"
+            title="Mark as not filed (clears the year)"
+          >
+            <RotateCcw size={9} />
+            Clear
+          </button>
+        )}
         <button
           onClick={() => {
             setEditing(false);
@@ -157,8 +142,8 @@ export function PyTaxesWidget({
   }
 
   // ── Filed + year known
-  if (pyTaxesFiled && pyTaxesFiledThroughYear !== null) {
-    const reclassYear = pyTaxesFiledThroughYear + 1;
+  if (isFiled) {
+    const reclassYear = pyTaxesFiledThroughYear! + 1;
     return (
       <div
         className={`flex items-center gap-2 rounded-md border px-2 py-1.5 bg-emerald-50 border-emerald-200 ${
@@ -185,26 +170,26 @@ export function PyTaxesWidget({
     );
   }
 
-  // ── Explicitly marked "not filed yet"
+  // ── Not filed (default for new clients + explicit "haven't filed" state)
   return (
     <div
-      className={`flex items-center gap-2 rounded-md border px-2 py-1.5 bg-blue-50 border-blue-200 ${
+      className={`flex items-center gap-2 rounded-md border px-2 py-1.5 bg-amber-50 border-amber-200 ${
         compact ? "text-[11px]" : "text-xs"
       }`}
     >
-      <Calendar size={13} className="text-blue-600 flex-shrink-0" />
-      <span className="text-blue-900 flex-1 truncate">
+      <AlertTriangle size={13} className="text-amber-600 flex-shrink-0" />
+      <span className="text-amber-900 flex-1 truncate">
         <strong>PY taxes not yet filed</strong>
-        <span className="text-blue-700"> · reclass any year</span>
+        <span className="text-amber-700"> · reclass any year</span>
       </span>
       <button
         onClick={(e) => {
           e.stopPropagation();
           setEditing(true);
         }}
-        className="text-[10px] font-bold uppercase tracking-wider text-blue-700 hover:text-blue-900 px-1"
+        className="text-[10px] font-bold uppercase tracking-wider text-amber-700 hover:text-amber-900 px-1.5"
       >
-        Edit
+        Set year
       </button>
     </div>
   );

@@ -39,7 +39,7 @@ export default async function ClientsPage() {
     supabase
       .from("client_links")
       .select(
-        "id, double_client_name, stripe_connection_status, due_date, cleanup_completed_at, cleanup_completed_by, cleanup_range_start, cleanup_range_end, cleanup_completion_note, cleanup_review_state, cleanup_review_submitted_at, cleanup_review_submitted_by, ask_client_email_created_at, ask_client_email_sent_at, ask_client_email_body, stripe_request_sent_confirmed_at, cleanup_pdf_sent_at, stripe_not_required, py_taxes_filed, py_taxes_filed_through_year"
+        "id, double_client_name, stripe_connection_status, due_date, cleanup_completed_at, cleanup_completed_by, cleanup_range_start, cleanup_range_end, cleanup_completion_note, cleanup_review_state, cleanup_review_submitted_at, cleanup_review_submitted_by, ask_client_email_created_at, ask_client_email_sent_at, ask_client_email_body, stripe_request_sent_confirmed_at, cleanup_pdf_sent_at, stripe_not_required"
       ),
     supabase
       .from("users")
@@ -159,11 +159,29 @@ export default async function ClientsPage() {
     );
     pdfSentById.set(l.id, (l as any).cleanup_pdf_sent_at ?? null);
     stripeNotRequiredById.set(l.id, !!(l as any).stripe_not_required);
-    pyTaxesFiledById.set(l.id, !!(l as any).py_taxes_filed);
-    pyTaxesFiledThroughYearById.set(
-      l.id,
-      (l as any).py_taxes_filed_through_year ?? null
+  }
+
+  // Fetch py_taxes_* separately and tolerate the "column does not exist"
+  // error so the page survives when migration 32 hasn't been applied yet.
+  // (Same pattern as the kanban route uses for kanban_on_hold.)
+  // Supabase doesn't throw on bad columns — it returns data:null +
+  // error:{...}, so we check the error explicitly here.
+  const pyTaxesQuery = await supabase
+    .from("client_links")
+    .select("id, py_taxes_filed, py_taxes_filed_through_year");
+  if (pyTaxesQuery.error) {
+    // Most likely cause: migration 32 not applied yet. Log so it's
+    // obvious in Vercel logs, but don't fail the page.
+    console.warn(
+      "[clients page] py_taxes columns not available — apply migration 32. Widgets will render in 'unset' state until then. Error:",
+      pyTaxesQuery.error.message
     );
+  } else {
+    for (const r of (pyTaxesQuery.data as any[]) || []) {
+      if (!r.id) continue;
+      pyTaxesFiledById.set(r.id, !!r.py_taxes_filed);
+      pyTaxesFiledThroughYearById.set(r.id, r.py_taxes_filed_through_year ?? null);
+    }
   }
 
   const enrichedClients = (clientsRes.data || []).map((c) => ({
