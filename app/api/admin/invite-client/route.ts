@@ -196,12 +196,33 @@ export async function POST(request: Request) {
       }
     } // close the "existing user IS already a client" else branch
   } else {
-    // 3a. New account. Two paths depending on send_invite:
-    //   - true  → inviteUserByEmail sends the magic-link email
-    //   - false → createUser with email_confirm:true creates the auth row
-    //             silently. The user can still later log in via "send me a
-    //             magic link" on /auth/login when we're ready.
+    // 3a. No public.users row for this email. Two scenarios:
+    //   - Genuinely new user — create them
+    //   - auth.users HAS them but public.users doesn't (e.g. admin manually
+    //     deleted the public.users row between attempts, or the trigger
+    //     didn't fire). createUser/inviteUserByEmail will fail with "already
+    //     registered" — we recover by looking up the existing auth user.
     let authResponse: any;
+    const recoverExistingAuthUser = async (): Promise<{ user: any } | null> => {
+      try {
+        // Supabase admin listUsers paginates. For our scale 1000 is plenty;
+        // if you hit this limit, the recovery still works for any user on page 1.
+        const { data: list } = await (service as any).auth.admin.listUsers({
+          page: 1,
+          perPage: 1000,
+        });
+        const match = list?.users?.find(
+          (u: any) => (u.email || "").toLowerCase() === email
+        );
+        return match ? { user: match } : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const isAlreadyRegistered = (msg: string) =>
+      /already.*registered|already.*been.*registered|user.*already.*exists/i.test(msg);
+
     if (sendInvite) {
       const { data, error: inviteErr } = await (service as any).auth.admin
         .inviteUserByEmail(email, {
@@ -209,12 +230,33 @@ export async function POST(request: Request) {
           redirectTo: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/auth/callback`,
         });
       if (inviteErr || !data?.user) {
-        return NextResponse.json(
-          { error: inviteErr?.message || "Invite failed" },
-          { status: 500 }
-        );
+        if (inviteErr && isAlreadyRegistered(inviteErr.message)) {
+          // Recover — auth user exists, just couldn't re-invite
+          const recovered = await recoverExistingAuthUser();
+          if (!recovered) {
+            return NextResponse.json(
+              { error: `Email is registered but couldn't recover the auth user: ${inviteErr.message}` },
+              { status: 500 }
+            );
+          }
+          authResponse = recovered;
+          // Best-effort: re-send the magic link via generateLink (works on confirmed users)
+          await (service as any).auth.admin.generateLink({
+            type: "magiclink",
+            email,
+            options: {
+              redirectTo: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/auth/callback`,
+            },
+          });
+        } else {
+          return NextResponse.json(
+            { error: inviteErr?.message || "Invite failed" },
+            { status: 500 }
+          );
+        }
+      } else {
+        authResponse = data;
       }
-      authResponse = data;
     } else {
       const { data, error: createErr } = await (service as any).auth.admin.createUser({
         email,
@@ -222,12 +264,24 @@ export async function POST(request: Request) {
         user_metadata: { full_name: fullName, role: "client" },
       });
       if (createErr || !data?.user) {
-        return NextResponse.json(
-          { error: createErr?.message || "Silent create failed" },
-          { status: 500 }
-        );
+        if (createErr && isAlreadyRegistered(createErr.message)) {
+          const recovered = await recoverExistingAuthUser();
+          if (!recovered) {
+            return NextResponse.json(
+              { error: `Email is registered but couldn't recover the auth user: ${createErr.message}` },
+              { status: 500 }
+            );
+          }
+          authResponse = recovered;
+        } else {
+          return NextResponse.json(
+            { error: createErr?.message || "Silent create failed" },
+            { status: 500 }
+          );
+        }
+      } else {
+        authResponse = data;
       }
-      authResponse = data;
     }
     userId = authResponse.user.id;
 
