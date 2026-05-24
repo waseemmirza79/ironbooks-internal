@@ -18,6 +18,7 @@ interface Resource {
 }
 
 const CATEGORY_LABELS: Record<string, { label: string; subtitle: string }> = {
+  fundamentals: { label: "Finance fundamentals", subtitle: "A 7-part series covering the basics every business owner should know" },
   quickstart: { label: "Start here", subtitle: "Quick wins to make these videos useful right away" },
   statements: { label: "Reading your statements", subtitle: "P&L, Balance Sheet, A/R Aging — explained" },
   cashflow: { label: "Cash flow", subtitle: "Why bank balance, profit, and cash are different" },
@@ -37,7 +38,7 @@ export function LearnClient({ resources }: { resources: Resource[] }) {
   }
   // Stable category order: prefer the friendly order, append unknowns
   const orderedCats = [
-    "quickstart", "statements", "cashflow", "taxes", "growth", "general",
+    "fundamentals", "quickstart", "statements", "cashflow", "taxes", "growth", "general",
   ].filter((c) => byCategory.has(c));
   for (const c of byCategory.keys()) {
     if (!orderedCats.includes(c)) orderedCats.push(c);
@@ -206,11 +207,22 @@ function VideoModal({ resource, onClose }: { resource: Resource; onClose: () => 
 // ─── HELPERS ────────────────────────────────────────────────────────────
 
 function buildEmbedSrc(r: Resource): string | null {
-  // Vimeo: support both full vimeo.com/12345 URLs and /video/ embed URLs
+  // Vimeo: handle three URL shapes
+  //   1. vimeo.com/12345
+  //   2. vimeo.com/12345/abc123   ← private/unlisted with privacy hash
+  //   3. player.vimeo.com/video/12345  (already an embed URL)
+  // For private videos the hash MUST be forwarded as ?h=... or the
+  // embed returns 401. (This is the reason your first set of links
+  // wouldn't play — the hashes were getting stripped.)
   if (r.vimeo_url) {
-    const m = r.vimeo_url.match(/vimeo\.com\/(?:video\/)?(\d+)/);
-    if (m) return `https://player.vimeo.com/video/${m[1]}`;
-    // Already an embed URL
+    const m = r.vimeo_url.match(/vimeo\.com\/(?:video\/)?(\d+)(?:\/([a-z0-9]+))?/i);
+    if (m) {
+      const id = m[1];
+      const hash = m[2];
+      return hash
+        ? `https://player.vimeo.com/video/${id}?h=${hash}`
+        : `https://player.vimeo.com/video/${id}`;
+    }
     if (r.vimeo_url.includes("player.vimeo.com")) return r.vimeo_url;
   }
   if (r.youtube_url) {
