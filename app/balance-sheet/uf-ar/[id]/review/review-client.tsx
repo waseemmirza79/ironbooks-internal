@@ -45,6 +45,7 @@ interface Job {
   matches_high_confidence: number;
   matches_low_confidence: number;
   unmatched_count: number;
+  warnings: string[] | null;
 }
 
 /**
@@ -129,6 +130,27 @@ export function UFARReview({
           bg="#F1F5F9"
         />
       </div>
+
+      {/* Scanner warnings — surface stuff like "all UF payments were
+          already-applied, this is the wrong tool, use UF Audit." */}
+      {job.warnings && job.warnings.length > 0 && (
+        <div className="rounded-xl bg-orange-50 border border-orange-300 p-3 text-xs text-orange-900 space-y-2">
+          {job.warnings.map((w, i) => (
+            <div key={i} className="flex items-start gap-2">
+              <strong className="flex-shrink-0">⚠</strong>
+              <span>{w}</span>
+            </div>
+          ))}
+          <div className="pt-1 border-t border-orange-200">
+            <a
+              href={`/balance-sheet/${job.client_link_id}/uf-audit`}
+              className="font-bold underline hover:no-underline"
+            >
+              → Open UF Audit for this client
+            </a>
+          </div>
+        </div>
+      )}
 
       {/* Heads-up: execute is pending */}
       <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900">

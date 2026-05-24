@@ -111,6 +111,22 @@ export async function POST(request: Request) {
 
       // Filter out already-applied UF entries before matching.
       const unapplied = ufPayments.filter((p) => !p.already_applied);
+      const appliedCount = ufPayments.length - unapplied.length;
+
+      // Diagnostic: if there are UF payments but ALL of them are
+      // already-applied to invoices, the bookkeeper's actual problem is
+      // "money never deposited" (UF Audit territory), not "payment not
+      // applied to invoice" (this tool's territory).
+      const warnings: string[] = [];
+      if (ufPayments.length > 0 && unapplied.length === 0) {
+        warnings.push(
+          `Found ${ufPayments.length} UF payment${ufPayments.length === 1 ? "" : "s"}, but every one is already linked to an invoice — nothing to match here. If you suspect the money never reached the bank, run UF Audit instead (which classifies by deposit existence, not invoice linkage).`
+        );
+      } else if (appliedCount > 0) {
+        warnings.push(
+          `Skipped ${appliedCount} UF payment${appliedCount === 1 ? "" : "s"} already linked to invoices — those are A/R-applied. Matching ${unapplied.length} unapplied payment${unapplied.length === 1 ? "" : "s"}.`
+        );
+      }
 
       // 4. Run the matcher.
       const matches = matchUFtoAR(unapplied, openInvoices);
@@ -162,6 +178,7 @@ export async function POST(request: Request) {
           matches_high_confidence: counts.high,
           matches_low_confidence: counts.low,
           unmatched_count: counts.unmatched,
+          warnings: warnings.length > 0 ? (warnings as any) : null,
         } as any)
         .eq("id", (job as any).id);
     } catch (err: any) {
