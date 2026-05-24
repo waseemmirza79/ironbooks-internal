@@ -48,10 +48,18 @@ export async function GET(request: Request) {
     .single();
 
   if ((profile as any)?.role === "client") {
-    // Stamp last_login + first_login (if not already set). Best-effort —
-    // never blocks the redirect on a DB hiccup.
+    // Stamp last_login + first_login (if not already set) + audit log.
+    // Best-effort — never blocks the redirect on a DB hiccup.
     try {
       const now = new Date().toISOString();
+
+      // Read prior state so we can tell first-login-vs-returning in the audit entry
+      const { data: priorMapping } = await service
+        .from("client_users" as any)
+        .select("first_login_at, client_link_id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
       await service
         .from("client_users" as any)
         .update({ last_login_at: now } as any)
@@ -61,6 +69,15 @@ export async function GET(request: Request) {
         .update({ first_login_at: now } as any)
         .eq("user_id", user.id)
         .is("first_login_at", null);
+
+      const isFirstLogin = !(priorMapping as any)?.first_login_at;
+      await service.from("audit_log").insert({
+        event_type: isFirstLogin ? "portal_first_login" : "portal_login",
+        user_id: user.id,
+        request_payload: {
+          client_link_id: (priorMapping as any)?.client_link_id ?? null,
+        } as any,
+      });
     } catch {
       // ignore — telemetry shouldn't break login
     }
