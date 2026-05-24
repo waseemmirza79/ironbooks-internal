@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { playSound } from "@/lib/sounds";
 import {
   Sparkles, Loader2, AlertTriangle, CheckCircle2, X, RefreshCw,
   ChevronDown, ChevronRight, Send, Check, AlertCircle, Zap, Clock,
@@ -96,6 +97,7 @@ export function BsAiFixClient({
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       await loadRun(body.run_id);
+      playSound("scan_complete");
     } catch (e: any) {
       setError(e?.message || "Analyze failed");
     } finally {
@@ -167,8 +169,12 @@ export function BsAiFixClient({
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       await loadRun(run.id);
+      if (body.failed && body.failed > 0) {
+        playSound("finalize_failed");
+      }
     } catch (e: any) {
       setError(e?.message || "Finalize failed");
+      playSound("finalize_failed");
     } finally {
       setFinalizing(false);
     }

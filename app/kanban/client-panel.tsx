@@ -7,6 +7,7 @@ import {
   CheckCircle2, Zap, PauseCircle, UserCheck, Download, Wallet, ArrowRight,
 } from "lucide-react";
 import type { KanbanCard, KanbanBookkeeper } from "./types";
+import { playSound } from "@/lib/sounds";
 
 interface ClientPanelProps {
   card: KanbanCard;
@@ -122,6 +123,10 @@ export function ClientPanel({ card, stage, bookkeepers, canEdit, onClose, onRefr
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed");
       if (data.url) setStripeUrl(data.url);
+      // The graduation moment — onboarding → month-over-month. Worth a sound.
+      if (endpoint === "/close-cleanup") {
+        playSound("client_graduated");
+      }
       onRefresh();
       onClose();
     } catch (e: any) {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { playSound } from "@/lib/sounds";
 import {
   Loader2, RefreshCw, AlertTriangle, CheckCircle2, X, Send,
   Sparkles, AlertCircle, Mail, Copy, Code, Search, FileSpreadsheet,
@@ -190,6 +191,7 @@ export function UncatIncomeRecoveryClient({
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       await loadScan(body.scan_id);
+      playSound("scan_complete");
     } catch (e: any) {
       setError(e?.message || "Scan failed");
     } finally {
@@ -320,8 +322,14 @@ export function UncatIncomeRecoveryClient({
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       await loadScan(scan.id);
+      // Partial/full failure → louder error sound so the bookkeeper doesn't
+      // miss a botched post to QBO. Clean success stays silent (visual ✓ banner is enough).
+      if (body.failed && body.failed > 0) {
+        playSound("finalize_failed");
+      }
     } catch (e: any) {
       setError(e?.message || "Finalize failed");
+      playSound("finalize_failed");
     } finally {
       setFinalizing(false);
     }

@@ -5,12 +5,13 @@ import { usePathname } from "next/navigation";
 import {
   Home, Sparkles, Flag, Users, LogOut, BookOpen, Clock,
   Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight, Receipt, KanbanSquare, Sun,
-  FileSpreadsheet, Wallet,
+  FileSpreadsheet, Wallet, Volume2, VolumeX,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
 import type { Database } from "@/lib/database.types";
 import { StripeConnectModal } from "./StripeConnectModal";
+import { isMuted, setMuted, onMutedChange } from "@/lib/sounds";
 
 const standardItems = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
@@ -205,6 +206,7 @@ export function Sidebar() {
               {userRole}
             </div>
           </div>
+          <SoundToggle />
           <button onClick={handleSignOut} className="text-white/40 hover:text-white transition-colors">
             <LogOut size={15} />
           </button>
@@ -212,6 +214,33 @@ export function Sidebar() {
       </div>
       {stripeModalOpen && <StripeConnectModal onClose={() => setStripeModalOpen(false)} />}
     </aside>
+  );
+}
+
+/**
+ * Sidebar mute toggle for SNAP sound effects. State persisted per-user in
+ * localStorage (managed by lib/sounds.ts). Hooks into the global
+ * snap-sounds-muted-change event so any other surface that flips the
+ * setting keeps this icon in sync.
+ */
+function SoundToggle() {
+  const [muted, setMutedState] = useState(false);
+
+  useEffect(() => {
+    setMutedState(isMuted());
+    const off = onMutedChange(setMutedState);
+    return off;
+  }, []);
+
+  return (
+    <button
+      onClick={() => setMuted(!muted)}
+      className="text-white/40 hover:text-white transition-colors"
+      title={muted ? "Sounds muted — click to unmute" : "Sounds on — click to mute"}
+      aria-label={muted ? "Unmute sounds" : "Mute sounds"}
+    >
+      {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+    </button>
   );
 }
 

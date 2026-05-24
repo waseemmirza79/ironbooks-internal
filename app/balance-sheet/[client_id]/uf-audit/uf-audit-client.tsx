@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { playSound } from "@/lib/sounds";
 import {
   Loader2, RefreshCw, Search, AlertTriangle, CheckCircle2, X,
   Send, ChevronDown, ChevronRight, Wallet, ArrowLeft, ArrowRight,
@@ -145,6 +146,7 @@ export function UfAuditClient({
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       await loadScan(body.scan_id);
+      playSound("scan_complete");
     } catch (e: any) {
       setError(e?.message || "Scan failed");
     } finally {
@@ -221,8 +223,12 @@ export function UfAuditClient({
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       await loadScan(scan.id);
+      if (body.failed && body.failed > 0) {
+        playSound("finalize_failed");
+      }
     } catch (e: any) {
       setError(e?.message || "Finalize failed");
+      playSound("finalize_failed");
     } finally {
       setFinalizing(false);
     }
