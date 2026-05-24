@@ -85,18 +85,79 @@ export async function POST(request: Request) {
 
   if (existing) {
     const existingRole = (existing as any).role;
+
+    // Ghost-row recovery: Supabase projects with handle_new_user triggers
+    // auto-create a public.users row when auth.users gets one. If a previous
+    // invite attempt failed mid-flight, you can end up with that orphan
+    // row stamped at the trigger's default role (often 'viewer' or NULL)
+    // and NO client_users mapping. Detect that case and treat as a fresh
+    // invite so the admin doesn't get stuck on "email already exists".
     if (existingRole !== "client") {
-      // Hard block on downgrading an internal user. Bookkeeper-with-the-same-email
-      // is almost always a mistake on the inviter's part.
-      return NextResponse.json(
-        {
-          error: `This email is already in the system as an internal user (role=${existingRole}). Pick a different email or have an admin re-classify the existing user.`,
-        },
-        { status: 409 }
-      );
-    }
-    userId = (existing as any).id;
-    isResend = true;
+      const isPossibleGhost = !existingRole || existingRole === "viewer";
+      if (isPossibleGhost) {
+        const { data: anyMapping } = await service
+          .from("client_users" as any)
+          .select("id")
+          .eq("user_id", (existing as any).id)
+          .maybeSingle();
+        if (!anyMapping) {
+          // Ghost confirmed — upgrade to client via the upsert below.
+          userId = (existing as any).id;
+          await service
+            .from("users")
+            .update({
+              role: "client",
+              full_name: fullName || (existing as any).full_name,
+              is_active: true,
+              invited_by: user.id,
+              invited_at: new Date().toISOString(),
+            } as any)
+            .eq("id", userId);
+
+          // If this is a silent-create, we're done with the auth side —
+          // the auth.users row already exists. Skip to the mapping insert.
+          // For invite path, we still need to send the magic link.
+          if (sendInvite) {
+            const { error: inviteErr } = await (service as any).auth.admin.inviteUserByEmail(
+              email,
+              {
+                data: { full_name: fullName, role: "client" },
+                redirectTo: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/auth/callback`,
+              }
+            );
+            if (inviteErr) {
+              // Best-effort fallback — generateLink works on already-confirmed users
+              await (service as any).auth.admin.generateLink({
+                type: "magiclink",
+                email,
+                options: {
+                  redirectTo: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/auth/callback`,
+                },
+              });
+            }
+            isResend = false; // it's a fresh-from-the-user's-POV invite
+          }
+          // Fall through to the mapping upsert below
+        } else {
+          return NextResponse.json(
+            {
+              error: `This email already has portal access. Use the resend button instead.`,
+            },
+            { status: 409 }
+          );
+        }
+      } else {
+        // Hard block on downgrading an internal user (admin/lead/bookkeeper).
+        return NextResponse.json(
+          {
+            error: `This email is already in the system as an internal user (role=${existingRole}). Pick a different email or have an admin re-classify the existing user.`,
+          },
+          { status: 409 }
+        );
+      }
+    } else {
+      userId = (existing as any).id;
+      isResend = true;
 
     // Bump them back to active if they were soft-disabled.
     if (!(existing as any).is_active) {
@@ -130,6 +191,7 @@ export async function POST(request: Request) {
         );
       }
     }
+    } // close the "existing user IS already a client" else branch
   } else {
     // 3a. New account. Two paths depending on send_invite:
     //   - true  → inviteUserByEmail sends the magic-link email
@@ -166,18 +228,26 @@ export async function POST(request: Request) {
     }
     userId = authResponse.user.id;
 
-    const { error: insertErr } = await service.from("users").insert({
-      id: userId,
-      email,
-      full_name: fullName,
-      role: "client",
-      is_active: true,
-      invited_by: user.id,
-      invited_at: new Date().toISOString(),
-    } as any);
-    if (insertErr) {
+    // UPSERT (not INSERT) — Supabase projects commonly have a handle_new_user
+    // trigger on auth.users that auto-creates a public.users row with default
+    // role (often 'viewer'). Our explicit row needs to override those defaults
+    // without colliding on the primary key. Same logic applies to both the
+    // invite path and the silent-create path.
+    const { error: upsertErr } = await service.from("users").upsert(
+      {
+        id: userId,
+        email,
+        full_name: fullName,
+        role: "client",
+        is_active: true,
+        invited_by: user.id,
+        invited_at: new Date().toISOString(),
+      } as any,
+      { onConflict: "id" }
+    );
+    if (upsertErr) {
       return NextResponse.json(
-        { error: `User row insert failed: ${insertErr.message}` },
+        { error: `User row upsert failed: ${upsertErr.message}` },
         { status: 500 }
       );
     }
