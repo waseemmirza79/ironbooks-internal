@@ -63,7 +63,12 @@ export async function POST(
   if (filter === "ask_client") {
     q = q.eq("resolution", "ask_client");
   } else {
-    q = q.not("resolution", "in", "(executed,skipped,failed)");
+    // "all_unresolved" used to include EVERY non-executed row — that pulled
+    // in items already resolved as apply_to_invoice / write_off / etc, so the
+    // email asked clients about deposits the bookkeeper had already handled.
+    // Restrict to genuinely-needs-input statuses: pending (nothing picked yet)
+    // and ask_client (explicitly queued).
+    q = q.in("resolution", ["pending", "ask_client"]);
   }
 
   const { data: itemsRaw } = await q
@@ -76,6 +81,18 @@ export async function POST(
     bank_account_name: string | null;
     customer_name: string | null;
   }>;
+
+  if (items.length === 0) {
+    return NextResponse.json(
+      {
+        error:
+          filter === "ask_client"
+            ? "No items marked 'Ask Client' yet — mark some deposits Ask Client first."
+            : "Nothing to ask the client about — every deposit is already resolved or executed.",
+      },
+      { status: 400 }
+    );
+  }
 
   const clientName = (client as any).client_name as string;
   const firstName = clientName.split(/[ ,]/)[0] || "there";

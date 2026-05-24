@@ -226,7 +226,8 @@ export function UncatIncomeRecoveryClient({
       target_customer_qbo_id?: string;
       target_customer_name?: string;
       resolution_notes?: string;
-    }
+    },
+    options?: { skipReload?: boolean }
   ) {
     if (!scan) return;
     try {
@@ -240,7 +241,7 @@ export function UncatIncomeRecoveryClient({
       );
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-      await loadScan(scan.id);
+      if (!options?.skipReload) await loadScan(scan.id);
     } catch (e: any) {
       setError(e?.message || "Resolve failed");
     }
@@ -268,16 +269,28 @@ export function UncatIncomeRecoveryClient({
       if (!byInvoice.has(key)) byInvoice.set(key, []);
       byInvoice.get(key)!.push(it.id);
     }
-    for (const [invoiceId, ids] of byInvoice) {
-      const sample = eligible.find((it) => (it.candidate_invoice_ids || [])[0]?.qbo_invoice_id === invoiceId);
-      const inv = sample?.candidate_invoice_ids?.[0];
-      await resolveItems(ids, {
-        resolution: "apply_to_invoice",
-        target_invoice_qbo_id: invoiceId,
-        target_customer_qbo_id: inv?.customer_qbo_id || undefined,
-        target_customer_name: inv?.customer_name || undefined,
-      });
-    }
+    // Fire all updates in parallel WITHOUT triggering per-call reloads
+    // (was a slow N+1 loop with one full scan reload per invoice — ~10s
+    // for a 30-match scan). Reload once at the end.
+    await Promise.all(
+      Array.from(byInvoice.entries()).map(([invoiceId, ids]) => {
+        const sample = eligible.find(
+          (it) => (it.candidate_invoice_ids || [])[0]?.qbo_invoice_id === invoiceId
+        );
+        const inv = sample?.candidate_invoice_ids?.[0];
+        return resolveItems(
+          ids,
+          {
+            resolution: "apply_to_invoice",
+            target_invoice_qbo_id: invoiceId,
+            target_customer_qbo_id: inv?.customer_qbo_id || undefined,
+            target_customer_name: inv?.customer_name || undefined,
+          },
+          { skipReload: true }
+        );
+      })
+    );
+    if (scan) await loadScan(scan.id);
   }
 
   async function finalize() {

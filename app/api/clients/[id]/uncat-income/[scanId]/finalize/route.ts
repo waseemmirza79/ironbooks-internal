@@ -1,6 +1,7 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 import { createJournalEntry, fetchAllAccounts, getValidToken, qboRateLimiter } from "@/lib/qbo";
+import { findUndepositedFundsAccountId } from "@/lib/qbo-balance-sheet";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 800;
@@ -206,7 +207,58 @@ export async function POST(
     results.push({ id: item.id, status: "failed", error: "missing target" });
   }
 
-  // 3) Post one JE per group
+  // Lazy-load UF account ID — only needed for apply_to_invoice groups, and
+  // only fetch once per finalize regardless of how many groups need it.
+  let ufAccountIdCache: string | null | undefined = undefined;
+  async function getUfAccountId(): Promise<string> {
+    if (ufAccountIdCache !== undefined) {
+      if (!ufAccountIdCache) {
+        throw new Error(
+          "Undeposited Funds account not found in QBO — required to apply deposits to invoices. Either create one in QBO or pick a different resolution."
+        );
+      }
+      return ufAccountIdCache;
+    }
+    try {
+      ufAccountIdCache = await findUndepositedFundsAccountId(
+        (client as any).qbo_realm_id,
+        accessToken
+      );
+    } catch (err: any) {
+      ufAccountIdCache = null;
+      throw new Error(`UF lookup failed: ${err?.message || String(err)}`);
+    }
+    if (!ufAccountIdCache) {
+      throw new Error(
+        "Undeposited Funds account not found in QBO — required to apply deposits to invoices."
+      );
+    }
+    return ufAccountIdCache;
+  }
+
+  const QBO_BASE = "https://quickbooks.api.intuit.com/v3/company";
+  async function qboPost<T = any>(path: string, body: any): Promise<T> {
+    await qboRateLimiter.throttle((client as any).qbo_realm_id);
+    const res = await fetch(
+      `${QBO_BASE}/${(client as any).qbo_realm_id}${path}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }
+    );
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`QBO ${path} failed ${res.status}: ${errBody}`);
+    }
+    return res.json();
+  }
+
+  // 3) Post one JE (and possibly one Payment) per group
   for (const [key, groupItems] of groups) {
     const sample = groupItems[0];
     const total =
@@ -228,78 +280,53 @@ export async function POST(
       continue;
     }
 
+    const debitLines = groupItems.map((it: any) => ({
+      posting_type: "Debit" as const,
+      amount: Math.round(Number(it.amount) * 100) / 100,
+      account_id: uncatAccountId,
+      account_name: uncatAccountName,
+      description: `Clear ${it.qbo_txn_type} ${it.qbo_txn_id} (${it.txn_date}, ${(it.description || "no description").slice(0, 80)})`,
+    }));
+
     try {
-      let creditAccountId: string;
-      let creditAccountName: string;
-      let creditCustomerEntity: any = undefined;
+      let createdJeId: string;
+      let createdPaymentId: string | null = null;
       let resolutionLabel: string;
 
       if (sample.resolution === "apply_to_invoice") {
+        // ─── APPLY-TO-INVOICE FLOW (JE + Payment via UF) ───
+        // Goal: clear the deposit from UncatIncome AND mark the specific
+        // invoice as paid. QBO has no single API call that does both, so
+        // we use Undeposited Funds as a wash account:
+        //
+        //   JE:      Dr UncatIncome (per source line)  ·  Cr UF (total)
+        //   Payment: DepositToAccountRef = UF, LinkedTxn → Invoice, Amount = total
+        //
+        // Net effect:
+        //   UncatIncome: -total (cleared)
+        //   UF:          -total (JE) + total (Payment) = 0
+        //   Bank:        unchanged
+        //   Invoice:     marked paid via Payment.LinkedTxn ✓
         const invoice = invoiceById.get(sample.target_invoice_qbo_id);
         if (!invoice) {
           throw new Error(
             `Target invoice ${sample.target_invoice_qbo_id} not found in QBO (may have been deleted).`
           );
         }
-        // Find the A/R account on the invoice
-        const arRef = invoice.ARAccountRef;
-        if (!arRef?.value) {
-          throw new Error(`Target invoice ${sample.target_invoice_qbo_id} has no A/R account ref.`);
-        }
         const customerRef = invoice.CustomerRef;
         if (!customerRef?.value) {
           throw new Error(`Target invoice ${sample.target_invoice_qbo_id} has no customer ref.`);
         }
-        creditAccountId = String(arRef.value);
-        creditAccountName = String(arRef.name || "Accounts Receivable");
-        creditCustomerEntity = {
-          Type: "Customer",
-          EntityRef: { value: customerRef.value, name: customerRef.name },
-        };
+
+        const ufId = await getUfAccountId();
+        const ufName = accountById.get(ufId)?.Name || "Undeposited Funds";
+
         resolutionLabel = `Apply to invoice ${invoice.DocNumber || invoice.Id} (${customerRef.name || ""})`;
-      } else {
-        const target = accountById.get(sample.target_account_qbo_id);
-        if (!target) {
-          throw new Error(
-            `Target account ${sample.target_account_qbo_id} not found in QBO.`
-          );
-        }
-        if (target.Active === false) {
-          throw new Error(
-            `Target account "${target.Name}" is inactive — reactivate or pick another.`
-          );
-        }
-        creditAccountId = target.Id;
-        creditAccountName = target.Name;
-        resolutionLabel = sample.resolution.replace(/_/g, " ");
-      }
 
-      // Build JE
-      const debitLines = groupItems.map((it: any) => ({
-        posting_type: "Debit" as const,
-        amount: Math.round(Number(it.amount) * 100) / 100,
-        account_id: uncatAccountId,
-        account_name: uncatAccountName,
-        description: `Clear ${it.qbo_txn_type} ${it.qbo_txn_id} (${it.txn_date}, ${it.description || "no description"})`,
-      }));
-      const creditLines = [
-        {
-          posting_type: "Credit" as const,
-          amount: total,
-          account_id: creditAccountId,
-          account_name: creditAccountName,
-          description: `${resolutionLabel} — ${groupItems.length} deposit${groupItems.length === 1 ? "" : "s"} from Uncategorized Income`,
-        },
-      ];
-
-      // Build JE body manually for apply_to_invoice (needs Entity on the
-      // A/R credit line — createJournalEntry helper doesn't expose Entity)
-      let createdJeId: string;
-      if (creditCustomerEntity) {
-        await qboRateLimiter.throttle((client as any).qbo_realm_id);
-        const body: any = {
+        // Step 1: JE — Dr UncatIncome (n lines) / Cr UF (1 line, total)
+        const jeBody: any = {
           TxnDate: today,
-          PrivateNote: `Ironbooks Uncat Income Recovery (by ${bookkeeperName}) — ${resolutionLabel}`,
+          PrivateNote: `Ironbooks Uncat Income Recovery (by ${bookkeeperName}) — ${resolutionLabel} [step 1/2: clear Uncat → UF]`,
           Line: [
             ...debitLines.map((l) => ({
               DetailType: "JournalEntryLineDetail",
@@ -313,36 +340,68 @@ export async function POST(
             {
               DetailType: "JournalEntryLineDetail",
               Amount: Number(total.toFixed(2)),
-              Description: creditLines[0].description,
+              Description: `Wash via Undeposited Funds — Payment in step 2/2 applies to invoice ${invoice.DocNumber || invoice.Id}`,
               JournalEntryLineDetail: {
                 PostingType: "Credit",
-                AccountRef: { value: creditAccountId, name: creditAccountName },
-                Entity: creditCustomerEntity,
+                AccountRef: { value: ufId, name: ufName },
               },
             },
           ],
         };
-        const QBO_BASE = "https://quickbooks.api.intuit.com/v3/company";
-        const res = await fetch(
-          `${QBO_BASE}/${(client as any).qbo_realm_id}/journalentry?minorversion=70`,
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              Accept: "application/json",
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(body),
-          }
-        );
-        if (!res.ok) {
-          const errBody = await res.text();
-          throw new Error(`QBO JE create failed ${res.status}: ${errBody}`);
-        }
-        const data: any = await res.json();
-        createdJeId = data?.JournalEntry?.Id;
+        const jeData = await qboPost<any>(`/journalentry?minorversion=70`, jeBody);
+        createdJeId = jeData?.JournalEntry?.Id;
         if (!createdJeId) throw new Error("QBO returned no JE Id");
+
+        // Step 2: Payment — DepositTo UF, LinkedTxn → Invoice
+        const paymentBody: any = {
+          TxnDate: today,
+          PrivateNote: `Ironbooks Uncat Income Recovery (by ${bookkeeperName}) — ${resolutionLabel} [step 2/2: apply to invoice]`,
+          TotalAmt: Number(total.toFixed(2)),
+          CustomerRef: { value: customerRef.value, name: customerRef.name },
+          DepositToAccountRef: { value: ufId, name: ufName },
+          Line: [
+            {
+              Amount: Number(total.toFixed(2)),
+              LinkedTxn: [{ TxnId: String(invoice.Id), TxnType: "Invoice" }],
+            },
+          ],
+        };
+        try {
+          const payData = await qboPost<any>(`/payment?minorversion=70`, paymentBody);
+          createdPaymentId = payData?.Payment?.Id || null;
+        } catch (err: any) {
+          // JE already posted — surface a partial-success message so the
+          // bookkeeper knows to manually apply the credit OR delete the JE.
+          throw new Error(
+            `JE ${createdJeId} posted but Payment failed (${err?.message || String(err)}). ` +
+            `Either: (a) manually apply the credit to invoice ${invoice.DocNumber || invoice.Id} in QBO, or (b) delete the JE and re-run.`
+          );
+        }
       } else {
+        // ─── SIMPLE CR-TARGET FLOWS (customer_deposits / write_off / move_to_revenue) ───
+        const target = accountById.get(sample.target_account_qbo_id);
+        if (!target) {
+          throw new Error(
+            `Target account ${sample.target_account_qbo_id} not found in QBO.`
+          );
+        }
+        if (target.Active === false) {
+          throw new Error(
+            `Target account "${target.Name}" is inactive — reactivate or pick another.`
+          );
+        }
+        resolutionLabel = sample.resolution.replace(/_/g, " ");
+
+        const creditLines = [
+          {
+            posting_type: "Credit" as const,
+            amount: total,
+            account_id: target.Id,
+            account_name: target.Name,
+            description: `${resolutionLabel} — ${groupItems.length} deposit${groupItems.length === 1 ? "" : "s"} from Uncategorized Income`,
+          },
+        ];
+
         const created = await createJournalEntry((client as any).qbo_realm_id, accessToken, {
           txn_date: today,
           private_note: `Ironbooks Uncat Income Recovery (by ${bookkeeperName}) — ${resolutionLabel}`,
@@ -365,6 +424,7 @@ export async function POST(
       results.push({
         group: key,
         je_id: createdJeId,
+        payment_id: createdPaymentId,
         status: "ok",
         items: groupItems.length,
         total,

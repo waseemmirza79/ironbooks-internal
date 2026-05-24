@@ -35,10 +35,13 @@ export async function POST(
   const service = createServiceSupabase();
   const { data: client } = await service
     .from("client_links")
-    .select("id, qbo_realm_id, assigned_bookkeeper_id")
+    .select("id, qbo_realm_id, assigned_bookkeeper_id, is_active")
     .eq("id", clientLinkId)
     .single();
   if (!client) return NextResponse.json({ error: "Client not found" }, { status: 404 });
+  if ((client as any).is_active === false) {
+    return NextResponse.json({ error: "Client is inactive" }, { status: 400 });
+  }
 
   const { data: actor } = await service
     .from("users")
