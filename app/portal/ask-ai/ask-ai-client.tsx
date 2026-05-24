@@ -15,15 +15,7 @@ interface Message {
   content: string;
 }
 
-const STARTERS = [
-  "Why did profit change this month?",
-  "Can I afford to hire another person?",
-  "What's a healthy profit margin for my business?",
-  "How much should I set aside for taxes?",
-  "Explain my balance sheet in plain English.",
-];
-
-export function AskAiClient() {
+export function AskAiClient({ starters }: { starters: string[] }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -143,7 +135,7 @@ export function AskAiClient() {
       {/* Starter pills — only when chat is empty */}
       {messages.length === 0 && (
         <div className="flex-shrink-0 flex flex-wrap gap-2">
-          {STARTERS.map((s) => (
+          {starters.map((s) => (
             <button
               key={s}
               onClick={() => send(s)}

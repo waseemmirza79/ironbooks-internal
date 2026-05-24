@@ -37,30 +37,160 @@ async function qboQuery<T = any>(
 
 // ─── DATE HELPERS ───────────────────────────────────────────────────────
 
-export function thisMonthRange(): { start: string; end: string } {
+export interface DateRange { start: string; end: string; label?: string; }
+
+export function thisMonthRange(): DateRange {
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), 1);
   return {
     start: start.toISOString().slice(0, 10),
     end: now.toISOString().slice(0, 10),
+    label: "This month",
   };
 }
 
-export function lastMonthRange(): { start: string; end: string } {
+export function lastMonthRange(): DateRange {
   const now = new Date();
   const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const endOfLast = new Date(now.getFullYear(), now.getMonth(), 0);
   return {
     start: lastMonth.toISOString().slice(0, 10),
     end: endOfLast.toISOString().slice(0, 10),
+    label: "Last month",
   };
 }
 
-export function ytdRange(): { start: string; end: string } {
+export function ytdRange(): DateRange {
   const now = new Date();
   return {
     start: `${now.getFullYear()}-01-01`,
     end: now.toISOString().slice(0, 10),
+    label: "Year to date",
+  };
+}
+
+export function lastYearRange(): DateRange {
+  const now = new Date();
+  const prevYear = now.getFullYear() - 1;
+  return {
+    start: `${prevYear}-01-01`,
+    end: `${prevYear}-12-31`,
+    label: `${prevYear}`,
+  };
+}
+
+export function quarterRange(): DateRange {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
+  return {
+    start: start.toISOString().slice(0, 10),
+    end: now.toISOString().slice(0, 10),
+    label: "This quarter",
+  };
+}
+
+/**
+ * Resolve the most-recent fully-closed accounting period for a client.
+ *
+ * Priority order:
+ *   1. Most recent reclass_job with month_closed_at — that job's
+ *      date_range_end identifies the latest formally-closed month.
+ *      Used by ongoing month-over-month bookkeeping.
+ *   2. client_links.cleanup_range_end if cleanup_completed_at is set —
+ *      the cleanup landed at this date. First MoM month hasn't been
+ *      closed yet, so cleanup-range is the best fallback.
+ *   3. Otherwise: end of last completed calendar month. Safe default
+ *      that's almost always reasonable (you've usually closed last
+ *      month by now even if the indicators aren't stamped).
+ *
+ * Returns the closed-through DATE *plus* a DateRange that spans the
+ * closed calendar month (start..end of that month). Used by the portal
+ * Overview and P&L pages to default to "real, reconciled" numbers
+ * instead of "this month so far" garbage that confuses clients.
+ */
+export interface ClosedPeriodResult {
+  /** ISO date 'YYYY-MM-DD' through which books are closed */
+  closedThrough: string;
+  /** DateRange covering the calendar month containing closedThrough */
+  closedMonth: DateRange;
+  /** DateRange for the month BEFORE the closed month (for vs-prior comparisons) */
+  priorMonth: DateRange;
+  /** Friendly label like "April 2026" for that month */
+  closedMonthLabel: string;
+  /** Source of truth — how we determined the closed-through date */
+  source: "reclass_job_closed" | "cleanup_completed" | "calendar_default";
+}
+
+export async function resolveClosedPeriod(
+  service: any,
+  clientLinkId: string
+): Promise<ClosedPeriodResult> {
+  let closedThrough: string | null = null;
+  let source: ClosedPeriodResult["source"] = "calendar_default";
+
+  // 1. Most recent closed reclass job
+  try {
+    const { data: lastClosed } = await service
+      .from("reclass_jobs")
+      .select("date_range_end, month_closed_at")
+      .eq("client_link_id", clientLinkId)
+      .not("month_closed_at", "is", null)
+      .order("date_range_end", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (lastClosed?.date_range_end) {
+      closedThrough = lastClosed.date_range_end;
+      source = "reclass_job_closed";
+    }
+  } catch { /* fall through */ }
+
+  // 2. Cleanup completion date
+  if (!closedThrough) {
+    try {
+      const { data: client } = await service
+        .from("client_links")
+        .select("cleanup_range_end, cleanup_completed_at")
+        .eq("id", clientLinkId)
+        .single();
+      if (client?.cleanup_completed_at && client?.cleanup_range_end) {
+        closedThrough = client.cleanup_range_end;
+        source = "cleanup_completed";
+      }
+    } catch { /* fall through */ }
+  }
+
+  // 3. Calendar default — end of last completed calendar month
+  if (!closedThrough) {
+    const now = new Date();
+    const endOfLast = new Date(now.getFullYear(), now.getMonth(), 0);
+    closedThrough = endOfLast.toISOString().slice(0, 10);
+  }
+
+  // Build the month range containing closedThrough
+  const closedDate = new Date(closedThrough + "T00:00:00");
+  const closedMonthStart = new Date(closedDate.getFullYear(), closedDate.getMonth(), 1);
+  const closedMonthEnd = new Date(closedDate.getFullYear(), closedDate.getMonth() + 1, 0);
+  const closedMonth: DateRange = {
+    start: closedMonthStart.toISOString().slice(0, 10),
+    end: closedMonthEnd.toISOString().slice(0, 10),
+    label: closedMonthStart.toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+  };
+
+  // Prior month for comparison
+  const priorMonthStart = new Date(closedDate.getFullYear(), closedDate.getMonth() - 1, 1);
+  const priorMonthEnd = new Date(closedDate.getFullYear(), closedDate.getMonth(), 0);
+  const priorMonth: DateRange = {
+    start: priorMonthStart.toISOString().slice(0, 10),
+    end: priorMonthEnd.toISOString().slice(0, 10),
+    label: priorMonthStart.toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+  };
+
+  return {
+    closedThrough,
+    closedMonth,
+    priorMonth,
+    closedMonthLabel: closedMonth.label!,
+    source,
   };
 }
 
@@ -215,8 +345,10 @@ export function summarizeBanks(accounts: QBOAccount[]): BankSummary {
 
 export interface OverviewData {
   asOfDate: string;
-  currentMonthPL: ProfitLossData;
-  lastMonthPL: ProfitLossData;
+  primaryMonth: DateRange;
+  comparisonMonth: DateRange;
+  primaryPL: ProfitLossData;
+  comparisonPL: ProfitLossData;
   banks: BankSummary;
   openARTotal: number;
   openARCount: number;
@@ -229,27 +361,25 @@ export interface OverviewData {
 }
 
 /**
- * One-shot fetch for the portal Overview page. Everything runs in parallel
- * — we wait for the slowest call (usually the P&L report). Errors on
- * individual calls fail soft: each returns a defensible default so a
- * single QBO hiccup doesn't blank the whole landing page.
+ * One-shot fetch for the portal Overview page. Caller passes the date
+ * ranges to use for the primary period (KPI tiles, narrative) and the
+ * comparison period (vs-last-month deltas). The portal Overview page
+ * passes the closed-period ranges; other callers can pass whatever.
  */
 export async function fetchOverview(
   realmId: string,
-  accessToken: string
+  accessToken: string,
+  primaryMonth: DateRange,
+  comparisonMonth: DateRange
 ): Promise<OverviewData> {
-  const thisMonth = thisMonthRange();
-  const lastMonth = lastMonthRange();
+  const emptyPL: ProfitLossData = {
+    totalIncome: 0, totalExpenses: 0, netIncome: 0,
+    mealsExpense: 0, mealsAccounts: [], lineItems: [],
+  };
 
-  const [currentMonthPL, lastMonthPL, accounts, invoices, bills] = await Promise.all([
-    safe(() => fetchProfitAndLoss(realmId, accessToken, thisMonth.start, thisMonth.end), {
-      totalIncome: 0, totalExpenses: 0, netIncome: 0,
-      mealsExpense: 0, mealsAccounts: [], lineItems: [],
-    } as ProfitLossData),
-    safe(() => fetchProfitAndLoss(realmId, accessToken, lastMonth.start, lastMonth.end), {
-      totalIncome: 0, totalExpenses: 0, netIncome: 0,
-      mealsExpense: 0, mealsAccounts: [], lineItems: [],
-    } as ProfitLossData),
+  const [primaryPL, comparisonPL, accounts, invoices, bills] = await Promise.all([
+    safe(() => fetchProfitAndLoss(realmId, accessToken, primaryMonth.start, primaryMonth.end), emptyPL),
+    safe(() => fetchProfitAndLoss(realmId, accessToken, comparisonMonth.start, comparisonMonth.end), emptyPL),
     safe(() => fetchAllAccounts(realmId, accessToken), [] as QBOAccount[]),
     safe(() => fetchOpenInvoices(realmId, accessToken), [] as OpenInvoice[]),
     safe(() => fetchOpenBills(realmId, accessToken), [] as OpenBill[]),
@@ -269,9 +399,11 @@ export async function fetchOverview(
     arAging.buckets["90+"].count;
 
   return {
-    asOfDate: thisMonth.end,
-    currentMonthPL,
-    lastMonthPL,
+    asOfDate: primaryMonth.end,
+    primaryMonth,
+    comparisonMonth,
+    primaryPL,
+    comparisonPL,
     banks,
     openARTotal: arAging.totalAmount,
     openARCount: arAging.totalCount,

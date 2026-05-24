@@ -1,10 +1,11 @@
 import Link from "next/link";
 import {
   TrendingUp, TrendingDown, AlertCircle, MessageSquare, ArrowRight,
-  DollarSign, Receipt, Wallet, Sparkles,
+  DollarSign, Receipt, Wallet, Sparkles, CheckCircle2,
 } from "lucide-react";
 import { tryResolvePortalContext } from "@/lib/portal-context";
-import { fetchOverview } from "@/lib/portal-data";
+import { fetchOverview, resolveClosedPeriod } from "@/lib/portal-data";
+import { createServiceSupabase } from "@/lib/supabase";
 import { PortalErrorState } from "./error-state";
 
 /**
@@ -28,22 +29,44 @@ export default async function PortalOverview() {
   }
   const { ctx } = ctxResult;
 
-  const data = await fetchOverview(ctx.qboRealmId, ctx.accessToken);
+  // Resolve the most-recent fully-closed accounting period. The portal
+  // shows that month by default — "this month so far" is misleading
+  // when the bookkeeper hasn't reconciled it yet.
+  const service = createServiceSupabase();
+  const closed = await resolveClosedPeriod(service, ctx.clientLinkId);
 
-  const incomeDelta = data.currentMonthPL.totalIncome - data.lastMonthPL.totalIncome;
-  const expensesDelta = data.currentMonthPL.totalExpenses - data.lastMonthPL.totalExpenses;
-  const profitDelta = data.currentMonthPL.netIncome - data.lastMonthPL.netIncome;
+  const data = await fetchOverview(
+    ctx.qboRealmId,
+    ctx.accessToken,
+    closed.closedMonth,
+    closed.priorMonth
+  );
 
-  // Heuristic narrative — Day 6 swaps in Claude
-  const narrative = buildHeuristicNarrative(data, profitDelta);
+  const incomeDelta = data.primaryPL.totalIncome - data.comparisonPL.totalIncome;
+  const expensesDelta = data.primaryPL.totalExpenses - data.comparisonPL.totalExpenses;
+  const profitDelta = data.primaryPL.netIncome - data.comparisonPL.netIncome;
+
+  // Heuristic narrative
+  const narrative = buildHeuristicNarrative(data, profitDelta, closed.closedMonthLabel);
 
   return (
     <div className="space-y-6">
       <div>
         <div className="text-xs text-ink-slate uppercase tracking-wider font-semibold">Good day</div>
         <h1 className="text-3xl font-bold text-navy mt-1">Here's how your business is doing</h1>
-        <div className="text-sm text-ink-slate mt-1">
-          As of {formatDate(data.asOfDate)} · Updated daily from QuickBooks
+        <div className="text-sm text-ink-slate mt-1 flex items-center gap-2 flex-wrap">
+          <CheckCircle2 size={13} className="text-emerald-600" />
+          <span>
+            Most recent closed month: <strong className="text-navy">{closed.closedMonthLabel}</strong>
+          </span>
+          <span className="text-ink-light">·</span>
+          <span className="text-ink-light">
+            {closed.source === "reclass_job_closed"
+              ? "Reconciled and closed by your bookkeeper"
+              : closed.source === "cleanup_completed"
+              ? "Most recent reconciled period"
+              : "Defaulting to last calendar month"}
+          </span>
         </div>
       </div>
 
@@ -68,33 +91,39 @@ export default async function PortalOverview() {
         </div>
       </div>
 
-      {/* KPI tiles */}
-      <div className="grid grid-cols-3 gap-4">
-        <KpiCard
-          icon={DollarSign}
-          label="Money in this month"
-          value={fmtMoney(data.currentMonthPL.totalIncome)}
-          delta={incomeDelta >= 0 ? `+${fmtMoney(Math.abs(incomeDelta))} vs last month` : `${fmtMoney(incomeDelta)} vs last month`}
-          deltaPositive={incomeDelta >= 0}
-          tooltip="Total invoices and sales for work completed this month."
-        />
-        <KpiCard
-          icon={Receipt}
-          label="Costs this month"
-          value={fmtMoney(data.currentMonthPL.totalExpenses)}
-          delta={expensesDelta >= 0 ? `+${fmtMoney(Math.abs(expensesDelta))} vs last month` : `${fmtMoney(expensesDelta)} vs last month`}
-          deltaPositive={expensesDelta < 0 /* lower costs = positive */}
-          tooltip="Everything you spent — materials, subs, payroll, overhead. Higher costs aren't always bad when revenue grows faster."
-        />
-        <KpiCard
-          icon={Wallet}
-          label="What's left (profit)"
-          value={fmtMoney(data.currentMonthPL.netIncome)}
-          delta={profitDelta >= 0 ? `+${fmtMoney(Math.abs(profitDelta))} vs last month` : `${fmtMoney(profitDelta)} vs last month`}
-          deltaPositive={profitDelta >= 0}
-          tooltip="Money in minus costs. This is what's truly yours."
-        />
-      </div>
+      {/* KPI tiles — labeled by the closed month, not "this month" */}
+      {(() => {
+        const monthShort = data.primaryMonth.label?.split(" ")[0] || "the month";
+        const prevShort = data.comparisonMonth.label?.split(" ")[0] || "prior month";
+        return (
+          <div className="grid grid-cols-3 gap-4">
+            <KpiCard
+              icon={DollarSign}
+              label={`Money in (${monthShort})`}
+              value={fmtMoney(data.primaryPL.totalIncome)}
+              delta={incomeDelta >= 0 ? `+${fmtMoney(Math.abs(incomeDelta))} vs ${prevShort}` : `${fmtMoney(incomeDelta)} vs ${prevShort}`}
+              deltaPositive={incomeDelta >= 0}
+              tooltip="Total invoices and sales for work completed in this month."
+            />
+            <KpiCard
+              icon={Receipt}
+              label={`Costs (${monthShort})`}
+              value={fmtMoney(data.primaryPL.totalExpenses)}
+              delta={expensesDelta >= 0 ? `+${fmtMoney(Math.abs(expensesDelta))} vs ${prevShort}` : `${fmtMoney(expensesDelta)} vs ${prevShort}`}
+              deltaPositive={expensesDelta < 0 /* lower costs = positive */}
+              tooltip="Everything you spent — materials, subs, payroll, overhead. Higher costs aren't always bad when revenue grows faster."
+            />
+            <KpiCard
+              icon={Wallet}
+              label={`What's left (profit)`}
+              value={fmtMoney(data.primaryPL.netIncome)}
+              delta={profitDelta >= 0 ? `+${fmtMoney(Math.abs(profitDelta))} vs ${prevShort}` : `${fmtMoney(profitDelta)} vs ${prevShort}`}
+              deltaPositive={profitDelta >= 0}
+              tooltip="Money in minus costs. This is what's truly yours."
+            />
+          </div>
+        );
+      })()}
 
       {/* Attention items */}
       <div className="bg-white border border-slate-200 rounded-2xl p-6">
@@ -196,32 +225,35 @@ function formatDate(yyyyMMdd: string): string {
 
 function buildHeuristicNarrative(
   data: Awaited<ReturnType<typeof fetchOverview>>,
-  profitDelta: number
+  profitDelta: number,
+  monthLabel: string
 ): { headline: string; body: string } {
-  const profit = data.currentMonthPL.netIncome;
-  const income = data.currentMonthPL.totalIncome;
-  const expenses = data.currentMonthPL.totalExpenses;
+  const profit = data.primaryPL.netIncome;
+  const income = data.primaryPL.totalIncome;
+  const expenses = data.primaryPL.totalExpenses;
   const margin = income > 0 ? Math.round((profit / income) * 100) : 0;
+  const monthShort = monthLabel.split(" ")[0];
+  const prevShort = data.comparisonMonth.label?.split(" ")[0] || "the prior month";
 
   if (income === 0 && expenses === 0) {
     return {
-      headline: "No activity this month yet.",
-      body: "We haven't seen any transactions hit your books this month. If you've been working, your bookkeeper may still be catching up — reach out if it's been more than a few days.",
+      headline: `${monthLabel} had no recorded activity.`,
+      body: `No transactions hit your books for ${monthLabel}. If you were working then, your bookkeeper may still be catching up — reach out if it seems wrong.`,
     };
   }
 
   let headline: string;
   if (profitDelta > 0 && profit > 0) {
-    headline = `You're up ${fmtMoney(Math.abs(profitDelta))} in profit vs last month.`;
+    headline = `${monthShort}'s profit was up ${fmtMoney(Math.abs(profitDelta))} vs ${prevShort}.`;
   } else if (profitDelta < 0 && profit > 0) {
-    headline = `Profit is down ${fmtMoney(Math.abs(profitDelta))} vs last month, but still positive.`;
+    headline = `${monthShort}'s profit was down ${fmtMoney(Math.abs(profitDelta))} vs ${prevShort}, but still positive.`;
   } else if (profit < 0) {
-    headline = `You're running a ${fmtMoney(Math.abs(profit))} loss so far this month.`;
+    headline = `${monthShort} ran a ${fmtMoney(Math.abs(profit))} loss.`;
   } else {
-    headline = `Profit is roughly flat vs last month.`;
+    headline = `${monthShort}'s profit was roughly flat vs ${prevShort}.`;
   }
 
-  const body = `You brought in ${fmtMoney(income)} this month and spent ${fmtMoney(expenses)} on costs and overhead, leaving ${fmtMoney(profit)} in profit. That's a ${margin}% margin — ${marginCommentary(margin)}.`;
+  const body = `In ${monthLabel} you brought in ${fmtMoney(income)} and spent ${fmtMoney(expenses)} on costs and overhead, leaving ${fmtMoney(profit)} in profit. That's a ${margin}% margin — ${marginCommentary(margin)}.`;
 
   return { headline, body };
 }
