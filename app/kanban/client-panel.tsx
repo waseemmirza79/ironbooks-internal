@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
+import Link from "next/link";
 import {
   X, MessageSquare, Plus, Trash2, Loader2, Bell, ExternalLink,
-  CheckCircle2, Zap, PauseCircle, UserCheck, Download,
+  CheckCircle2, Zap, PauseCircle, UserCheck, Download, Wallet, ArrowRight,
 } from "lucide-react";
 import type { KanbanCard, KanbanBookkeeper } from "./types";
 
@@ -213,6 +214,33 @@ export function ClientPanel({ card, stage, bookkeepers, canEdit, onClose, onRefr
                   )}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* BS Cleanup tools — quick links into the recovery toolkit when
+              the bookkeeper is actively working a cleanup card. */}
+          {stage === "bs_cleanup" && (
+            <div>
+              <p className="text-xs font-bold text-ink-slate uppercase tracking-wider mb-2">
+                Cleanup tools
+              </p>
+              <div className="space-y-1.5">
+                <Link
+                  href={`/balance-sheet/${card.id}/ar-recovery`}
+                  className="flex items-center gap-2 px-3 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg text-sm text-amber-900 font-semibold transition-colors"
+                >
+                  <Wallet size={14} />
+                  <span className="flex-1">A/R Recovery</span>
+                  <ArrowRight size={12} className="text-amber-700" />
+                </Link>
+                <Link
+                  href={`/balance-sheet/${card.id}/coa`}
+                  className="flex items-center gap-2 px-3 py-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs text-navy"
+                >
+                  <span className="flex-1">BS COA viewer · AI BS cleanup</span>
+                  <ArrowRight size={12} className="text-ink-slate" />
+                </Link>
+              </div>
             </div>
           )}
 

@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   Home, Sparkles, Flag, Users, LogOut, BookOpen, Clock,
   Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight, Receipt, KanbanSquare, Sun,
-  FileSpreadsheet,
+  FileSpreadsheet, Wallet,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
@@ -31,6 +31,7 @@ const advancedItems = [
   { href: "/rules/new", label: "Bank Rules (standalone)", icon: Zap },
   { href: "/stripe-recon/new", label: "Stripe Recon (standalone)", icon: CreditCard },
   { href: "/balance-sheet/coa", label: "BS COA Editor", icon: FileSpreadsheet },
+  { href: "/balance-sheet/ar-recovery", label: "A/R Recovery", icon: Wallet },
   { href: "/tax-audit", label: "GST/HST Audit (CA)", icon: Receipt },
 ];
 

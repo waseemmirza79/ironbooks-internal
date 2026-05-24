@@ -26,6 +26,7 @@ import {
   FileText,
   Play,
   Receipt,
+  Wallet,
 } from "lucide-react";
 import { CleanupReportModal } from "@/components/CleanupReportModal";
 
@@ -862,6 +863,13 @@ function ClientRow({
       </div>
 
       <div className="flex justify-end items-center gap-1">
+        <Link
+          href={`/balance-sheet/${client.id}/ar-recovery`}
+          className="p-1.5 rounded hover:bg-amber-100 text-ink-light hover:text-amber-700 transition-colors"
+          title="A/R Recovery toolkit (UF Audit · UF→A/R · Uncategorized Income)"
+        >
+          <Wallet size={13} />
+        </Link>
         {client.jurisdiction === "CA" && (
           <Link
             href={`/tax-audit/${client.id}`}
@@ -940,6 +948,13 @@ function ClientCard({
             <StatusIcon size={9} />
             {statusCfg.label}
           </span>
+          <Link
+            href={`/balance-sheet/${client.id}/ar-recovery`}
+            className="p-1 rounded hover:bg-amber-100 text-ink-light hover:text-amber-700 transition-colors"
+            title="A/R Recovery toolkit"
+          >
+            <Wallet size={13} />
+          </Link>
           {client.jurisdiction === "CA" && (
             <Link
               href={`/tax-audit/${client.id}`}
