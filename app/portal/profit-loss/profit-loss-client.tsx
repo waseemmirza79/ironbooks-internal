@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ChevronDown, AlertTriangle, X, Loader2, ChevronRight } from "lucide-react";
+import { ChevronDown, AlertTriangle, X, Loader2, ChevronRight, Flag, CheckCircle2 } from "lucide-react";
 import type { ProfitLossData } from "@/lib/qbo-reports";
 
 type RangeKey = "lastMonth" | "thisMonth" | "quarter" | "ytd" | "lastYear";
@@ -330,6 +330,7 @@ function DrillDownDrawer({
   const [totalCount, setTotalCount] = useState(0);
   const [totalAmount, setTotalAmount] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [flagTxn, setFlagTxn] = useState<Transaction | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -421,6 +422,7 @@ function DrillDownDrawer({
                   <th className="text-left px-4 py-2 font-semibold">Type / #</th>
                   <th className="text-left px-4 py-2 font-semibold">Payee / Customer</th>
                   <th className="text-right px-4 py-2 font-semibold">Amount</th>
+                  <th className="text-right px-4 py-2 font-semibold w-12">Flag</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -446,6 +448,18 @@ function DrillDownDrawer({
                     <td className="px-4 py-2 text-right font-mono text-navy whitespace-nowrap">
                       {fmtMoney(t.amount)}
                     </td>
+                    <td className="px-4 py-2 text-right">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFlagTxn(t);
+                        }}
+                        title="Flag this transaction for your bookkeeper to review"
+                        className="text-ink-light hover:text-amber-600 transition-colors p-1 rounded hover:bg-amber-50"
+                      >
+                        <Flag size={13} />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -468,6 +482,198 @@ function DrillDownDrawer({
             </a>{" "}
             or reach out to your Ironbooks bookkeeper directly.
           </div>
+        </div>
+      </div>
+
+      {flagTxn && (
+        <FlagTransactionModal
+          transaction={flagTxn}
+          accountId={line.account_id}
+          accountLabel={line.label}
+          range={range}
+          onClose={() => setFlagTxn(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── FLAG TRANSACTION MODAL ─────────────────────────────────────────────
+
+function FlagTransactionModal({
+  transaction,
+  accountId,
+  accountLabel,
+  range,
+  onClose,
+}: {
+  transaction: Transaction;
+  accountId: string;
+  accountLabel: string;
+  range: { label: string; start: string; end: string };
+  onClose: () => void;
+}) {
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    const trimmed = note.trim();
+    if (!trimmed) {
+      setError("Please add a quick note so your bookkeeper knows what to look at.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/portal/transaction-flags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          qbo_txn_id: transaction.txn_id || null,
+          qbo_txn_type: transaction.txn_type || null,
+          qbo_account_id: accountId,
+          account_label: accountLabel,
+          txn_date: transaction.date || null,
+          txn_amount: transaction.amount,
+          txn_doc_number: transaction.doc_number,
+          txn_vendor_or_customer: transaction.name,
+          txn_memo: transaction.memo,
+          period_label: range.label,
+          period_start: range.start,
+          period_end: range.end,
+          client_note: trimmed,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      setSubmitted(true);
+    } catch (e: any) {
+      setError(e?.message || "Couldn't send the flag — please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-white rounded-2xl max-w-lg w-full shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Flag size={16} className="text-amber-600" />
+            <h3 className="font-bold text-navy">Flag this transaction</h3>
+          </div>
+          <button onClick={onClose} className="text-ink-slate hover:text-navy">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {submitted ? (
+            <>
+              <div className="flex items-start gap-3 bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+                <CheckCircle2 size={18} className="text-emerald-700 flex-shrink-0 mt-0.5" />
+                <div className="text-sm text-emerald-900">
+                  <strong className="block">Sent to your bookkeeper.</strong>
+                  <span className="text-xs">
+                    They'll review the transaction and reply. You'll see the status on your portal
+                    later if you check back.
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={onClose}
+                className="w-full px-4 py-2 bg-teal text-white rounded-lg text-sm font-semibold hover:bg-teal-dark"
+              >
+                Done
+              </button>
+            </>
+          ) : (
+            <>
+              {/* Snapshot of what's being flagged */}
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs">
+                <div className="text-[10px] uppercase tracking-wider font-semibold text-ink-slate mb-1">
+                  You're flagging
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0">
+                    <div className="font-semibold text-navy">
+                      {transaction.txn_type || "Transaction"}
+                      {transaction.doc_number && (
+                        <span className="text-ink-light"> #{transaction.doc_number}</span>
+                      )}
+                    </div>
+                    <div className="text-ink-slate truncate">
+                      {transaction.date} · {transaction.name || "—"}
+                    </div>
+                    {transaction.memo && (
+                      <div className="text-ink-light italic truncate" title={transaction.memo}>
+                        {transaction.memo}
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-right flex-shrink-0 ml-2">
+                    <div className="font-mono font-semibold text-navy">
+                      {fmtMoney(transaction.amount)}
+                    </div>
+                    <div className="text-[10px] text-ink-light">{accountLabel}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-ink-slate uppercase tracking-wider">
+                  What looks wrong? <span className="text-red-700">*</span>
+                </label>
+                <textarea
+                  value={note}
+                  onChange={(e) => {
+                    setNote(e.target.value);
+                    if (error) setError(null);
+                  }}
+                  placeholder="e.g. This was for the Hudson job, not general overhead. Or: I don't recognize this vendor — can you check?"
+                  maxLength={1500}
+                  rows={4}
+                  className="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:border-teal/50 focus:outline-none"
+                />
+                <div className="text-[11px] text-ink-light mt-1 flex items-center justify-between">
+                  <span>Your bookkeeper sees this exact note + the transaction details.</span>
+                  <span>{note.length} / 1500</span>
+                </div>
+              </div>
+
+              {error && (
+                <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
+                  {error}
+                </div>
+              )}
+
+              <div className="flex items-center gap-2 justify-end">
+                <button
+                  onClick={onClose}
+                  disabled={submitting}
+                  className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm font-semibold text-ink-slate hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={submit}
+                  disabled={submitting || !note.trim()}
+                  className="px-4 py-1.5 bg-amber-500 text-white rounded-lg text-sm font-semibold hover:bg-amber-600 disabled:opacity-50 inline-flex items-center gap-1.5"
+                >
+                  {submitting ? <Loader2 size={12} className="animate-spin" /> : <Flag size={12} />}
+                  {submitting ? "Sending…" : "Send to bookkeeper"}
+                </button>
+              </div>
+              <div className="text-[11px] text-ink-light">
+                Nothing changes in QuickBooks. Your bookkeeper reviews and decides what to do.
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

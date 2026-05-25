@@ -4,6 +4,7 @@ import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, ArrowRight, Sparkles, Clock, Pause } from "lucide-react";
+import { ClientFlagsWidget } from "./client-flags-widget";
 
 export const dynamic = "force-dynamic";
 
@@ -47,8 +48,66 @@ export default async function TodayPage() {
   const { data: clients } = await clientsQuery.order("client_name");
   const eligibleClients = (clients || []) as any[];
 
-  // If nothing's enabled, show the empty state
-  if (eligibleClients.length === 0) {
+  // ─── Portal transaction flags from clients ───
+  // These are independent of daily-recon enrollment — surface them even
+  // when no clients are on daily recon. Bookkeepers see flags for their
+  // own clients; admins/leads see all pending flags.
+  let pendingFlagsRaw: any[] = [];
+  try {
+    let flagsQuery = service
+      .from("portal_transaction_flags" as any)
+      .select(
+        "id, client_link_id, submitted_by, submitted_at, qbo_txn_id, qbo_txn_type, qbo_account_id, account_label, txn_date, txn_amount, txn_doc_number, txn_vendor_or_customer, txn_memo, period_label, period_start, period_end, client_note, status"
+      )
+      .in("status", ["pending", "in_review"])
+      .order("submitted_at", { ascending: false });
+    const { data: flags } = await flagsQuery;
+    pendingFlagsRaw = (flags as any[]) || [];
+
+    // Filter to assigned clients only when the actor isn't a senior
+    if (!isSenior && pendingFlagsRaw.length > 0) {
+      const assigned = new Set(eligibleClients.map((c) => c.id));
+      // Also pull THIS bookkeeper's other assigned clients (not just daily-recon ones)
+      // so flags from non-daily-recon clients also show up.
+      const { data: ownedClients } = await service
+        .from("client_links")
+        .select("id")
+        .eq("assigned_bookkeeper_id", user.id);
+      for (const c of (ownedClients as any[] | null) || []) assigned.add(c.id);
+      pendingFlagsRaw = pendingFlagsRaw.filter((f) => assigned.has(f.client_link_id));
+    }
+  } catch {
+    pendingFlagsRaw = [];
+  }
+
+  // Enrich flags with client + submitter names so the UI doesn't have to
+  // make another round-trip.
+  let pendingFlags: any[] = [];
+  if (pendingFlagsRaw.length > 0) {
+    const clientIds = Array.from(new Set(pendingFlagsRaw.map((f) => f.client_link_id)));
+    const submitterIds = Array.from(new Set(pendingFlagsRaw.map((f) => f.submitted_by).filter(Boolean)));
+    const [{ data: cn }, { data: sn }] = await Promise.all([
+      clientIds.length > 0
+        ? service.from("client_links").select("id, client_name").in("id", clientIds)
+        : Promise.resolve({ data: [] }),
+      submitterIds.length > 0
+        ? service.from("users").select("id, full_name, email").in("id", submitterIds)
+        : Promise.resolve({ data: [] }),
+    ]);
+    const clientNameById = new Map(((cn as any[]) || []).map((c) => [c.id, c.client_name]));
+    const submitterById = new Map(
+      ((sn as any[]) || []).map((u) => [u.id, { full_name: u.full_name, email: u.email }])
+    );
+    pendingFlags = pendingFlagsRaw.map((f) => ({
+      ...f,
+      client_name: clientNameById.get(f.client_link_id) || "(unknown client)",
+      submitter_name: submitterById.get(f.submitted_by)?.full_name || "",
+      submitter_email: submitterById.get(f.submitted_by)?.email || "",
+    }));
+  }
+
+  // If nothing's enabled AND no flags, show the empty state
+  if (eligibleClients.length === 0 && pendingFlags.length === 0) {
     return (
       <AppShell>
         <TopBar title="Today" subtitle="Daily reconciliation queue" />
@@ -147,6 +206,10 @@ export default async function TodayPage() {
     <AppShell>
       <TopBar title="Today" subtitle={`Daily reconciliation · ${today}`} />
       <div className="px-8 py-6 max-w-5xl space-y-6">
+        {/* Portal flags from clients — shown above daily recon since they're
+            often more urgent (client is actively waiting for a response) */}
+        {pendingFlags.length > 0 && <ClientFlagsWidget flags={pendingFlags} />}
+
         {/* Top-line summary */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <SummaryCard
