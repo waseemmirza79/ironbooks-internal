@@ -122,6 +122,20 @@ async function qboRequest<T>(
  * Fetch all transactions hitting a specific account within a date range,
  * across all 4 supported types. Returns flattened line-level data.
  */
+export interface UnreclassifiableLine {
+  /** Why this line hit the account but can't be auto-reclassified */
+  reason: "item_based" | "journal_entry_unsupported" | "unknown_detail_type";
+  transaction_id: string;
+  transaction_type: string;
+  line_id: string;
+  transaction_date: string;
+  vendor_name: string;
+  amount: number;
+  /** For item_based: the QBO item id/name that's tied to this account */
+  item_ref?: { value: string; name?: string };
+  description: string;
+}
+
 export async function fetchTransactionsForAccount(
   realmId: string,
   accessToken: string,
@@ -132,9 +146,62 @@ export async function fetchTransactionsForAccount(
   lines: ReclassLine[];
   transactionsPulled: number;
   transactionsSkippedUnsupported: number;
+  /** Lines that DO hit the account but can't be auto-reclassified (item-based,
+   *  JEs without our support, etc.). Surfaced to the bookkeeper so they know
+   *  to handle these manually in QBO instead of thinking the period was done. */
+  unreclassifiableLines: UnreclassifiableLine[];
+  /** Per-item-account map we resolved during the scan so the caller (or a
+   *  future feature) can see which items map to which expense accounts. */
+  itemToAccountMap: Map<string, { item_name: string; account_id: string }>;
 }> {
   let totalPulled = 0;
   let skippedUnsupported = 0;
+  const unreclassifiable: UnreclassifiableLine[] = [];
+  const itemAccountCache = new Map<string, { item_name: string; account_id: string }>();
+
+  // Lazy item lookup: when we see an ItemBasedExpenseLineDetail line, we
+  // need to know which account that item maps to. QBO Items have
+  // ExpenseAccountRef + IncomeAccountRef. We pull a batch of items only
+  // when we hit a tx that uses items, to avoid an unnecessary roundtrip
+  // on clients that don't use items.
+  let itemsLoaded = false;
+  async function ensureItemsLoaded() {
+    if (itemsLoaded) return;
+    itemsLoaded = true;
+    try {
+      let page = 0;
+      const pageSize = 1000;
+      while (true) {
+        const startPosition = page * pageSize + 1;
+        const query = encodeURIComponent(
+          `SELECT Id, Name, Type, ExpenseAccountRef, IncomeAccountRef FROM Item STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
+        );
+        const data: any = await qboRequest(realmId, accessToken, `/query?query=${query}`);
+        const items: any[] = data.QueryResponse?.Item || [];
+        for (const it of items) {
+          // An item can have BOTH refs (e.g. a service sold AND used as cost).
+          // We map both so a search by accountId works either side.
+          if (it.ExpenseAccountRef?.value) {
+            itemAccountCache.set(String(it.Id) + ":expense", {
+              item_name: it.Name,
+              account_id: String(it.ExpenseAccountRef.value),
+            });
+          }
+          if (it.IncomeAccountRef?.value) {
+            itemAccountCache.set(String(it.Id) + ":income", {
+              item_name: it.Name,
+              account_id: String(it.IncomeAccountRef.value),
+            });
+          }
+        }
+        if (items.length < pageSize) break;
+        page++;
+        if (page > 50) break;
+      }
+    } catch (err: any) {
+      console.warn("[qbo-reclass] Item lookup failed (item-based reclass will be skipped):", err.message);
+    }
+  }
 
   // Pull the 4 transaction types in PARALLEL. Each type independently
   // paginates through its result set; previously this ran sequentially
@@ -161,46 +228,95 @@ export async function fetchTransactionsForAccount(
           const txs: QBOTransaction[] = data.QueryResponse?.[txType] || [];
           typePulled += txs.length;
 
+          // Detect if any line uses Item-based detail. If so, we need the
+          // item→account map to know which item-lines hit our account.
+          // Load lazily — once we know there's at least one item-based line
+          // anywhere in this batch, do the (cached) full Item pull.
+          const hasItemBasedLines = txs.some((tx) =>
+            (tx.Line || []).some((l: any) => l.DetailType === "ItemBasedExpenseLineDetail")
+          );
+          if (hasItemBasedLines) await ensureItemsLoaded();
+
+          const targetId = String(accountId);
+
           for (const tx of txs) {
-            // Find lines that hit the source account
-            const matchingLines = (tx.Line || []).filter((line) => {
-              const detail = line.AccountBasedExpenseLineDetail;
-              return detail?.AccountRef?.value === accountId;
-            });
-
-            if (matchingLines.length === 0) continue;
-
             // Detect status flags at transaction level
             const isBankFed = !!tx.OnlineBankingTxnReference;
-            // Manual entry heuristic: no online banking ref AND no DocNumber suggests manual
             const isManualEntry = !isBankFed && !tx.DocNumber;
-
             const vendorName =
               tx.VendorRef?.name ||
               tx.EntityRef?.name ||
               tx.PayeeRef?.name ||
               "Unknown vendor";
 
-            for (const line of matchingLines) {
-              const isReconciled = line.Cleared === "Reconciled";
+            for (const line of tx.Line || []) {
+              const dt = (line as any).DetailType;
 
-              typeLines.push({
-                transaction_id: tx.Id,
-                transaction_type: txType,
-                line_id: line.Id || "",
-                sync_token: tx.SyncToken,
-                transaction_date: tx.TxnDate,
-                transaction_amount: line.Amount || 0,
-                vendor_name: vendorName,
-                current_account_id: accountId,
-                current_account_name:
-                  line.AccountBasedExpenseLineDetail?.AccountRef?.name || "",
-                description: line.Description || "",
-                private_note: tx.PrivateNote || "",
-                is_reconciled: isReconciled,
-                is_bank_fed: isBankFed,
-                is_manual_entry: isManualEntry,
-              });
+              // ── AccountBased: line directly references the account ──
+              if (dt === "AccountBasedExpenseLineDetail") {
+                const detail = line.AccountBasedExpenseLineDetail;
+                if (String(detail?.AccountRef?.value) !== targetId) continue;
+                typeLines.push({
+                  transaction_id: tx.Id,
+                  transaction_type: txType,
+                  line_id: line.Id || "",
+                  sync_token: tx.SyncToken,
+                  transaction_date: tx.TxnDate,
+                  transaction_amount: line.Amount || 0,
+                  vendor_name: vendorName,
+                  current_account_id: targetId,
+                  current_account_name: detail?.AccountRef?.name || "",
+                  description: line.Description || "",
+                  private_note: tx.PrivateNote || "",
+                  is_reconciled: line.Cleared === "Reconciled",
+                  is_bank_fed: isBankFed,
+                  is_manual_entry: isManualEntry,
+                });
+                continue;
+              }
+
+              // ── ItemBased: line references an item that maps to an account ──
+              // Reclass requires changing the ITEM, not the account on the line.
+              // Out of scope for auto-reclass — surface as unreclassifiable so
+              // the bookkeeper knows to handle these manually in QBO instead of
+              // thinking the period was fully reclassed.
+              if (dt === "ItemBasedExpenseLineDetail") {
+                const detail = (line as any).ItemBasedExpenseLineDetail;
+                const itemRef = detail?.ItemRef;
+                if (!itemRef?.value) continue;
+                const itemMapping =
+                  itemAccountCache.get(String(itemRef.value) + ":expense") ||
+                  itemAccountCache.get(String(itemRef.value) + ":income");
+                if (itemMapping?.account_id !== targetId) continue;
+                unreclassifiable.push({
+                  reason: "item_based",
+                  transaction_id: tx.Id,
+                  transaction_type: txType,
+                  line_id: line.Id || "",
+                  transaction_date: tx.TxnDate,
+                  vendor_name: vendorName,
+                  amount: line.Amount || 0,
+                  item_ref: { value: String(itemRef.value), name: itemRef.name },
+                  description: line.Description || "",
+                });
+                continue;
+              }
+
+              // ── Any other detail type with an AccountRef we recognize ──
+              // (e.g. a future QBO line type). Track but skip.
+              const anyDetail = (line as any)[dt];
+              if (anyDetail?.AccountRef?.value && String(anyDetail.AccountRef.value) === targetId) {
+                unreclassifiable.push({
+                  reason: "unknown_detail_type",
+                  transaction_id: tx.Id,
+                  transaction_type: txType,
+                  line_id: line.Id || "",
+                  transaction_date: tx.TxnDate,
+                  vendor_name: vendorName,
+                  amount: line.Amount || 0,
+                  description: `Detail type "${dt}" not handled by reclass engine`,
+                });
+              }
             }
           }
 
@@ -229,6 +345,8 @@ export async function fetchTransactionsForAccount(
     lines: allLines,
     transactionsPulled: totalPulled,
     transactionsSkippedUnsupported: skippedUnsupported,
+    unreclassifiableLines: unreclassifiable,
+    itemToAccountMap: itemAccountCache,
   };
 }
 
@@ -418,6 +536,28 @@ export async function refetchTransaction(
  *
  * Returns the updated transaction.
  */
+/**
+ * Result of a reclassify call. Critical: `lines_applied` is the count of
+ * lines that the QBO RESPONSE confirmed are at the new account — NOT the
+ * count we asked for. Callers should report this number, not the requested
+ * count, to avoid the "we said success but QBO didn't change" bug class.
+ *
+ * `lines_not_applied` captures any line we asked to update but the QBO
+ * response didn't reflect (line missing, account didn't change, etc.).
+ * Throws an error if NO lines applied — that's a real failure.
+ */
+export interface ReclassResult {
+  tx: QBOTransaction;
+  lines_requested: number;
+  lines_applied: number;
+  lines_not_applied: Array<{
+    line_id: string;
+    requested_account_id: string;
+    actual_account_id: string | null;
+    reason: string;
+  }>;
+}
+
 export async function reclassifyTransactionLines(
   realmId: string,
   accessToken: string,
@@ -431,7 +571,7 @@ export async function reclassifyTransactionLines(
     }>;
     auditMemo: string;       // appended to PrivateNote
   }
-): Promise<QBOTransaction> {
+): Promise<ReclassResult> {
   // Step 1: Refetch fresh transaction (get current SyncToken)
   const tx = await refetchTransaction(realmId, accessToken, params.txType, params.txId);
 
@@ -548,7 +688,72 @@ export async function reclassifyTransactionLines(
     throw err;
   }
 
-  return data[params.txType];
+  // ─── VERIFY THE RESPONSE ACTUALLY APPLIED OUR CHANGES ───
+  // QBO will sometimes accept the payload but not reflect the requested
+  // change (concurrent edit collision, line removed from the canonical
+  // row, etc.). We've also seen our own sanitizer drop a line we asked
+  // to update. Compare the response against what we requested.
+  const returnedTx = data[params.txType] as QBOTransaction;
+  const returnedLineMap = new Map<string, any>();
+  for (const l of (returnedTx?.Line || []) as any[]) {
+    if (l.Id) returnedLineMap.set(String(l.Id), l);
+  }
+
+  let applied = 0;
+  const notApplied: ReclassResult["lines_not_applied"] = [];
+  for (const update of params.lineUpdates) {
+    const expected = String(update.new_account_id);
+    const returnedLine = returnedLineMap.get(String(update.line_id));
+    if (!returnedLine) {
+      notApplied.push({
+        line_id: update.line_id,
+        requested_account_id: expected,
+        actual_account_id: null,
+        reason: "Line not present in QBO response (may have been removed by sanitizer or deleted on QBO)",
+      });
+      continue;
+    }
+    const actual =
+      returnedLine.AccountBasedExpenseLineDetail?.AccountRef?.value != null
+        ? String(returnedLine.AccountBasedExpenseLineDetail.AccountRef.value)
+        : null;
+    if (actual === expected) {
+      applied++;
+    } else {
+      notApplied.push({
+        line_id: update.line_id,
+        requested_account_id: expected,
+        actual_account_id: actual,
+        reason: actual
+          ? `QBO returned line at account ${actual} instead of requested ${expected}`
+          : `Line present in QBO response but has no AccountRef (DetailType=${returnedLine.DetailType})`,
+      });
+    }
+  }
+
+  if (notApplied.length > 0) {
+    console.warn(
+      `[qbo-reclass] partial apply — ${params.txType}/${params.txId}: ` +
+      `${applied}/${params.lineUpdates.length} lines confirmed, ${notApplied.length} not applied. ` +
+      `Details: ${JSON.stringify(notApplied)}`
+    );
+  }
+
+  // Hard failure if nothing was applied — caller should not record this
+  // as a successful reclass.
+  if (applied === 0 && params.lineUpdates.length > 0) {
+    throw new Error(
+      `QBO accepted the update but applied 0/${params.lineUpdates.length} lines for ${params.txType}/${params.txId}. ` +
+      `First issue: ${notApplied[0]?.reason || "unknown"}`
+    );
+  }
+
+  return {
+    tx: returnedTx,
+    lines_requested: params.lineUpdates.length,
+    lines_applied: applied,
+    lines_not_applied: notApplied,
+  };
 }
 
 // ============== VENDOR NORMALIZATION ==============

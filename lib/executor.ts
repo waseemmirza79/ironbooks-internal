@@ -1055,10 +1055,12 @@ export async function executeJob(jobId: string): Promise<{
             : `Ironbooks merge: "${action.current_name}" → "${action.new_name}"`;
 
           let linesReclassed = 0;
+          let linesNotApplied = 0;
           let lastHeartbeat = 0;
+          const partialApplyDetails: any[] = [];
           for (const [txId, txLines] of linesByTx) {
             const txType = txLines[0].transaction_type;
-            await reclassifyTransactionLines(ctx.realmId, ctx.accessToken, {
+            const reclassResult = await reclassifyTransactionLines(ctx.realmId, ctx.accessToken, {
               txType,
               txId,
               lineUpdates: txLines.map((l) => ({
@@ -1068,7 +1070,19 @@ export async function executeJob(jobId: string): Promise<{
               })),
               auditMemo,
             });
-            linesReclassed += txLines.length;
+            // CRITICAL: count what QBO actually applied (verified post-response),
+            // not what we requested. The previous code reported success on the
+            // requested count, which masked silent QBO-side drops.
+            linesReclassed += reclassResult.lines_applied;
+            linesNotApplied += reclassResult.lines_not_applied.length;
+            if (reclassResult.lines_not_applied.length > 0) {
+              partialApplyDetails.push({
+                txType,
+                txId,
+                ...reclassResult.lines_not_applied[0],
+                additional_failed_lines: reclassResult.lines_not_applied.length - 1,
+              });
+            }
 
             // Heartbeat every 50 lines so:
             //   - the bookkeeper sees live progress for big merges
@@ -1184,6 +1198,24 @@ export async function executeJob(jobId: string): Promise<{
               into: action.new_name,
               lines_moved: linesReclassed,
             });
+          }
+
+          // Surface partial-apply failures loudly. Previously, the executor
+          // counted "lines reclassified" from the REQUESTED count which masked
+          // QBO-side drops — bookkeepers would see "30 lines done" but QBO
+          // still showed the originals. Now we count what was VERIFIED and
+          // log a high-visibility warning when some didn't apply.
+          if (linesNotApplied > 0) {
+            await logProgress(ctx, "merge_partial_apply",
+              `⚠ ${linesNotApplied} of ${linesReclassed + linesNotApplied} lines did NOT apply for "${action.current_name}" → "${action.new_name}". QBO accepted the update but the lines stayed at their original account (concurrent edit, item-based line, or unsupported detail type). First failure: ${partialApplyDetails[0]?.reason || "see logs"}`,
+              {
+                source: action.current_name,
+                target: action.new_name,
+                lines_applied: linesReclassed,
+                lines_not_applied: linesNotApplied,
+                sample_failures: partialApplyDetails.slice(0, 5),
+              }
+            );
           }
 
           stats.merged++;
