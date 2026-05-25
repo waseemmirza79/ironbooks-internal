@@ -475,10 +475,21 @@ No markdown, no preamble. Just the JSON.`;
 const FULL_CAT_BATCH_SIZE = 15;
 const BATCH_TIMEOUT_MS = 75_000;
 // Parallel batches per round. Anthropic Opus tier allows 50+ req/min;
-// 3 concurrent keeps us comfortable while cutting wall-clock to 1/3.
-// (Lionetti Painting, May 2026: 83 sequential batches × ~10s = 830s
-// blew past Vercel's 800s cap. Parallel = ~280s.)
-const FULL_CAT_CONCURRENCY = 3;
+// 6 concurrent keeps us comfortably under rate limits while cutting
+// wall-clock by ~6x vs sequential.
+// (Lionetti Painting hit a hung Promise.all repeatedly at 3-concurrent —
+// one batch never resolved/rejected even with AbortController fired, so
+// the function kept ticking until Vercel maxDuration killed it silently,
+// 45 min before the DB watchdog cleaned up. Bumping concurrency rolls
+// the dice fewer times; the round-level Promise.race cap below catches
+// the rest.)
+const FULL_CAT_CONCURRENCY = 6;
+// Hard wall-clock ceiling per round. Even if Anthropic's SDK fails to
+// honor an AbortController (streaming responses sometimes orphan), the
+// round resolves at this cap and the loop moves on. Batches that
+// didn't return in time become `needs_review` — bookkeeper picks them
+// up manually instead of the whole job stranding.
+const ROUND_DEADLINE_MS = 90_000;
 
 /**
  * Classify every transaction line against the new COA.
@@ -714,10 +725,74 @@ Classify each line. Return JSON only.`;
   let completedBatches = 0;
   for (let roundStart = 0; roundStart < allBatches.length; roundStart += FULL_CAT_CONCURRENCY) {
     const round = allBatches.slice(roundStart, roundStart + FULL_CAT_CONCURRENCY);
-    const results = await Promise.all(round.map((b) => processBatch(b.batch, b.batchIdx)));
-    for (const r of results) {
-      allDecisions.push(...r.decisions);
-      warnings.push(...r.warnings);
+
+    // Each batch returns { decisions, warnings } even on error (it catches
+    // internally). Wrap the WHOLE ROUND in Promise.race against a hard
+    // deadline so an orphaned Anthropic stream can't strand the function.
+    // Any batch that hasn't resolved by the deadline returns null in the
+    // race, and we synthesize needs_review fallbacks for those batches.
+    const roundPromise = Promise.all(
+      round.map((b) =>
+        processBatch(b.batch, b.batchIdx).then(
+          (r) => ({ ok: true as const, idx: b.batchIdx, r }),
+          (err) => ({ ok: false as const, idx: b.batchIdx, err })
+        )
+      )
+    );
+    const deadlinePromise = new Promise<"deadline">((resolve) =>
+      setTimeout(() => resolve("deadline"), ROUND_DEADLINE_MS)
+    );
+    const raceResult = await Promise.race([roundPromise, deadlinePromise]);
+
+    if (raceResult === "deadline") {
+      // Round blew the wall clock — likely an Anthropic stream orphaned
+      // somewhere. Mark every line in this round's batches as needs_review
+      // so the bookkeeper can finish them, and move on. We DON'T wait for
+      // the in-flight Promise.all to complete; Node will eventually GC it
+      // (and any in-flight HTTP is wasted but harmless).
+      for (const b of round) {
+        for (const line of b.batch) {
+          allDecisions.push({
+            ref_id: line.ref_id,
+            target_account_id: null,
+            target_account_name: null,
+            confidence: 0,
+            reasoning: `Batch ${b.batchIdx}/${totalBatches} exceeded ${ROUND_DEADLINE_MS / 1000}s — likely AI stream stalled. Manually categorize.`,
+            decision: "needs_review",
+            flagged_reason: "AI batch timed out",
+          });
+        }
+        warnings.push(
+          `Round containing batch ${b.batchIdx}/${totalBatches} exceeded ${ROUND_DEADLINE_MS / 1000}s deadline — lines marked needs_review.`
+        );
+      }
+    } else {
+      for (const r of raceResult) {
+        if (r.ok) {
+          allDecisions.push(...r.r.decisions);
+          warnings.push(...r.r.warnings);
+        } else {
+          // processBatch normally catches its own errors; this is the
+          // belt-and-braces path for the rare uncaught throw.
+          warnings.push(
+            `Batch ${r.idx}/${totalBatches} threw: ${(r.err as any)?.message || r.err}. Lines fall through to needs_review.`
+          );
+          const failedBatch = round.find((b) => b.batchIdx === r.idx);
+          if (failedBatch) {
+            for (const line of failedBatch.batch) {
+              allDecisions.push({
+                ref_id: line.ref_id,
+                target_account_id: null,
+                target_account_name: null,
+                confidence: 0,
+                reasoning: `Batch ${r.idx} failed — manually categorize.`,
+                decision: "needs_review",
+                flagged_reason: "AI batch threw",
+              });
+            }
+          }
+        }
+      }
     }
     completedBatches += round.length;
     if (params.onProgress) {
