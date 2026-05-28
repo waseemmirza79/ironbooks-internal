@@ -709,23 +709,35 @@ function ItemRow({
             <div className="text-xs font-bold text-purple-900 mb-1">Direct void (open period only)</div>
             <div className="text-[11px] text-purple-800 mb-2">
               Voids the invoice in QBO. Use only when the invoice is in a period that hasn't been
-              reported on — otherwise filed totals change.
+              reported on — otherwise filed totals change.{" "}
+              <strong>If the invoice has any payments applied, voiding leaves them as orphan
+              customer overpayments.</strong>{" "}
+              For paid-or-partially-paid invoices, prefer JE write-off.
             </div>
-            <button
-              onClick={() => {
-                if (
-                  !confirm(
-                    `Void invoice #${item.qbo_invoice_doc_number || item.qbo_invoice_id} in QBO at finalize? ` +
-                    `Only safe if the period hasn't been filed.`
-                  )
-                ) return;
-                onResolve([item.id], { resolution: "direct_void" });
-              }}
-              className="px-2 py-1 bg-purple-600 text-white text-xs font-semibold rounded hover:bg-purple-700"
-            >
-              <Trash2 size={11} className="inline mr-1" />
-              Mark for void
-            </button>
+            {(() => {
+              const partiallyPaid =
+                item.qbo_invoice_balance != null &&
+                item.qbo_invoice_amount != null &&
+                Number(item.qbo_invoice_balance) < Number(item.qbo_invoice_amount);
+              return (
+                <button
+                  onClick={() => {
+                    const msg = partiallyPaid
+                      ? `⚠ Invoice #${item.qbo_invoice_doc_number || item.qbo_invoice_id} appears to be partially paid ` +
+                        `(balance $${item.qbo_invoice_balance} < amount $${item.qbo_invoice_amount}). ` +
+                        `Voiding will leave orphan customer overpayments. Continue anyway?`
+                      : `Void invoice #${item.qbo_invoice_doc_number || item.qbo_invoice_id} in QBO at finalize? ` +
+                        `Only safe if the period hasn't been filed.`;
+                    if (!confirm(msg)) return;
+                    onResolve([item.id], { resolution: "direct_void" });
+                  }}
+                  className="px-2 py-1 bg-purple-600 text-white text-xs font-semibold rounded hover:bg-purple-700"
+                >
+                  <Trash2 size={11} className="inline mr-1" />
+                  Mark for void
+                </button>
+              );
+            })()}
           </div>
 
           {/* Keep / manual */}

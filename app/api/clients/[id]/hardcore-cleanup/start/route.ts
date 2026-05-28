@@ -69,6 +69,19 @@ export async function POST(
   if (!csvText.trim()) {
     return NextResponse.json({ error: "csv_text is required" }, { status: 400 });
   }
+  // Vercel serverless function body limit is ~4.5MB. JSON-encoded CSV
+  // adds overhead. Cap at 4MB raw to keep us well under.
+  const MAX_CSV_BYTES = 4 * 1024 * 1024;
+  if (Buffer.byteLength(csvText, "utf8") > MAX_CSV_BYTES) {
+    return NextResponse.json(
+      {
+        error:
+          `CSV is too large (${Math.round(Buffer.byteLength(csvText, "utf8") / 1024 / 1024)}MB). ` +
+          `Max 4MB — split the export or filter to a smaller date range.`,
+      },
+      { status: 413 }
+    );
+  }
 
   // Zombie cleanup
   const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
@@ -116,7 +129,11 @@ export async function POST(
       );
     }
 
-    // Persist CRM jobs
+    // Persist CRM jobs AND capture their IDs in input order. Using
+    // `.insert(arr).select("id")` returns rows in the same order they
+    // were inserted — this is more reliable than re-querying by
+    // created_at, which can race when batch inserts share a microsecond
+    // timestamp.
     const BATCH = 200;
     const crmJobInsertRows = crmJobs.map((j) => ({
       run_id: runId,
@@ -128,11 +145,21 @@ export async function POST(
       job_date: j.job_date,
       raw_row: j.raw_row,
     }));
+    const persistedJobIds: string[] = [];
     for (let i = 0; i < crmJobInsertRows.length; i += BATCH) {
-      const { error: ce } = await service
+      const { data: returned, error: ce } = await service
         .from("hardcore_cleanup_crm_jobs" as any)
-        .insert(crmJobInsertRows.slice(i, i + BATCH) as any);
+        .insert(crmJobInsertRows.slice(i, i + BATCH) as any)
+        .select("id");
       if (ce) throw new Error(`CRM jobs insert failed: ${ce.message}`);
+      for (const r of (returned as any[]) || []) {
+        persistedJobIds.push(r.id);
+      }
+    }
+    if (persistedJobIds.length !== crmJobs.length) {
+      throw new Error(
+        `CRM job persist returned ${persistedJobIds.length} IDs, expected ${crmJobs.length} — refusing to proceed with mismatched indices`
+      );
     }
 
     // 2. Fetch QBO open invoices
@@ -146,21 +173,8 @@ export async function POST(
     // 3. Run duplicate detection
     const detection = detectDuplicates({ crmJobs, qboInvoices: invoices });
 
-    // 4. Persist items
+    // 4. Persist items (persistedJobIds was captured above in insert order)
     if (detection.duplicates.length > 0) {
-      // We need the persisted crm_job ids to link items.matched_crm_job_id.
-      // Pull them back keyed by index in insertion order.
-      const { data: persistedJobs } = await service
-        .from("hardcore_cleanup_crm_jobs" as any)
-        .select("id, customer_name, amount, job_date, crm_job_id")
-        .eq("run_id", runId)
-        .order("created_at", { ascending: true });
-      // The persisted rows are in the same order as crmJobs[] — DB insertion
-      // preserves the input order within a single insert call. But the batch
-      // size might have split the input; still, ordered by created_at gives
-      // us insertion order. Map index → id by zipping.
-      const persistedJobIds = (persistedJobs as any[] || []).map((p) => p.id);
-
       const itemRows = detection.duplicates.map((d) => ({
         run_id: runId,
         client_link_id: clientLinkId,
@@ -215,6 +229,7 @@ export async function POST(
       qbo_invoices_scanned: invoices.length,
       duplicates_detected: detection.duplicates.length,
       total_phantom_ar: Math.round(totalPhantom * 100) / 100,
+      customer_summary: detection.customerSummary,
     });
   } catch (err: any) {
     await service

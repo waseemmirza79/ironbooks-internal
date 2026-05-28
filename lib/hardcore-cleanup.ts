@@ -229,7 +229,10 @@ export function normalizeCrmRows(rows: Record<string, string>[], crm: CrmSource)
 // ─── DUPLICATE DETECTION ──────────────────────────────────────────────
 
 const AMOUNT_TOLERANCE = 5;        // dollars
-const DATE_WINDOW_DAYS = 14;       // close-enough date window
+const DATE_WINDOW_DAYS = 90;       // close-enough date window (was 14; widened
+                                   // because Drip Jobs estimate-date vs QBO
+                                   // invoice-posting-date can drift by weeks
+                                   // for old phantom A/R cleanup).
 const NAME_MATCH_LOOSE = true;     // accept "John Smith" === "John Smith Painting"
 
 function daysBetween(a: string, b: string): number {
@@ -264,6 +267,44 @@ export interface DetectDuplicatesResult {
    *  but NOT auto-flagged in Phase 1 (they belong in "stale A/R" in
    *  Phase 2). Returned for stats only. */
   unmatchedInvoiceIds: Set<string>;
+  /** Per-customer summary: CRM job count vs QBO invoice count. Helps the
+   *  bookkeeper see "Customer X has 8 invoices but only 2 jobs in the CRM"
+   *  at a glance before drilling in. */
+  customerSummary: Array<{
+    customer_key: string;       // canonical key (customer_id when available)
+    customer_name: string;
+    crm_job_count: number;
+    qbo_invoice_count: number;
+    qbo_total: number;
+    excess_invoices: number;    // qbo - crm, if positive
+  }>;
+}
+
+function normalizeName(s: string | null | undefined): string {
+  return (s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Stronger name-similarity check that handles common business suffixes
+ *  ("LLC", "Inc", "Painting", "Construction") so "John Smith" matches
+ *  "John Smith Painting LLC". Returns true if either name fully contains
+ *  the other after stripping suffixes. */
+function loosenedNameMatch(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  // Strip common business suffixes/descriptors
+  const SUFFIXES = /\b(inc|llc|corp|corporation|ltd|limited|llp|lp|co|company|the|painting|painters|construction|builders|contractors|services|group|holdings|enterprises|industries|pros|professional|solutions|renovations|remodeling|homes|design)\b/g;
+  const stripA = a.replace(SUFFIXES, " ").replace(/\s+/g, " ").trim();
+  const stripB = b.replace(SUFFIXES, " ").replace(/\s+/g, " ").trim();
+  if (stripA && stripA === stripB) return true;
+  if (NAME_MATCH_LOOSE && stripA.length >= 4 && stripB.length >= 4) {
+    if (a.includes(b) || b.includes(a)) return true;
+    if (stripA.includes(stripB) || stripB.includes(stripA)) return true;
+  }
+  return false;
 }
 
 export function detectDuplicates(input: DetectDuplicatesInput): DetectDuplicatesResult {
@@ -271,22 +312,58 @@ export function detectDuplicates(input: DetectDuplicatesInput): DetectDuplicates
   const legitimate = new Set<string>();
   const unmatched = new Set<string>();
 
-  // Group QBO invoices by normalized customer name
+  // ─── Group QBO invoices by customer ───
+  // Prefer customer_id when present (QBO can have two customers with the
+  // same display name but different IDs — name-only grouping merges them
+  // incorrectly). Fall back to normalized name.
   const byCustomer = new Map<string, OpenInvoice[]>();
+  const customerDisplayName = new Map<string, string>(); // key → friendly name
   for (const inv of input.qboInvoices) {
-    const key = (inv.customer_name || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+    const idKey = inv.customer_id ? `id:${inv.customer_id}` : null;
+    const nameKey = normalizeName(inv.customer_name);
+    const key = idKey || (nameKey ? `name:${nameKey}` : null);
     if (!key) continue;
-    if (!byCustomer.has(key)) byCustomer.set(key, []);
+    if (!byCustomer.has(key)) {
+      byCustomer.set(key, []);
+      customerDisplayName.set(key, inv.customer_name || "(no customer)");
+    }
     byCustomer.get(key)!.push(inv);
   }
 
+  // ─── Resolve each CRM job to a QBO customer bucket ───
+  // CRM data rarely has the QBO customer_id, so we have to match by name.
+  // Build a name index of QBO customer keys for fast loose-match lookup.
+  const qboNameIndex: { key: string; normalized: string }[] = [];
+  for (const [key] of byCustomer) {
+    const inv = byCustomer.get(key)![0];
+    qboNameIndex.push({
+      key,
+      normalized: normalizeName(inv.customer_name),
+    });
+  }
+
+  function findQboCustomerKeyForCrm(crmName: string): string | null {
+    const normCrm = normalizeName(crmName);
+    if (!normCrm) return null;
+    // Try exact first
+    const exact = qboNameIndex.find((q) => q.normalized === normCrm);
+    if (exact) return exact.key;
+    // Then loose
+    const loose = qboNameIndex.find((q) => loosenedNameMatch(q.normalized, normCrm));
+    return loose ? loose.key : null;
+  }
+
   // ── Path A: cross-reference each CRM job → find matching QBO invoices ──
-  // If a CRM job matches >1 invoice, all but the highest-confidence one
-  // are duplicates.
   const matchedQboIds = new Set<string>();
+  const crmCountByCustomer = new Map<string, number>();
+
   input.crmJobs.forEach((job, jobIdx) => {
     if (!job.customer_name) return;
-    const customerKey = job.customer_name.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+    const customerKey = findQboCustomerKeyForCrm(job.customer_name);
+    if (customerKey) {
+      crmCountByCustomer.set(customerKey, (crmCountByCustomer.get(customerKey) || 0) + 1);
+    }
+    if (!customerKey) return;
     const candidates = byCustomer.get(customerKey) || [];
 
     // Filter to amount + date window
@@ -383,7 +460,31 @@ export function detectDuplicates(input: DetectDuplicatesInput): DetectDuplicates
     }
   }
 
-  return { duplicates, legitimateInvoiceIds: legitimate, unmatchedInvoiceIds: unmatched };
+  // ─── Customer summary ───
+  // For each QBO customer, count CRM jobs vs QBO invoices. Bookkeeper
+  // sees "Customer X: 8 invoices, 2 jobs — 6 excess" at the top of the
+  // review and knows where to look.
+  const summary: DetectDuplicatesResult["customerSummary"] = [];
+  for (const [key, invs] of byCustomer) {
+    const crmCount = crmCountByCustomer.get(key) || 0;
+    const qboTotal = invs.reduce((s, i) => s + (i.balance || i.total_amount || 0), 0);
+    summary.push({
+      customer_key: key,
+      customer_name: customerDisplayName.get(key) || "(no customer)",
+      crm_job_count: crmCount,
+      qbo_invoice_count: invs.length,
+      qbo_total: Math.round(qboTotal * 100) / 100,
+      excess_invoices: Math.max(0, invs.length - crmCount),
+    });
+  }
+  summary.sort((a, b) => b.excess_invoices - a.excess_invoices || b.qbo_total - a.qbo_total);
+
+  return {
+    duplicates,
+    legitimateInvoiceIds: legitimate,
+    unmatchedInvoiceIds: unmatched,
+    customerSummary: summary,
+  };
 }
 
 export { customerNamesMatch };
