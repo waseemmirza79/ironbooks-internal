@@ -35,10 +35,16 @@ import * as XLSX from "xlsx";
  *   10 = transaction sign ("-1" = money out / expense, "1" = money in)
  */
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ client_link_id: string }> }
 ) {
   const { client_link_id } = await params;
+
+  // ?include=new (default) → only rules not yet exported to QBO
+  // ?include=all → every active rule (escape hatch for re-exports when
+  //   Lisa wiped her QBO Rules tab or set up a new QBO file)
+  const url = new URL(request.url);
+  const includeMode = url.searchParams.get("include") === "all" ? "all" : "new";
 
   const supabase = await createServerSupabase();
   const {
@@ -62,13 +68,27 @@ export async function GET(
   // Only export ACTIVE rules. "pending" rules haven't been approved yet,
   // "rejected" rules were deliberately killed, "active" rules are what
   // SNAP's daily-recon engine applies — and what Lisa wants in QBO too.
-  const { data: rules, error } = await service
+  //
+  // In "new" mode (default) also exclude rules already flagged as exported
+  // (pushed_to_qbo=true). Mike runs discovery monthly on the same clients,
+  // so every export after the first should be incremental. QBO doesn't
+  // dedupe imports — sending a rule twice creates a duplicate in QBO's
+  // Rules tab. The pushed_to_qbo flag is our defense.
+  let query = service
     .from("bank_rules")
-    .select("vendor_pattern, target_account_name")
+    .select("id, vendor_pattern, target_account_name")
     .eq("client_link_id", client_link_id)
     .eq("status", "active")
     .not("vendor_pattern", "is", null)
     .not("target_account_name", "is", null);
+
+  if (includeMode === "new") {
+    // Postgrest doesn't have IS NOT TRUE; emulate with `eq(false)` OR `is null`.
+    // The .or syntax is: "pushed_to_qbo.is.null,pushed_to_qbo.eq.false"
+    query = query.or("pushed_to_qbo.is.null,pushed_to_qbo.eq.false");
+  }
+
+  const { data: rules, error } = await query;
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -76,7 +96,12 @@ export async function GET(
 
   if (!rules || rules.length === 0) {
     return NextResponse.json(
-      { error: "No active bank rules to export for this client" },
+      {
+        error:
+          includeMode === "new"
+            ? "No new bank rules to export — every active rule has already been exported to QBO. Add ?include=all to the URL to re-export everything."
+            : "No active bank rules to export for this client",
+      },
       { status: 404 }
     );
   }
@@ -153,6 +178,26 @@ export async function GET(
     type: "buffer",
   });
 
+  // Flip the export-tracking flag so the NEXT export (in "new" mode)
+  // doesn't re-include these rules. The flag also feeds the bank-rules
+  // page's "skip vendors already in QBO" logic. We only flip rules we
+  // actually included in this .xls — defensive in case the row list
+  // changed between query and now.
+  //
+  // In "all" mode this is mostly a no-op (rules were already true) but
+  // we still refresh pushed_to_qbo_at so "last exported X days ago"
+  // reflects the most recent re-export.
+  const exportedIds = rules.map((r: any) => r.id).filter(Boolean);
+  if (exportedIds.length > 0) {
+    await service
+      .from("bank_rules")
+      .update({
+        pushed_to_qbo: true,
+        pushed_to_qbo_at: new Date().toISOString(),
+      } as any)
+      .in("id", exportedIds);
+  }
+
   // Log the export so we have telemetry if Lisa hits import issues
   await service.from("audit_log").insert({
     event_type: "bank_rules_exported_qbo",
@@ -161,6 +206,7 @@ export async function GET(
       client_link_id,
       client_name: clientLink.client_name,
       rule_count: rows.length,
+      include_mode: includeMode,
       format: "biff8_xls",
     } as any,
   });

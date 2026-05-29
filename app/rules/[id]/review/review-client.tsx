@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Check, X, Flag, Loader2, ArrowRight, AlertTriangle, Zap, DollarSign, Download } from "lucide-react";
 import type { Database } from "@/lib/database.types";
@@ -30,6 +30,30 @@ export function RulesReviewClient({
     rejected: rules.filter((r) => r.status === "rejected").length,
     flagged: rules.filter((r) => r.requires_approval).length,
   };
+
+  // Export stats — populated lazily after mount so we don't block initial
+  // render. Powers the "X new since last export" badge on the download
+  // button so Lisa can tell at a glance whether the .xls will be a no-op
+  // or a meaningful incremental.
+  const [exportStats, setExportStats] = useState<{
+    total_active: number;
+    never_exported: number;
+    last_exported_at: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!jobStatus || jobStatus !== "complete") return;
+    let cancelled = false;
+    fetch(`/api/rules/export-qbo/${clientLink.id}/stats`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d) setExportStats(d);
+      })
+      .catch(() => {}); // non-critical; UI gracefully omits the badge
+    return () => {
+      cancelled = true;
+    };
+  }, [jobStatus, clientLink.id]);
 
   const filtered = rules.filter((r) => {
     if (filter === "all") return true;
@@ -127,16 +151,68 @@ export function RulesReviewClient({
                   SNAP applies these rules to new transactions and posts the categorization to QBO.
                   Want them in QBO&apos;s native Rules tab too? Download below and import.
                 </p>
+                {exportStats && (
+                  <p className="text-[11px] text-ink-slate mt-1.5">
+                    {exportStats.never_exported > 0 ? (
+                      <>
+                        <span className="font-semibold text-emerald-700">
+                          {exportStats.never_exported} new rule
+                          {exportStats.never_exported === 1 ? "" : "s"}
+                        </span>
+                        {" "}since last export
+                        {exportStats.last_exported_at && (
+                          <>
+                            {" "}({new Date(exportStats.last_exported_at).toLocaleDateString()})
+                          </>
+                        )}
+                        {" · "}
+                        <a
+                          href={`/api/rules/export-qbo/${clientLink.id}?include=all`}
+                          download
+                          className="underline hover:text-teal"
+                          title="Re-export everything, including rules already in QBO. Use only if you wiped QBO's Rules tab or set up a new QBO file."
+                        >
+                          re-export all {exportStats.total_active}
+                        </a>
+                      </>
+                    ) : exportStats.total_active > 0 ? (
+                      <>
+                        All {exportStats.total_active} rule
+                        {exportStats.total_active === 1 ? "" : "s"} already exported
+                        {exportStats.last_exported_at && (
+                          <> ({new Date(exportStats.last_exported_at).toLocaleDateString()})</>
+                        )}
+                        {" · "}
+                        <a
+                          href={`/api/rules/export-qbo/${clientLink.id}?include=all`}
+                          download
+                          className="underline hover:text-teal"
+                          title="Re-export everything. Use only if you wiped QBO's Rules tab or set up a new QBO file."
+                        >
+                          re-export anyway
+                        </a>
+                      </>
+                    ) : null}
+                  </p>
+                )}
               </div>
             </div>
             <a
               href={`/api/rules/export-qbo/${clientLink.id}`}
               download
-              className="shrink-0 inline-flex items-center gap-2 text-xs font-semibold text-teal hover:text-teal-dark border border-teal/40 hover:border-teal bg-white px-3 py-2 rounded-lg transition-colors"
-              title="Download QBO-compatible .xls — upload in QBO under Banking → Rules → ⋮ → Import Rules"
+              className={`shrink-0 inline-flex items-center gap-2 text-xs font-semibold border px-3 py-2 rounded-lg transition-colors ${
+                exportStats && exportStats.never_exported === 0
+                  ? "text-ink-slate border-gray-200 bg-gray-50 hover:bg-gray-100"
+                  : "text-teal hover:text-teal-dark border-teal/40 hover:border-teal bg-white"
+              }`}
+              title="Download QBO-compatible .xls — upload in QBO under Banking → Rules → ⋮ → Import Rules. Only includes new rules to prevent QBO duplicates."
             >
               <Download size={14} />
-              Download .xls for QBO
+              {exportStats && exportStats.never_exported === 0
+                ? "Nothing new to export"
+                : exportStats
+                ? `Download .xls (${exportStats.never_exported} new)`
+                : "Download .xls for QBO"}
             </a>
           </div>
         </div>

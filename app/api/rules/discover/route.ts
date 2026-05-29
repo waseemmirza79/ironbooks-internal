@@ -81,12 +81,62 @@ async function runDiscovery(jobId: string, clientLinkId: string, months: number)
     .eq("id", jobId);
 
   // 2. Group by vendor (min 2 transactions to be worth a rule)
-  const vendorGroups = groupByVendor(transactions, { minTransactions: 2 });
+  const allVendorGroups = groupByVendor(transactions, { minTransactions: 2 });
+
+  // 2a. Filter out vendors that ALREADY have a bank_rule for this client.
+  // Without this filter, re-running discovery on the same client (which Mike
+  // does monthly on a 3–12 month lookback) would re-analyze the same vendor
+  // patterns through Claude — wasting tokens — and then the .insert() below
+  // would silently fail on the unique constraint (migration 12), leaving
+  // the review UI empty even though discovery "succeeded".
+  //
+  // We exclude ALL statuses, not just 'active': pending = bookkeeper hasn't
+  // decided yet, rejected = bookkeeper deliberately said no (don't keep
+  // re-proposing it), approved/active = already a rule. The only thing that
+  // resets discovery for a vendor is the bookkeeper hard-deleting the row.
+  const { data: existingRules } = await service
+    .from("bank_rules")
+    .select("vendor_pattern")
+    .eq("client_link_id", clientLinkId)
+    .not("vendor_pattern", "is", null);
+
+  const existingPatterns = new Set(
+    ((existingRules || []) as Array<{ vendor_pattern: string | null }>)
+      .map((r) => (r.vendor_pattern || "").toUpperCase().trim())
+      .filter(Boolean)
+  );
+
+  const vendorGroups = allVendorGroups.filter(
+    (v) => !existingPatterns.has((v.vendor_pattern || "").toUpperCase().trim())
+  );
+
+  const skippedCount = allVendorGroups.length - vendorGroups.length;
+  console.log(
+    `[rules-discover ${jobId}] ${allVendorGroups.length} vendors found, ` +
+    `${skippedCount} already have rules, ${vendorGroups.length} new to analyze`
+  );
 
   await service
     .from("rule_discovery_jobs")
     .update({ vendors_identified: vendorGroups.length } as any)
     .eq("id", jobId);
+
+  // Short-circuit if nothing new — saves an AI call and gives the UI a
+  // clean "no new vendors to rule on" signal instead of an empty review.
+  if (vendorGroups.length === 0) {
+    await service
+      .from("rule_discovery_jobs")
+      .update({
+        status: "in_review",
+        rules_suggested: 0,
+        ai_completed_at: new Date().toISOString(),
+        error_message: skippedCount > 0
+          ? `All ${skippedCount} discovered vendor pattern${skippedCount === 1 ? "" : "s"} already have bank rules — nothing new to propose.`
+          : "No vendor patterns met the minimum (2 transactions) for rule suggestion.",
+      } as any)
+      .eq("id", jobId);
+    return;
+  }
 
   // 3. Load master COA
   const { data: masterRows } = await service
