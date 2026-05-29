@@ -50,6 +50,29 @@ const WEB_SEARCH_AUTO_FLOOR = 0.92; // higher floor than direct AI — less dire
 const MAX_AUTO_PER_RUN = 20;        // safety cap; exceeding pauses the client
 const DEFAULT_LOOKBACK_DAYS = 7;    // if no last_synced_at, look back this far
 
+// Account names QBO uses for "this transaction hasn't been categorized yet".
+// Bank rules ONLY fire when a transaction sits in one of these — if the
+// bookkeeper has already moved it elsewhere (manually or via a previous
+// recon), we respect their decision and leave it alone. This prevents the
+// engine from clobbering human edits between sync and the next run.
+//
+// Match is lower-case substring so we catch "Uncategorized Expense",
+// "Uncategorised Expense" (UK spelling), "Uncategorized Asset", custom
+// names like "Unassigned Expenses", etc. without an exhaustive enum.
+const UNCATEGORIZED_ACCOUNT_PATTERNS = [
+  "uncategorized",
+  "uncategorised",   // UK spelling — QBO Global uses this
+  "unassigned",
+  "ask my accountant",
+  "ask my client",   // SNAP convention for "client confirmation needed"
+];
+
+function isUncategorizedAccount(accountName: string | null | undefined): boolean {
+  if (!accountName) return true; // null/empty = effectively uncategorized
+  const lower = accountName.toLowerCase();
+  return UNCATEGORIZED_ACCOUNT_PATTERNS.some((p) => lower.includes(p));
+}
+
 // Sensitive vendor patterns that NEVER auto-execute regardless of confidence.
 // Same list as scrub mode's "needs review" flagging — payroll, tax, owner
 // draws are too consequential to ship without a human looking.
@@ -81,6 +104,10 @@ export interface DailyReconResult {
   transactions_pulled: number;
   auto_executed: number;
   queued_for_review: number;
+  /** Lines a bank rule matched but were either already in the target account
+   *  or already categorized by a human in a non-default account. Skipped to
+   *  avoid clobbering human edits. */
+  already_categorized?: number;
   anomalies_count: number;
   duration_ms: number;
   error?: string;
@@ -94,7 +121,7 @@ interface PreviewItem {
   date: string;
   suggested_account_name: string | null;
   confidence: number;
-  source: "kb" | "bank_rule" | "ai" | "web_search" | "unmatched";
+  source: "kb" | "bank_rule" | "ai" | "web_search" | "unmatched" | "already_categorized";
   would_auto_execute: boolean;
   anomaly_flags: Array<{ code: string; message: string }>;
 }
@@ -281,6 +308,52 @@ export async function runDailyRecon(
       if (ruleHit) {
         const account = accountByName.get(ruleHit.toLowerCase());
         if (account) {
+          // ─── Idempotency guard ─────────────────────────────────────
+          // Two cases where we should NOT apply the rule:
+          //   1. Line is ALREADY in the rule's target account (no-op).
+          //   2. Line is in some OTHER non-default account — meaning a
+          //      human bookkeeper categorized it manually in QBO between
+          //      the QBO sync and this recon run. Overwriting their
+          //      choice would silently undo human work.
+          //
+          // We only fire the rule when the line is genuinely uncategorized
+          // (sitting in Uncategorized Expense / Income / Ask My Accountant
+          // / etc. — see UNCATEGORIZED_ACCOUNT_PATTERNS).
+          const currentIsTarget =
+            line.current_account_id === account.qbo_account_id ||
+            (line.current_account_name || "").toLowerCase() ===
+              account.account_name.toLowerCase();
+
+          if (currentIsTarget) {
+            // Already where the rule wants it — settled, no-op.
+            // Source "already_categorized" tells the loop below to skip
+            // both auto-execute AND the human review queue so we don't
+            // pester the bookkeeper about lines that need no action.
+            decisions.set(refId, {
+              source: "already_categorized",
+              target_account_id: account.qbo_account_id,
+              target_account_name: account.account_name,
+              confidence: 1.0,
+              reasoning: "Already in rule's target account — no change needed",
+            });
+            continue;
+          }
+
+          if (!isUncategorizedAccount(line.current_account_name)) {
+            // Human (or upstream system) already categorized this elsewhere.
+            // Respect that. Don't queue it for AI either — that's how you end
+            // up "helpfully" re-suggesting changes the bookkeeper rejected.
+            decisions.set(refId, {
+              source: "already_categorized",
+              target_account_id: null,
+              target_account_name: null,
+              confidence: 0,
+              reasoning: `Skipped: already categorized in "${line.current_account_name}" (rule would have moved it to "${account.account_name}")`,
+            });
+            continue;
+          }
+
+          // Genuinely uncategorized — fire the rule.
           decisions.set(refId, {
             source: "bank_rule",
             target_account_id: account.qbo_account_id,
@@ -341,6 +414,7 @@ export async function runDailyRecon(
 
     // 11. For each new line, decide auto-execute vs queue
     let autoExecuteCount = 0;
+    let alreadyCategorizedCount = 0; // surfaced in audit_log for visibility
     const queueRows: any[] = [];
     const processedRows: any[] = [];
     const linesToExecute: Array<{ line: ReclassLine; decision: PipelineDecision }> = [];
@@ -367,6 +441,34 @@ export async function runDailyRecon(
         lineAnomalies.length === 0 &&
         !isHardBlocked &&
         autoExecuteCount < MAX_AUTO_PER_RUN;
+
+      // Settled lines (line was already categorized — either in the rule's
+      // target, or a human-chosen account) skip both buckets. We still want
+      // them in processedRows so we mark them done and don't re-check next run.
+      if (d.source === "already_categorized") {
+        alreadyCategorizedCount++;
+        processedRows.push({
+          client_link_id: clientLinkId,
+          qbo_line_id: line.line_id,
+          qbo_transaction_id: line.transaction_id,
+          run_id: result.run_id,
+          auto_executed: false,
+        });
+        if (dryRun) {
+          result.preview!.push({
+            qbo_line_id: line.line_id,
+            vendor_name: line.vendor_name,
+            amount: line.transaction_amount,
+            date: line.transaction_date,
+            suggested_account_name: d.target_account_name,
+            confidence: d.confidence,
+            source: d.source,
+            would_auto_execute: false,
+            anomaly_flags: lineAnomalies,
+          });
+        }
+        continue;
+      }
 
       if (eligibleForAuto) {
         autoExecuteCount++;
@@ -420,6 +522,7 @@ export async function runDailyRecon(
 
     result.auto_executed = autoExecuteCount;
     result.queued_for_review = queueRows.length;
+    result.already_categorized = alreadyCategorizedCount;
     result.anomalies_count = Array.from(anomalies.values()).reduce((s, a) => s + a.length, 0);
 
     // 12. Cap exceeded → pause the client and re-queue everything to be safe
@@ -529,7 +632,11 @@ export async function runDailyRecon(
 // ─── HELPERS ───────────────────────────────────────────────────────────────
 
 interface PipelineDecision {
-  source: "kb" | "bank_rule" | "ai" | "web_search" | "unmatched";
+  // "already_categorized" = bank rule matched but the line was either
+  // already in the target account, or in some other non-default account
+  // a human had categorized. We don't queue these for review — they're
+  // settled. See the bank-rule branch + the queueRows skip in the loop.
+  source: "kb" | "bank_rule" | "ai" | "web_search" | "unmatched" | "already_categorized";
   target_account_id: string | null;
   target_account_name: string | null;
   confidence: number;
