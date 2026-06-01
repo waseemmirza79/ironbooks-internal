@@ -2,6 +2,7 @@ import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
+import { fetchAllAccounts, getValidToken } from "@/lib/qbo";
 import { redirect } from "next/navigation";
 import { ReclassReview } from "./review-client";
 import { ReclassDiscoveryPending } from "./discovery-pending";
@@ -147,6 +148,53 @@ export default async function ReclassReviewPage({
   // Also load live QBO accounts so we can resolve target_account_id when the
   // bookkeeper picks a master account by name. The qbo-accounts endpoint already
   // exists but is async-only; we'll let the client-side fetch it on demand.
+
+  // ─── Append the client's live Bank + Credit Card accounts to the
+  // target dropdown. These are needed when the bookkeeper hits an
+  // "Unknown vendor" transaction that's actually a transfer or CC payment
+  // (money moving between BS accounts, not a P&L expense). The AI's
+  // available-accounts list stays unchanged — we don't want Claude
+  // suggesting a Visa account for regular office-supply purchases.
+  //
+  // Failure-tolerant: if QBO token resolution or fetchAllAccounts errors,
+  // we just show the P&L list as before. The bookkeeper can re-run the
+  // page if needed.
+  try {
+    const clientLinkId = (job as any).client_link_id;
+    if (clientLinkId) {
+      const accessToken = await getValidToken(clientLinkId, service as any);
+      const allQboAccounts = await fetchAllAccounts(
+        ((job as any).qbo_realm_id || (clientLink as any)?.qbo_realm_id) as string,
+        accessToken
+      );
+      const transferAccounts = allQboAccounts
+        .filter(
+          (a) =>
+            a.Active !== false &&
+            (a.AccountType === "Bank" || a.AccountType === "Credit Card")
+        )
+        // Synthesize MasterAccount-shaped rows so the existing dropdown
+        // renders them without code changes. parent_account_name shows
+        // as a "· Credit Card" / "· Bank" hint next to the name; section
+        // is searchable so typing "transfer" finds them.
+        .map((a, i) => ({
+          account_name: a.Name,
+          parent_account_name: a.AccountType, // shows as "· Bank" or "· Credit Card"
+          is_parent: false,
+          section: "Balance Sheet — Transfers / CC Payments",
+          // Push to the bottom of the dropdown by giving these the highest
+          // sort_order. Stable per-account ordering via index.
+          sort_order: 90000 + i,
+        }));
+      if (transferAccounts.length > 0) {
+        masterAccounts = [...masterAccounts, ...transferAccounts];
+      }
+    }
+  } catch (err: any) {
+    console.warn(
+      `[reclass review] couldn't load QBO Bank/CC accounts (transfers unavailable in dropdown): ${err?.message}`
+    );
+  }
 
   return (
     <AppShell>
