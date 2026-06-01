@@ -58,10 +58,24 @@ interface FinancialsBundle {
   balanceSheet: BalanceSheetSummary | null;
   primaryRangeLabel: string;
   comparisonRangeLabel: string;
+  /** Which range preset is active. Drives the date-range picker on P&L. */
+  activeRangeKey: string;
   /** False when the client hasn't connected QBO yet — financial tabs
    *  render an empty-state instead of pretending zeros. */
   hasQbo: boolean;
 }
+
+/** Preset options for the range picker. Keys match the server's
+ *  resolveDateRanges(). Order driven by typical bookkeeper workflow:
+ *  most-recent-completed-period first. */
+const RANGE_PRESETS: Array<{ key: string; label: string }> = [
+  { key: "last-month", label: "Last month" },
+  { key: "this-month", label: "This month" },
+  { key: "last-30", label: "Last 30 days" },
+  { key: "last-90", label: "Last 90 days" },
+  { key: "quarter", label: "This quarter" },
+  { key: "ytd", label: "YTD" },
+];
 
 interface Props {
   clientLink: ClientLink;
@@ -560,6 +574,38 @@ function NoQboState({ clientLinkId }: { clientLinkId: string }) {
   );
 }
 
+function RangePicker({
+  clientLinkId,
+  activeKey,
+}: {
+  clientLinkId: string;
+  activeKey: string;
+}) {
+  // URL-driven picker — each option is a Link that navigates to the same
+  // page with ?range=<key>. Bookmarkable, refresh-safe, and the server
+  // re-fetches the right window when the user clicks. No client state.
+  return (
+    <div className="flex items-center gap-1 flex-wrap">
+      {RANGE_PRESETS.map((p) => {
+        const active = p.key === activeKey;
+        return (
+          <Link
+            key={p.key}
+            href={`/clients/${clientLinkId}?range=${p.key}`}
+            className={`text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors ${
+              active
+                ? "bg-navy text-white"
+                : "text-ink-slate hover:text-navy bg-white border border-gray-200 hover:border-gray-300"
+            }`}
+          >
+            {p.label}
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
 function PLTab({
   financials,
   clientLinkId,
@@ -670,23 +716,32 @@ function PLTab({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="text-xs text-ink-slate">
-          Range: <span className="font-semibold text-navy">{financials.primaryRangeLabel}</span>
-          {" "}vs prior period {financials.comparisonRangeLabel}
-          <span className="ml-3 text-ink-slate/70">
-            · {populatedAccounts} of {totalAccounts} P&amp;L accounts have activity
-          </span>
+      <div className="space-y-2">
+        <RangePicker
+          clientLinkId={clientLinkId}
+          activeKey={financials.activeRangeKey}
+        />
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-xs text-ink-slate">
+            Range:{" "}
+            <span className="font-semibold text-navy">
+              {financials.primaryRangeLabel}
+            </span>
+            {" "}vs prior period {financials.comparisonRangeLabel}
+            <span className="ml-3 text-ink-slate/70">
+              · {populatedAccounts} of {totalAccounts} P&amp;L accounts have activity
+            </span>
+          </div>
+          <label className="inline-flex items-center gap-2 text-xs text-ink-slate cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={showZeros}
+              onChange={(e) => setShowZeros(e.target.checked)}
+              className="rounded border-gray-300 text-teal focus:ring-teal"
+            />
+            Show zero-balance accounts
+          </label>
         </div>
-        <label className="inline-flex items-center gap-2 text-xs text-ink-slate cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={showZeros}
-            onChange={(e) => setShowZeros(e.target.checked)}
-            className="rounded border-gray-300 text-teal focus:ring-teal"
-          />
-          Show zero-balance accounts
-        </label>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <KPICard label="Total income" value={pl.totalIncome} delta={incomeDelta} />
