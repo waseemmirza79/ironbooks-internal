@@ -57,7 +57,7 @@ export default async function ClientProfilePage({
   // used elsewhere in this codebase pending a types regen.
   const { data: clientLinkRaw } = await service
     .from("client_links")
-    .select("id, client_name, qbo_realm_id, industry, jurisdiction, state_province, status, last_synced_at" as any)
+    .select("id, client_name, qbo_realm_id, industry, jurisdiction, state_province, status, last_synced_at, double_client_id, double_client_name" as any)
     .eq("id", id)
     .single();
 
@@ -71,6 +71,8 @@ export default async function ClientProfilePage({
     state_province: string | null;
     status: string | null;
     last_synced_at: string | null;
+    double_client_id: string | null;
+    double_client_name: string | null;
   };
 
   // Parallel-load all data for every tab so the user can switch tabs
