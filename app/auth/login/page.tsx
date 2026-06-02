@@ -1,14 +1,39 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import type { Database } from "@/lib/database.types";
 
+/** Map ?error= codes from the auth callback to user-friendly messages.
+ *  Anything not in this map falls back to a generic. */
+const ERROR_COPY: Record<string, string> = {
+  not_authorized:
+    "That email isn't authorized. Ironbooks team members: use your @ironbooks.com email. Clients: use the invite link from your email.",
+  provision_failed:
+    "Couldn't create your account. Please try again, or contact Mike if it keeps failing.",
+  missing_code: "Sign-in link expired or invalid. Request a new one below.",
+  oauth_failed: "Sign-in failed. Try requesting a new magic link.",
+};
+
 export default function LoginPage() {
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Surface callback errors as a page-level message. The callback redirects
+  // here with ?error=<code> and optionally ?email=<addr> when bouncing
+  // unauthorized magic-link clickers.
+  useEffect(() => {
+    const code = searchParams?.get("error");
+    if (code) {
+      setError(ERROR_COPY[code] || `Sign-in failed (${code}).`);
+    }
+    const prefillEmail = searchParams?.get("email");
+    if (prefillEmail) setEmail(prefillEmail);
+  }, [searchParams]);
 
   const supabase = createBrowserClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -75,6 +100,9 @@ export default function LoginPage() {
                   placeholder="you@ironbooks.com"
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:border-teal text-navy"
                 />
+                <p className="text-[11px] text-ink-slate mt-1.5">
+                  Ironbooks team: use your <strong>@ironbooks.com</strong> email — a bookkeeper account is created on first sign-in.
+                </p>
               </div>
 
               {error && (
