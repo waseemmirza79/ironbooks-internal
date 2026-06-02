@@ -102,6 +102,33 @@ interface QboAccount {
 
 type TabKey = "duplicates" | "missing" | "unmatched_jobs" | "unmatched_uf";
 
+interface PreviewOp {
+  item_id: string;
+  kind: string;
+  summary: string;
+  body: any;
+  warnings: string[];
+}
+interface PreviewBlocker {
+  item_id: string;
+  reason: string;
+}
+interface PreviewResponse {
+  ok: boolean;
+  total_resolved: number;
+  ops: PreviewOp[];
+  blockers: PreviewBlocker[];
+  summary: {
+    je_count: number;
+    void_count: number;
+    push_invoice_count: number;
+    apply_payment_count: number;
+    ask_client_count: number;
+    manual_count: number;
+    keep_count: number;
+  };
+}
+
 const TABS: Array<{ key: TabKey; label: string; icon: any; matches: (i: Item) => boolean }> = [
   { key: "duplicates", label: "Duplicates", icon: Receipt, matches: (i) => i.item_type === "duplicate_invoice" },
   { key: "missing", label: "Missing Invoices", icon: FileText, matches: (i) => i.item_type === "missing_invoice" },
@@ -133,7 +160,12 @@ export function UnifiedReviewClient({
   const [activeTab, setActiveTab] = useState<TabKey>("duplicates");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [pushingPreview, setPushingPreview] = useState(false);
+  /** Preview modal state — populated when "Preview & Push" is clicked.
+   *  Holds the ops list + blockers from /preview. Modal renders + waits
+   *  for the bookkeeper to click "Confirm push" before firing /finalize. */
+  const [previewData, setPreviewData] = useState<PreviewResponse | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [pushing, setPushing] = useState(false);
 
   // Load run + items + crm_jobs. Accounts are loaded separately because
   // the run endpoint doesn't return them — same pattern as the v1 client.
@@ -253,32 +285,45 @@ export function UnifiedReviewClient({
     }
   }
 
+  /** Open the preview modal: hits /preview to get the exact QBO ops the
+   *  finalize step would run, shows them in a modal. Bookkeeper clicks
+   *  "Confirm push" inside the modal to actually fire /finalize. */
   async function openPreview() {
-    // /preview endpoint ships in task #71. For V1 placeholder, just route
-    // through to the existing finalize flow with a confirmation.
-    setPushingPreview(true);
+    setPreviewLoading(true);
+    setError("");
     try {
-      if (
-        !confirm(
-          `Push ${resolvedCount} resolution${resolvedCount === 1 ? "" : "s"} to QBO?\n\n` +
-          `(${pendingCount} still pending — those will NOT be processed.)\n\n` +
-          `Preview-before-push modal lands in the next session — for now this kicks straight to finalize.`
-        )
-      ) {
-        setPushingPreview(false);
-        return;
-      }
+      const res = await fetch(
+        `/api/clients/${clientLinkId}/hardcore-cleanup/${run.id}/preview`,
+        { method: "POST" }
+      );
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      setPreviewData(body as PreviewResponse);
+    } catch (e: any) {
+      setError(e?.message || "Preview failed");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  /** Called from inside the preview modal when bookkeeper confirms. Fires
+   *  the real /finalize endpoint and refreshes the run. */
+  async function confirmPush() {
+    setPushing(true);
+    setError("");
+    try {
       const res = await fetch(
         `/api/clients/${clientLinkId}/hardcore-cleanup/${run.id}/finalize`,
         { method: "POST" }
       );
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      setPreviewData(null);
       await loadRun(run.id);
     } catch (e: any) {
       setError(e?.message || "Push failed");
     } finally {
-      setPushingPreview(false);
+      setPushing(false);
     }
   }
 
@@ -408,13 +453,25 @@ export function UnifiedReviewClient({
           </div>
           <button
             onClick={openPreview}
-            disabled={pushingPreview}
+            disabled={previewLoading || pushing}
             className="px-4 py-2 bg-teal hover:bg-teal-dark text-white font-bold text-sm rounded-lg disabled:opacity-60 inline-flex items-center gap-2"
           >
-            {pushingPreview ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
-            {pushingPreview ? "Pushing…" : `Preview & Push ${resolvedCount} to QBO`}
+            {previewLoading ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
+            {previewLoading ? "Building preview…" : `Preview & Push ${resolvedCount} to QBO`}
           </button>
         </div>
+      )}
+
+      {/* Preview-before-push modal — Mike's hard requirement. Shows the
+          exact QBO ops finalize will execute, with blockers surfaced
+          prominently. Confirm button fires /finalize. */}
+      {previewData && (
+        <PreviewModal
+          data={previewData}
+          pushing={pushing}
+          onClose={() => setPreviewData(null)}
+          onConfirm={confirmPush}
+        />
       )}
     </div>
   );
@@ -811,6 +868,219 @@ function ItemRow({
         )}
       </div>
     </div>
+  );
+}
+
+// ─── Preview-before-push modal ────────────────────────────────────────────
+
+function PreviewModal({
+  data,
+  pushing,
+  onClose,
+  onConfirm,
+}: {
+  data: PreviewResponse;
+  pushing: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const [expandedKinds, setExpandedKinds] = useState<Set<string>>(new Set(["je_writeoff", "direct_void"]));
+
+  // Group ops by kind so the modal can render collapsible sections per type.
+  // Cuts visual noise — bookkeeper expands the kinds they want to inspect.
+  const opsByKind = useMemo(() => {
+    const out = new Map<string, PreviewOp[]>();
+    for (const op of data.ops) {
+      const arr = out.get(op.kind) || [];
+      arr.push(op);
+      out.set(op.kind, arr);
+    }
+    return out;
+  }, [data.ops]);
+
+  const hasBlockers = data.blockers.length > 0;
+  const totalExecutable = data.ops.length;
+  const totalWritesToQbo =
+    data.summary.je_count + data.summary.void_count;
+
+  function toggleKind(k: string) {
+    setExpandedKinds((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-40" onClick={pushing ? undefined : onClose} />
+      <div className="fixed inset-4 md:inset-8 z-50 bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col max-w-5xl mx-auto">
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between gap-3">
+          <div>
+            <div className="text-lg font-bold text-navy">Preview — what will push to QBO</div>
+            <div className="text-xs text-ink-slate mt-1">
+              Review every operation below before confirming. Nothing has been
+              written yet.
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            disabled={pushing}
+            className="text-ink-slate hover:text-navy disabled:opacity-50"
+            aria-label="Close"
+          >
+            <XIcon size={20} />
+          </button>
+        </div>
+
+        {/* Summary strip */}
+        <div className="px-6 py-3 bg-gray-50 border-b border-gray-200 flex items-center gap-4 flex-wrap text-xs">
+          <span>
+            <span className="font-bold text-navy">{totalExecutable}</span> ops planned
+          </span>
+          <span className="text-ink-slate">·</span>
+          <span>
+            <span className="font-bold text-emerald-700">{totalWritesToQbo}</span> real QBO writes
+          </span>
+          {data.summary.ask_client_count > 0 && (
+            <>
+              <span className="text-ink-slate">·</span>
+              <span>
+                <span className="font-bold text-purple-700">{data.summary.ask_client_count}</span> ask-client emails
+              </span>
+            </>
+          )}
+          {(data.summary.push_invoice_count + data.summary.apply_payment_count) > 0 && (
+            <>
+              <span className="text-ink-slate">·</span>
+              <span>
+                <span className="font-bold text-blue-700">
+                  {data.summary.push_invoice_count + data.summary.apply_payment_count}
+                </span>{" "}
+                manual handoff (V1)
+              </span>
+            </>
+          )}
+          {hasBlockers && (
+            <>
+              <span className="text-ink-slate">·</span>
+              <span>
+                <span className="font-bold text-red-700">{data.blockers.length}</span> blocked
+              </span>
+            </>
+          )}
+        </div>
+
+        {/* Blockers — always visible if any */}
+        {hasBlockers && (
+          <div className="px-6 py-3 bg-red-50 border-b border-red-200">
+            <div className="text-sm font-bold text-red-800 mb-1.5">
+              {data.blockers.length} item{data.blockers.length === 1 ? "" : "s"} blocked — fix before pushing
+            </div>
+            <ul className="text-xs text-red-700 space-y-0.5 max-h-32 overflow-auto">
+              {data.blockers.map((b, i) => (
+                <li key={i}>• {b.reason}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Body — ops grouped by kind */}
+        <div className="flex-1 overflow-auto px-6 py-4 space-y-3">
+          {opsByKind.size === 0 ? (
+            <div className="text-center text-sm text-ink-slate py-12">
+              No operations to preview. All resolved items are no-ops (keep/manual).
+            </div>
+          ) : (
+            Array.from(opsByKind.entries()).map(([kind, ops]) => {
+              const isOpen = expandedKinds.has(kind);
+              return (
+                <div key={kind} className="border border-gray-200 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => toggleKind(kind)}
+                    className="w-full px-4 py-2.5 flex items-center justify-between bg-gray-50 hover:bg-gray-100"
+                  >
+                    <div className="flex items-center gap-2 text-sm font-bold text-navy">
+                      {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      {opKindLabel(kind)} <span className="text-ink-slate font-normal">({ops.length})</span>
+                    </div>
+                    {opKindBadge(kind)}
+                  </button>
+                  {isOpen && (
+                    <div className="divide-y divide-gray-100">
+                      {ops.map((op) => (
+                        <div key={op.item_id} className="px-4 py-2.5 text-xs">
+                          <div className="text-navy">{op.summary}</div>
+                          {op.warnings.length > 0 && (
+                            <div className="text-amber-700 mt-1">
+                              ⚠ {op.warnings.join(" · ")}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-3 border-t border-gray-200 flex items-center justify-between gap-3">
+          <button
+            onClick={onClose}
+            disabled={pushing}
+            className="text-sm font-semibold text-ink-slate hover:text-navy disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={pushing || totalExecutable === 0}
+            className="px-5 py-2 bg-teal hover:bg-teal-dark disabled:opacity-60 text-white font-bold text-sm rounded-lg inline-flex items-center gap-2"
+          >
+            {pushing ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            {pushing
+              ? "Posting to QBO…"
+              : `Confirm push (${totalExecutable} op${totalExecutable === 1 ? "" : "s"})`}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function opKindLabel(kind: string): string {
+  switch (kind) {
+    case "je_writeoff": return "JE write-offs";
+    case "direct_void": return "Invoice voids";
+    case "push_invoice": return "Push invoices (manual handoff V1)";
+    case "apply_payment": return "Apply payments (manual handoff V1)";
+    case "ask_client": return "Ask-client emails";
+    case "keep": return "Marked keep";
+    case "manual": return "Marked manual";
+    default: return kind;
+  }
+}
+
+function opKindBadge(kind: string) {
+  const map: Record<string, { label: string; color: string }> = {
+    je_writeoff: { label: "QBO WRITE", color: "bg-emerald-100 text-emerald-800" },
+    direct_void: { label: "QBO WRITE", color: "bg-emerald-100 text-emerald-800" },
+    push_invoice: { label: "MANUAL (V1)", color: "bg-blue-100 text-blue-800" },
+    apply_payment: { label: "MANUAL (V1)", color: "bg-blue-100 text-blue-800" },
+    ask_client: { label: "EMAIL", color: "bg-purple-100 text-purple-800" },
+    keep: { label: "NO-OP", color: "bg-gray-100 text-ink-slate" },
+    manual: { label: "NO-OP", color: "bg-gray-100 text-ink-slate" },
+  };
+  const cfg = map[kind] || { label: kind.toUpperCase(), color: "bg-gray-100 text-ink-slate" };
+  return (
+    <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${cfg.color}`}>
+      {cfg.label}
+    </span>
   );
 }
 

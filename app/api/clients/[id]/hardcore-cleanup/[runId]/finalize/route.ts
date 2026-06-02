@@ -252,6 +252,72 @@ export async function POST(
         continue;
       }
 
+      // ─── V2 resolutions (Migration 44) ────────────────────────────────
+      // ask_client — generate email draft for the bookkeeper to copy/paste.
+      // Body lives in finalize_results so the UI can render the email modal
+      // after finalize completes.
+      if (item.resolution === "ask_client") {
+        const emailDraft = buildAskClientEmail({
+          customerName: item.uf_customer_name || "(unknown customer)",
+          amount: Number(item.uf_payment_amount || 0),
+          date: item.uf_payment_date || "",
+          memo: item.qbo_invoice_memo || "",
+          clientName: (client as any).client_name || "this client",
+        });
+        await service
+          .from("hardcore_cleanup_items" as any)
+          .update({
+            resolution: "executed",
+            resolved_at: new Date().toISOString(),
+            // Stash the email body in resolution_notes so the bookkeeper
+            // can retrieve it later. Real V2 would push to a separate
+            // emails table for tracking.
+            resolution_notes: emailDraft.text,
+          } as any)
+          .eq("id", item.id);
+        executed++;
+        results.push({
+          id: item.id,
+          type: "ask_client",
+          status: "ok",
+          email_subject: emailDraft.subject,
+          email_text: emailDraft.text,
+          customer: item.uf_customer_name,
+          amount: item.uf_payment_amount,
+        });
+        continue;
+      }
+
+      // push_invoice + apply_payment — V1 ships these as manual handoff.
+      // Mark item as 'executed' so the bookkeeper sees it processed, but
+      // record the proposed QBO payload in resolution_notes so they can
+      // do the work manually in QBO. V2 (#73) will replace this branch
+      // with real createInvoice / applyPayment calls.
+      if (item.resolution === "push_invoice" || item.resolution === "apply_payment") {
+        const handoffNote =
+          item.resolution === "push_invoice"
+            ? `MANUAL HANDOFF (V1): create invoice in QBO for ${item.qbo_customer_name || "(no customer)"} — $${Number(item.uf_payment_amount || 0).toFixed(2)}. ${item.reasoning || ""}`
+            : `MANUAL HANDOFF (V1): apply UF payment ${item.uf_payment_id || ""} ($${Number(item.uf_payment_amount || 0).toFixed(2)}) from ${item.uf_customer_name || "(no customer)"} on ${item.uf_payment_date || ""} to ${Array.isArray(item.crm_job_ids) ? item.crm_job_ids.length : 1} CRM job(s). ${item.reasoning || ""}`;
+        await service
+          .from("hardcore_cleanup_items" as any)
+          .update({
+            resolution: "executed",
+            resolved_at: new Date().toISOString(),
+            resolution_notes: handoffNote,
+          } as any)
+          .eq("id", item.id);
+        executed++;
+        results.push({
+          id: item.id,
+          type: item.resolution,
+          status: "manual_handoff_v1",
+          note: handoffNote,
+          customer: item.qbo_customer_name || item.uf_customer_name,
+          amount: item.uf_payment_amount,
+        });
+        continue;
+      }
+
       throw new Error(`Unknown resolution ${item.resolution}`);
     } catch (err: any) {
       const msg = err?.message || String(err);
@@ -277,4 +343,52 @@ export async function POST(
     .eq("id", runId);
 
   return NextResponse.json({ ok: true, executed, failed, results });
+}
+
+/**
+ * Build a copy-paste-ready "ask the client" email for an unmatched UF
+ * deposit. Inlined here rather than extracted into lib/uf-audit-email.ts
+ * because (a) it's deposit-specific, not multi-customer like UF Audit's
+ * version, (b) we want to keep the V1 ship surface tight.
+ *
+ * V2 (#73) can refactor toward a shared library if a third caller appears.
+ */
+function buildAskClientEmail(opts: {
+  customerName: string;
+  amount: number;
+  date: string;
+  memo: string;
+  clientName: string;
+}): { subject: string; text: string } {
+  const fmtMoney = (n: number) =>
+    `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const subject = `Quick question about a ${fmtMoney(opts.amount)} deposit (${opts.date})`;
+
+  const lines: string[] = [
+    `Hi,`,
+    ``,
+    `We're cleaning up ${opts.clientName}'s books and found a deposit that doesn't have a clear job match:`,
+    ``,
+    `  • Date: ${opts.date || "(unknown)"}`,
+    `  • Amount: ${fmtMoney(opts.amount)}`,
+    `  • Customer (per QBO): ${opts.customerName}`,
+  ];
+  if (opts.memo) lines.push(`  • Memo: "${opts.memo}"`);
+  lines.push(
+    ``,
+    `Can you let us know which option fits?`,
+    ``,
+    `  A) Payment for a specific job — please share the job # or invoice #`,
+    `  B) Payment covering multiple jobs — share the job # / invoice #s and how it splits`,
+    `  C) Not a customer payment (refund, owner contribution, transfer, etc.) — what is it?`,
+    `  D) Not sure — let's hop on a call`,
+    ``,
+    `Short reply with the letter is fine.`,
+    ``,
+    `Thanks,`,
+    `Ironbooks`
+  );
+
+  return { subject, text: lines.join("\n") };
 }
