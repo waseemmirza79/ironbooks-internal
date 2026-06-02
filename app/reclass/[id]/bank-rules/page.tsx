@@ -67,23 +67,22 @@ export default async function BankRulesFromReclassPage({
     }
   }
 
-  // Include every decision that came in with a target — even
-  // 'flagged' rows (low AI confidence) and 'ask_client' rows when the
-  // bookkeeper has overridden a target. The row-level `target_name`
-  // filter below drops anything that doesn't have a destination. The
-  // bookkeeper sees flagged rows as candidates and can deselect them
-  // if they don't want a permanent bank rule.
+  // Pull EVERY classification row that has a vendor name — across every
+  // decision type. Goal: the bookkeeper sees one card per unique vendor
+  // in this job and can opt every one of them into a permanent rule.
+  // Even vendors with no AI-picked target are surfaced (with an empty
+  // dropdown the bookkeeper fills in). Even 'skip' rows (already_correct
+  // mappings) are pulled — those vendors are perfect rule candidates
+  // because the mapping is already proven right.
   //
-  // Before: only auto_approve / approved / needs_review made it here,
-  // which meant contractor e-transfers and other low-confidence
-  // vendors disappeared from this screen entirely.
+  // The only filter is `vendor_name IS NOT NULL` — without a vendor name
+  // there's no pattern to build a rule from.
   const { data: rows } = await service
     .from("reclassifications")
     .select(
       "vendor_name, vendor_pattern_normalized, to_account_id, to_account_name, bookkeeper_override_target_id, bookkeeper_override_target_name, transaction_amount, decision"
     )
     .eq("reclass_job_id", id)
-    .in("decision", ["auto_approve", "approved", "needs_review", "flagged", "ask_client"])
     .not("vendor_name", "is", null);
 
   type ReclassRow = {
@@ -111,10 +110,6 @@ export default async function BankRulesFromReclassPage({
     const groupKey = row.vendor_pattern_normalized || row.vendor_name || "";
     if (!groupKey) continue;
 
-    const targetId = row.bookkeeper_override_target_id || row.to_account_id;
-    const targetName = row.bookkeeper_override_target_name || row.to_account_name;
-    if (!targetName) continue;
-
     if (!groupMap.has(groupKey)) {
       groupMap.set(groupKey, {
         vendorDisplay: row.vendor_name || groupKey,
@@ -128,11 +123,18 @@ export default async function BankRulesFromReclassPage({
     group.txCount += 1;
     group.totalAmount += row.transaction_amount || 0;
 
-    const existing = group.targetCounts.get(targetId);
-    if (existing) {
-      existing.count += 1;
-    } else {
-      group.targetCounts.set(targetId, { id: targetId, name: targetName, count: 1 });
+    // Count this row's target only when one exists — but still count the
+    // tx itself. Groups with zero target observations still surface in
+    // proposedRules with an empty target so the bookkeeper can fill it in.
+    const targetId = row.bookkeeper_override_target_id || row.to_account_id;
+    const targetName = row.bookkeeper_override_target_name || row.to_account_name;
+    if (targetName) {
+      const existing = group.targetCounts.get(targetId);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        group.targetCounts.set(targetId, { id: targetId, name: targetName, count: 1 });
+      }
     }
   }
 
@@ -155,6 +157,17 @@ export default async function BankRulesFromReclassPage({
     }
   }
 
+  // Build proposed rules from EVERY vendor group, including ones with no
+  // AI-picked target. Rules without a target are emitted with empty
+  // target_* fields — the client renders them with a "Pick target..."
+  // dropdown and the bookkeeper opts them in by selecting the row AND
+  // picking a target. Err on the side of more rules.
+  //
+  // Sort order (top-down):
+  //   1. Has AI-picked target, highest tx count first
+  //   2. Has AI-picked target, lower tx count
+  //   3. No target yet (needs bookkeeper attention) — sorted by tx count
+  let skippedAsAlreadyInQbo = 0;
   const proposedRules = Array.from(groupMap.entries())
     .map(([vendorPattern, group]) => {
       let bestTarget = { id: "", name: "" };
@@ -165,29 +178,30 @@ export default async function BankRulesFromReclassPage({
           bestTarget = { id: t.id, name: t.name };
         }
       }
-      if (!bestTarget.name) return null;
       // Skip vendors that already have a rule pushed to QBO.
-      if (alreadyInQbo.has(normalizePattern(vendorPattern))) return null;
+      if (alreadyInQbo.has(normalizePattern(vendorPattern))) {
+        skippedAsAlreadyInQbo++;
+        return null;
+      }
       return {
         vendorPattern,
         vendorDisplay: group.vendorDisplay,
-        targetAccountId: bestTarget.id,
-        targetAccountName: bestTarget.name,
+        targetAccountId: bestTarget.id, // "" when no AI pick
+        targetAccountName: bestTarget.name, // "" when no AI pick
         txCount: group.txCount,
         totalAmount: group.totalAmount,
+        hasTarget: !!bestTarget.name,
       };
     })
-    .filter(Boolean)
-    .sort((a, b) => b!.txCount - a!.txCount) as Array<{
-    vendorPattern: string;
-    vendorDisplay: string;
-    targetAccountId: string;
-    targetAccountName: string;
-    txCount: number;
-    totalAmount: number;
-  }>;
+    .filter((r): r is NonNullable<typeof r> => r !== null)
+    .sort((a, b) => {
+      // Targeted rules first; within each group, sort by tx count desc
+      if (a.hasTarget !== b.hasTarget) return a.hasTarget ? -1 : 1;
+      return b.txCount - a.txCount;
+    });
+  const withoutTarget = proposedRules.filter((r) => !r.hasTarget).length;
   console.log(
-    `[bank-rules ${id}] Proposed: ${proposedRules.length} (excluded ${alreadyInQbo.size} already pushed to QBO)`
+    `[bank-rules ${id}] Proposed: ${proposedRules.length} (${withoutTarget} need bookkeeper to pick target; excluded ${skippedAsAlreadyInQbo} already pushed to QBO)`
   );
 
   // Build the FINAL dropdown list: live QBO P&L accounts UNION the targets the

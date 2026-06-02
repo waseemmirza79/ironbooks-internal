@@ -12,6 +12,13 @@ interface ProposedRule {
   targetAccountName: string;
   txCount: number;
   totalAmount: number;
+  /**
+   * True when the AI / bookkeeper picked a target during reclass.
+   * False when this vendor appeared in the job but no target was ever
+   * chosen — the row renders with an empty "Pick target..." dropdown
+   * and is NOT auto-selected. Bookkeeper opts in by ticking + picking.
+   */
+  hasTarget: boolean;
 }
 
 interface AvailableAccount {
@@ -44,16 +51,22 @@ export function BankRulesFromReclassClient({
   cleanupRangeEnd,
 }: Props) {
   const router = useRouter();
+  // Default selection: every vendor that already has an AI-picked target.
+  // Vendors without a target appear in the list but unchecked — they're
+  // opt-in via ticking the row + picking a target. This matches the
+  // "err on more rules" intent while keeping the no-action default safe.
   const [selected, setSelected] = useState<Set<string>>(
-    new Set(proposedRules.map((r) => r.vendorPattern))
+    new Set(proposedRules.filter((r) => r.hasTarget).map((r) => r.vendorPattern))
   );
   // Per-vendor account override map. Defaults to the AI-picked target;
-  // the bookkeeper can re-route a rule to any P&L account from the dropdown.
+  // empty for vendors with no target (bookkeeper picks via the dropdown).
   const [overrides, setOverrides] = useState<Map<string, { id: string; name: string }>>(
     () => {
       const initial = new Map<string, { id: string; name: string }>();
       for (const r of proposedRules) {
-        initial.set(r.vendorPattern, { id: r.targetAccountId, name: r.targetAccountName });
+        if (r.targetAccountId) {
+          initial.set(r.vendorPattern, { id: r.targetAccountId, name: r.targetAccountName });
+        }
       }
       return initial;
     }
@@ -164,13 +177,33 @@ export function BankRulesFromReclassClient({
     setSubmitting(true);
     setError("");
     try {
-      // Send only the overrides for SELECTED vendors. The API will use
-      // these to set target_account_name, falling back to the AI pick if
-      // a vendor isn't in the map (shouldn't happen, but safe).
+      // Only send vendors where the bookkeeper has either:
+      //   - the AI's original target still in the overrides map, OR
+      //   - manually picked a target via the dropdown
+      // Selected-but-no-target vendors are silently dropped here with a
+      // visible warning above the table — we never POST a rule without
+      // a destination account.
       const overridesPayload: Record<string, { id: string; name: string }> = {};
+      const selectedVendorsPayload: string[] = [];
+      const droppedNoTarget: string[] = [];
       for (const vendorPattern of selected) {
         const o = overrides.get(vendorPattern);
-        if (o) overridesPayload[vendorPattern] = o;
+        if (o && o.id && o.name) {
+          overridesPayload[vendorPattern] = o;
+          selectedVendorsPayload.push(vendorPattern);
+        } else {
+          droppedNoTarget.push(vendorPattern);
+        }
+      }
+      if (droppedNoTarget.length > 0) {
+        console.warn(
+          `[bank-rules] Dropping ${droppedNoTarget.length} selected vendors with no target picked: ${droppedNoTarget.join(", ")}`
+        );
+      }
+      if (selectedVendorsPayload.length === 0) {
+        throw new Error(
+          "Every selected vendor needs a target account. Pick one from the dropdown next to each ticked row."
+        );
       }
 
       const res = await fetch("/api/rules/from-reclass", {
@@ -179,7 +212,7 @@ export function BankRulesFromReclassClient({
         body: JSON.stringify({
           reclass_job_id: reclassJobId,
           client_link_id: clientLinkId,
-          selected_vendors: Array.from(selected),
+          selected_vendors: selectedVendorsPayload,
           overrides: overridesPayload,
         }),
       });
@@ -404,15 +437,34 @@ export function BankRulesFromReclassClient({
   const allChecked = selected.size === proposedRules.length;
   const someChecked = selected.size > 0 && selected.size < proposedRules.length;
 
+  // How many selected rows actually have a target → those are the ones
+  // that will get submitted. The remainder need a target picked first.
+  const readyCount = Array.from(selected).filter((vp) => {
+    const t = overrides.get(vp);
+    return !!(t && t.id);
+  }).length;
+  const needsTargetCount = selected.size - readyCount;
+
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-2xl border border-gray-100 p-6">
         <div className="mb-1">
           <h2 className="text-xl font-bold text-navy">
-            {proposedRules.length} vendors → {proposedRules.length} bank rules
+            {proposedRules.length} vendor{proposedRules.length === 1 ? "" : "s"} from this reclass
           </h2>
-          <p className="text-sm text-ink-slate mt-1">
-            Deselect any rules you don't want to create, then click the button below.
+          <p className="text-sm text-ink-slate mt-1 leading-relaxed">
+            Every vendor that appeared in this job is listed below — err on the side of
+            more rules. Vendors with a confident AI target are pre-ticked.
+            {readyCount > 0 && needsTargetCount > 0 && " "}
+            {needsTargetCount > 0 && (
+              <span>
+                <span className="font-semibold text-amber-700">
+                  {needsTargetCount} vendor{needsTargetCount === 1 ? "" : "s"}
+                </span>{" "}
+                need a target before they can become rules — tick the row + pick a target
+                if you want a rule for them.
+              </span>
+            )}
           </p>
         </div>
       </div>
@@ -441,12 +493,21 @@ export function BankRulesFromReclassClient({
           <tbody>
             {proposedRules.map((rule) => {
               const isSelected = selected.has(rule.vendorPattern);
+              const currentTargetId = overrides.get(rule.vendorPattern)?.id || rule.targetAccountId || "";
+              // Selected-but-no-target = needs bookkeeper to pick before
+              // submit will accept this row. We highlight it amber so it
+              // can't be missed.
+              const needsTarget = isSelected && !currentTargetId;
               return (
                 <tr
                   key={rule.vendorPattern}
                   onClick={() => toggleOne(rule.vendorPattern)}
                   className={`border-b border-gray-50 last:border-0 cursor-pointer transition-colors ${
-                    isSelected ? "bg-white hover:bg-teal-lighter/30" : "bg-gray-50/60 opacity-50 hover:opacity-70"
+                    needsTarget
+                      ? "bg-amber-50/60 hover:bg-amber-50"
+                      : isSelected
+                      ? "bg-white hover:bg-teal-lighter/30"
+                      : "bg-gray-50/60 opacity-50 hover:opacity-70"
                   }`}
                 >
                   <td className="px-4 py-3">
@@ -459,7 +520,14 @@ export function BankRulesFromReclassClient({
                     />
                   </td>
                   <td className="px-4 py-3">
-                    <div className="font-medium text-navy">{rule.vendorDisplay}</div>
+                    <div className="font-medium text-navy flex items-center gap-1.5">
+                      {rule.vendorDisplay}
+                      {!rule.hasTarget && (
+                        <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
+                          Needs target
+                        </span>
+                      )}
+                    </div>
                     {rule.vendorPattern !== rule.vendorDisplay && (
                       <div className="text-xs text-ink-slate font-mono">{rule.vendorPattern}</div>
                     )}
@@ -467,32 +535,44 @@ export function BankRulesFromReclassClient({
                   <td className="px-4 py-3">
                     {availableAccounts.length > 0 ? (
                       <select
-                        value={overrides.get(rule.vendorPattern)?.id || rule.targetAccountId}
+                        value={currentTargetId}
                         onChange={(e) => setOverride(rule.vendorPattern, e.target.value)}
                         onClick={(e) => e.stopPropagation()}
                         disabled={!isSelected}
                         className={`text-xs font-semibold rounded-md border px-2 py-1 outline-none focus:ring-2 focus:ring-teal/40 ${
-                          isSelected
+                          needsTarget
+                            ? "bg-white text-amber-800 border-amber-300 cursor-pointer"
+                            : isSelected
                             ? "bg-teal-lighter text-teal border-teal/30 cursor-pointer"
                             : "bg-gray-100 text-ink-slate border-gray-200 cursor-not-allowed"
                         }`}
                       >
+                        {/* Placeholder for no-target rows so the bookkeeper
+                            sees a clear "Pick target" prompt. */}
+                        {!currentTargetId && (
+                          <option value="">— Pick target… —</option>
+                        )}
                         {/* If the AI-picked target isn't in the live P&L list,
                             still render it so the row doesn't blank out. */}
-                        {!availableAccounts.find((a) => a.id === rule.targetAccountId) && (
-                          <option value={rule.targetAccountId}>
-                            {rule.targetAccountName}
-                          </option>
-                        )}
+                        {rule.targetAccountId &&
+                          !availableAccounts.find((a) => a.id === rule.targetAccountId) && (
+                            <option value={rule.targetAccountId}>
+                              {rule.targetAccountName}
+                            </option>
+                          )}
                         {availableAccounts.map((a) => (
                           <option key={a.id} value={a.id}>
                             {a.name}
                           </option>
                         ))}
                       </select>
-                    ) : (
+                    ) : rule.targetAccountName ? (
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-teal-lighter text-teal text-xs font-semibold">
                         {rule.targetAccountName}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-xs font-semibold">
+                        No target — QBO not reachable
                       </span>
                     )}
                   </td>
@@ -513,7 +593,14 @@ export function BankRulesFromReclassClient({
 
       <div className="flex items-center justify-end gap-4 flex-wrap">
         <span className="text-sm text-ink-slate">
-          {selected.size} of {proposedRules.length} selected
+          {readyCount} ready
+          {needsTargetCount > 0 && (
+            <span className="text-amber-700 font-semibold">
+              {" "}
+              · {needsTargetCount} need target
+            </span>
+          )}
+          <span className="text-ink-light"> · {proposedRules.length} total</span>
         </span>
 
         {/* Skip path — bookkeeper doesn't want to create any rules
@@ -536,7 +623,12 @@ export function BankRulesFromReclassClient({
 
         <button
           onClick={handleSubmit}
-          disabled={selected.size === 0 || submitting}
+          disabled={readyCount === 0 || submitting}
+          title={
+            needsTargetCount > 0
+              ? `${needsTargetCount} selected vendor${needsTargetCount === 1 ? "" : "s"} need a target picked. They'll be dropped from this batch — click anyway to create the ${readyCount} ready rule${readyCount === 1 ? "" : "s"}.`
+              : undefined
+          }
           className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold px-6 py-2.5 rounded-lg shadow-md transition-colors"
         >
           {submitting ? (
@@ -545,7 +637,7 @@ export function BankRulesFromReclassClient({
             </>
           ) : (
             <>
-              Create {selected.size} Bank Rule{selected.size !== 1 ? "s" : ""} <ArrowRight size={16} />
+              Create {readyCount} Bank Rule{readyCount !== 1 ? "s" : ""} <ArrowRight size={16} />
             </>
           )}
         </button>
