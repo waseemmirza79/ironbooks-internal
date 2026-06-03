@@ -116,7 +116,7 @@ export function HardcoreCleanupClient({
         itemIds: string[];
         title: string;
         subtitle: string;
-        accountFilter: "income" | "writeoff";
+        accountFilter: "income" | "writeoff" | "choose";
         // Resolution to write on the items — usually "je_writeoff", but
         // could be different per kind.
         resolution: "je_writeoff";
@@ -552,15 +552,22 @@ export function HardcoreCleanupClient({
               accountFilter={bulkJeModal.accountFilter}
               defaultDate={new Date().toISOString().slice(0, 10)}
               onClose={() => setBulkJeModal(null)}
-              onConfirm={({ accountId, accountName, jeDate }) => {
+              onConfirm={({ accountId, accountName, jeDate, jeKind }) => {
                 const ids = bulkJeModal.itemIds;
                 setBulkJeModal(null);
                 if (ids.length === 0) return;
+                // Stash jeKind in resolution_notes so the audit trail records
+                // whether the bookkeeper booked this as a revenue write-off
+                // or a bad-debt expense. Finalize's JE direction is driven
+                // by the picked account's accountType — Income on Cr side
+                // for income picks, Expense on Dr side for bad-debt picks —
+                // so the kind label is purely for traceability.
                 resolveItems(ids, {
                   resolution: bulkJeModal.resolution,
                   resolution_target_account_id: accountId,
                   resolution_target_account_name: accountName,
                   resolution_je_date: jeDate,
+                  resolution_notes: `bulk_je_kind:${jeKind}`,
                 });
               }}
             />
@@ -1059,7 +1066,7 @@ interface BulkOpts {
   itemIds: string[];
   title: string;
   subtitle: string;
-  accountFilter: "income" | "writeoff";
+  accountFilter: "income" | "writeoff" | "choose";
   resolution: "je_writeoff";
 }
 
@@ -1182,14 +1189,14 @@ function BulkActionsByType({
                         itemIds: g.ids,
                         title: `Create JE for ${g.rows.length} missing invoice${g.rows.length === 1 ? "" : "s"}`,
                         subtitle:
-                          "Records the CRM revenue as a JE: Dr A/R, Cr {income account}. Pick the income account + posting date once and apply to every row.",
-                        accountFilter: "income",
+                          "Pick how to book the JE (write off revenue OR create bad debt), the target account, and the posting date. Same choice applies to every selected row.",
+                        accountFilter: "choose",
                         resolution: "je_writeoff",
                       })
                     }
                     className="px-2.5 py-1 text-[11px] font-bold rounded bg-teal text-white hover:bg-teal-dark"
                   >
-                    Bulk JE → pick income account + date…
+                    Bulk JE → write off revenue OR bad debt…
                   </button>
                   <button
                     onClick={() =>
@@ -1290,19 +1297,42 @@ function BulkJeModal({
   accounts: QboAccount[];
   title: string;
   subtitle: string;
-  accountFilter: "income" | "writeoff";
+  /**
+   * `income` / `writeoff` lock the modal to that account category.
+   * `choose` shows a two-card toggle at the top so the bookkeeper picks
+   * "Write off revenue" (income side: Cr Income, Dr A/R — reduce revenue
+   * to reflect that the CRM job didn't actually become recognized income)
+   * vs "Create bad debt" (expense side: Dr Bad Debt, Cr A/R — book the
+   * loss against an expense account). Switching the toggle flips the
+   * account list filter live, no second modal.
+   */
+  accountFilter: "income" | "writeoff" | "choose";
   defaultDate: string;
   onClose: () => void;
-  onConfirm: (opts: { accountId: string; accountName: string; jeDate: string }) => void;
+  onConfirm: (opts: {
+    accountId: string;
+    accountName: string;
+    jeDate: string;
+    jeKind: "income" | "writeoff";
+  }) => void;
 }) {
   const [search, setSearch] = useState("");
   const [picked, setPicked] = useState<QboAccount | null>(null);
   const [jeDate, setJeDate] = useState(defaultDate);
+  // Kind selector. Locked when accountFilter is "income" or "writeoff";
+  // live-toggleable when "choose". Default to "income" in choose mode —
+  // write-off-revenue is the more common path for missing_invoice items
+  // (revenue was reported elsewhere and shouldn't be doubled up).
+  const [jeKind, setJeKind] = useState<"income" | "writeoff">(
+    accountFilter === "writeoff" ? "writeoff" : "income"
+  );
+  const activeFilter: "income" | "writeoff" =
+    accountFilter === "choose" ? jeKind : accountFilter;
 
   const eligible = useMemo(() => {
     return accounts.filter((a) => {
       const t = (a.accountType || "").toLowerCase();
-      if (accountFilter === "income") {
+      if (activeFilter === "income") {
         return t.includes("income") || t.includes("revenue");
       }
       // writeoff
@@ -1314,7 +1344,7 @@ function BulkJeModal({
         t.includes("cost of goods")
       );
     });
-  }, [accounts, accountFilter]);
+  }, [accounts, activeFilter]);
 
   const filtered = eligible.filter((a) =>
     a.name.toLowerCase().includes(search.toLowerCase())
@@ -1332,6 +1362,59 @@ function BulkJeModal({
             <div className="text-sm font-bold text-navy">{title}</div>
             <div className="text-xs text-ink-slate mt-0.5 leading-snug">{subtitle}</div>
           </div>
+
+          {/* Kind toggle — only when caller asked for "choose" mode. Two
+              cards, picks reset on change so the bookkeeper can't carry a
+              stale income-account selection into a bad-debt JE. */}
+          {accountFilter === "choose" && (
+            <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/40">
+              <label className="text-[11px] font-bold uppercase tracking-wider text-ink-slate block mb-2">
+                JE kind
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (jeKind !== "income") {
+                      setJeKind("income");
+                      setPicked(null);
+                      setSearch("");
+                    }
+                  }}
+                  className={`text-left rounded-lg border-2 px-3 py-2.5 transition-colors ${
+                    jeKind === "income"
+                      ? "bg-teal-lighter/50 border-teal text-navy"
+                      : "bg-white border-gray-200 hover:border-gray-300 text-ink-slate"
+                  }`}
+                >
+                  <div className="text-xs font-bold">Write off revenue</div>
+                  <div className="text-[10px] leading-snug mt-0.5">
+                    Cr Income · Dr A/R. Use when the CRM job&apos;s revenue is already in QBO somewhere else, or shouldn&apos;t be recognized.
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (jeKind !== "writeoff") {
+                      setJeKind("writeoff");
+                      setPicked(null);
+                      setSearch("");
+                    }
+                  }}
+                  className={`text-left rounded-lg border-2 px-3 py-2.5 transition-colors ${
+                    jeKind === "writeoff"
+                      ? "bg-amber-50 border-amber-500 text-navy"
+                      : "bg-white border-gray-200 hover:border-gray-300 text-ink-slate"
+                  }`}
+                >
+                  <div className="text-xs font-bold">Create bad debt</div>
+                  <div className="text-[10px] leading-snug mt-0.5">
+                    Dr Bad Debt (expense) · Cr A/R. Use when the customer truly owed money that won&apos;t be collected.
+                  </div>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Date picker */}
           <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/40">
@@ -1353,7 +1436,7 @@ function BulkJeModal({
           {/* Account search */}
           <div className="px-4 py-2 border-b border-gray-100">
             <label className="text-[11px] font-bold uppercase tracking-wider text-ink-slate block mb-1">
-              Target account ({accountFilter === "income" ? "income only" : "writeoff-eligible"})
+              Target account ({activeFilter === "income" ? "income only" : "writeoff-eligible"})
             </label>
             <input
               autoFocus
@@ -1370,7 +1453,7 @@ function BulkJeModal({
               <div className="px-4 py-8 text-center text-sm text-ink-slate">
                 {search
                   ? `No accounts match "${search}"`
-                  : accountFilter === "income"
+                  : activeFilter === "income"
                   ? "No income accounts found in this QBO. Create one first (e.g. 'Sales — Painting' under Income)."
                   : "No write-off-eligible accounts in this QBO."}
               </div>
@@ -1413,7 +1496,12 @@ function BulkJeModal({
               <button
                 onClick={() => {
                   if (!canConfirm || !picked) return;
-                  onConfirm({ accountId: picked.id, accountName: picked.name, jeDate });
+                  onConfirm({
+                    accountId: picked.id,
+                    accountName: picked.name,
+                    jeDate,
+                    jeKind: activeFilter,
+                  });
                 }}
                 disabled={!canConfirm}
                 className="text-xs font-bold text-white bg-teal hover:bg-teal-dark disabled:opacity-40 disabled:cursor-not-allowed rounded px-3 py-1.5"
