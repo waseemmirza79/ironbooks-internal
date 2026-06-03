@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
   Home, FileText, Scale, Wallet, Receipt, MessageSquare,
-  GraduationCap, Settings,
+  GraduationCap, Settings, FileCheck2,
 } from "lucide-react";
 import { SignOutButton } from "./sign-out-button";
 import { ImpersonationBanner } from "./impersonation-banner";
@@ -82,6 +82,7 @@ export default async function PortalLayout({ children }: { children: React.React
             <NavLink href="/portal/balance-sheet" icon={Scale} label="Balance Sheet" />
             <NavLink href="/portal/whos-paying" icon={Wallet} label="Who owes you" />
             <NavLink href="/portal/whats-due" icon={Receipt} label="What you owe" />
+            <NavLink href="/portal/cleanup-reports" icon={FileCheck2} label="Cleanup Reports" />
             <NavLink href="/portal/ask-ai" icon={MessageSquare} label="Ask the AI" badge="NEW" />
             <NavLink href="/portal/learn" icon={GraduationCap} label="Learn" />
           </nav>
