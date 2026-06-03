@@ -112,6 +112,12 @@ export async function POST(
 
   const bookkeeperName = (actor as any)?.full_name || "bookkeeper";
   const today = new Date().toISOString().slice(0, 10);
+  // Each item can override the posting date via resolve's resolution_je_date.
+  // Falls back to today when null. Used in JE TxnDate + push_invoice TxnDate.
+  const postDate = (item: any) =>
+    item?.resolution_je_date && /^\d{4}-\d{2}-\d{2}$/.test(item.resolution_je_date)
+      ? item.resolution_je_date
+      : today;
 
   let executed = 0;
   let failed = 0;
@@ -248,7 +254,7 @@ export async function POST(
 
         // JE body — Dr Bad Debt, Cr A/R (with customer entity)
         const jeBody: any = {
-          TxnDate: today,
+          TxnDate: postDate(item),
           PrivateNote:
             `Ironbooks Hardcore BS Cleanup (by ${bookkeeperName}) — ` +
             `write off duplicate invoice ${inv.DocNumber || inv.Id} ` +
@@ -374,7 +380,7 @@ export async function POST(
             description:
               item.reasoning ||
               `Invoice pushed from CRM by Ironbooks Hardcore Cleanup`,
-            txnDate: today,
+            txnDate: postDate(item),
             docNumber: `SNAP-${runId.slice(0, 6)}-${item.id.slice(0, 4)}`,
             privateNote: `Ironbooks Hardcore Cleanup (${bookkeeperName}) — ${idempotencyToken}`,
           });

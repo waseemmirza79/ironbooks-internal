@@ -42,6 +42,7 @@ interface Item {
   resolution_target_account_id: string | null;
   resolution_target_account_name: string | null;
   resolution_notes: string | null;
+  resolution_je_date: string | null;
   resolution_je_id: string | null;
   execution_error: string | null;
 }
@@ -100,6 +101,28 @@ export function HardcoreCleanupClient({
    *  accounts has no auto-detected Bad Debt / Write-off account (the
    *  Clean Cut Painters case). */
   const [bulkPickerOpen, setBulkPickerOpen] = useState(false);
+  /**
+   * State for the "bulk JE for these N items" modal. When non-null, the
+   * modal renders and lets the bookkeeper pick a target account + posting
+   * date once and apply to every selected item. Closed by setting null.
+   *
+   * `kind` controls the modal's title + the account-type filter:
+   *   "missing_invoice_je" → income-only accounts, "record this revenue" copy
+   *   "writeoff"           → all writeoff-eligible accounts
+   */
+  const [bulkJeModal, setBulkJeModal] = useState<
+    | {
+        kind: "missing_invoice_je" | "writeoff";
+        itemIds: string[];
+        title: string;
+        subtitle: string;
+        accountFilter: "income" | "writeoff";
+        // Resolution to write on the items — usually "je_writeoff", but
+        // could be different per kind.
+        resolution: "je_writeoff";
+      }
+    | null
+  >(null);
   // Default to showing only high-confidence (CRM-confirmed) duplicates.
   // Low-confidence Path B clusters can be false positives — change orders
   // / progress billings the CRM didn't include. Bookkeeper can toggle on.
@@ -172,6 +195,7 @@ export function HardcoreCleanupClient({
       resolution_target_account_id?: string;
       resolution_target_account_name?: string;
       resolution_notes?: string;
+      resolution_je_date?: string;
     }
   ) {
     if (!run) return;
@@ -503,6 +527,44 @@ export function HardcoreCleanupClient({
               </div>
             )}
           </div>
+
+          {/* Bulk actions grouped by item_type — the "process 82 items in
+              one click" surface. Each item_type bucket shows count + sum
+              and the bulk actions that make sense for that shape. */}
+          {!loading && pendingCount > 0 && run.status === "review" && (
+            <BulkActionsByType
+              items={items}
+              suggestedBadDebt={suggestedBadDebt}
+              onResolveSimple={(ids, resolution) =>
+                resolveItems(ids, { resolution })
+              }
+              onOpenJeModal={(opts) => setBulkJeModal(opts)}
+            />
+          )}
+
+          {/* Bulk JE modal — opens from the bulk-action panel buttons.
+              Combines income-account picker + posting-date input. */}
+          {bulkJeModal && (
+            <BulkJeModal
+              accounts={accounts}
+              title={bulkJeModal.title}
+              subtitle={bulkJeModal.subtitle}
+              accountFilter={bulkJeModal.accountFilter}
+              defaultDate={new Date().toISOString().slice(0, 10)}
+              onClose={() => setBulkJeModal(null)}
+              onConfirm={({ accountId, accountName, jeDate }) => {
+                const ids = bulkJeModal.itemIds;
+                setBulkJeModal(null);
+                if (ids.length === 0) return;
+                resolveItems(ids, {
+                  resolution: bulkJeModal.resolution,
+                  resolution_target_account_id: accountId,
+                  resolution_target_account_name: accountName,
+                  resolution_je_date: jeDate,
+                });
+              }}
+            />
+          )}
 
           {loading ? (
             <div className="p-6 text-center"><Loader2 size={24} className="animate-spin text-teal mx-auto" /></div>
@@ -883,15 +945,36 @@ function BulkAccountPicker({
   accounts,
   onPick,
   onClose,
+  /**
+   * Restrict the dropdown to specific account categories. Used by the
+   * "bulk create JE for missing invoices" flow which only wants the
+   * income side (Cr Income, Dr A/R) — surfacing Bad Debt or Equity
+   * there would be a footgun.
+   */
+  accountTypeFilter = "writeoff",
+  title,
+  subtitle,
 }: {
   accounts: QboAccount[];
   onPick: (acct: QboAccount) => void;
   onClose: () => void;
+  accountTypeFilter?: "writeoff" | "income" | "all";
+  title?: string;
+  subtitle?: string;
 }) {
   const [search, setSearch] = useState("");
 
   const eligible = accounts.filter((a) => {
     const t = (a.accountType || "").toLowerCase();
+    if (accountTypeFilter === "income") {
+      // Revenue side only — exclude Expense / COGS / Equity. We allow
+      // both Income and Other Income (Intuit's classification for
+      // miscellaneous receipts like late-fee income).
+      return t.includes("income") || t.includes("revenue");
+    }
+    if (accountTypeFilter === "all") return true;
+    // "writeoff" (default): expense / equity / income / revenue / COGS —
+    // anything plausible for a balance-sheet writeoff JE.
     return (
       t.includes("expense") ||
       t.includes("equity") ||
@@ -915,11 +998,11 @@ function BulkAccountPicker({
         <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md pointer-events-auto overflow-hidden flex flex-col max-h-[80vh]">
           <div className="px-5 py-4 border-b border-gray-200">
             <div className="text-sm font-bold text-navy">
-              Pick account to write off all pending duplicates
+              {title || "Pick account to write off all pending duplicates"}
             </div>
             <div className="text-xs text-ink-slate mt-0.5">
-              JE write-off preserves any closed-period totals. Common picks:
-              Bad Debt, Owner Equity, Sales Returns.
+              {subtitle ||
+                "JE write-off preserves any closed-period totals. Common picks: Bad Debt, Owner Equity, Sales Returns."}
             </div>
           </div>
           <div className="px-4 py-2 border-b border-gray-100">
@@ -958,6 +1041,386 @@ function BulkAccountPicker({
             >
               Cancel
             </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Bulk actions panel — groups pending items by item_type and offers the
+// resolutions that make sense for each shape. The 82-clicks problem on
+// Clean Cut became 4-clicks once this landed.
+// ────────────────────────────────────────────────────────────────────────
+
+interface BulkOpts {
+  kind: "missing_invoice_je" | "writeoff";
+  itemIds: string[];
+  title: string;
+  subtitle: string;
+  accountFilter: "income" | "writeoff";
+  resolution: "je_writeoff";
+}
+
+const ITEM_TYPE_LABELS: Record<string, string> = {
+  duplicate_invoice: "Duplicate invoices",
+  missing_invoice: "Missing invoices (CRM job → no QBO invoice)",
+  orphan_uf_payment: "Orphan UF payments",
+  stale_ar: "Stale A/R",
+  unmatched_job: "Unmatched CRM jobs",
+  unmatched_payment: "Unmatched payments",
+};
+
+function BulkActionsByType({
+  items,
+  suggestedBadDebt,
+  onResolveSimple,
+  onOpenJeModal,
+}: {
+  items: Item[];
+  suggestedBadDebt: QboAccount | null;
+  onResolveSimple: (ids: string[], resolution: string) => void;
+  onOpenJeModal: (opts: BulkOpts) => void;
+}) {
+  // Bucket pending items by type. Only show groups with at least one
+  // pending row — once everything is resolved the panel can collapse.
+  const groups = useMemo(() => {
+    const m = new Map<string, Item[]>();
+    for (const it of items) {
+      if (it.resolution !== "pending") continue;
+      const arr = m.get(it.item_type) || [];
+      arr.push(it);
+      m.set(it.item_type, arr);
+    }
+    return Array.from(m.entries())
+      .map(([type, rows]) => ({
+        type,
+        rows,
+        ids: rows.map((r) => r.id),
+        sum: rows.reduce(
+          (s, r) => s + Number(r.qbo_invoice_balance ?? r.qbo_invoice_amount ?? 0),
+          0
+        ),
+      }))
+      .sort((a, b) => b.rows.length - a.rows.length);
+  }, [items]);
+
+  if (groups.length === 0) return null;
+
+  function confirmAndResolve(ids: string[], resolution: string, label: string) {
+    if (!confirm(`Mark all ${ids.length} items as ${label}?`)) return;
+    onResolveSimple(ids, resolution);
+  }
+
+  return (
+    <div className="rounded-xl border-2 border-teal/30 bg-teal-lighter/30 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          <div className="text-sm font-bold text-navy">
+            Bulk actions ({groups.reduce((s, g) => s + g.rows.length, 0)} pending across {groups.length} type{groups.length === 1 ? "" : "s"})
+          </div>
+          <div className="text-xs text-ink-slate mt-0.5">
+            Pick one action per type and resolve all rows at once. You can still tweak individual rows below before finalize.
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        {groups.map((g) => (
+          <div
+            key={g.type}
+            className="rounded-lg bg-white border border-gray-200 px-3 py-2.5 flex items-center gap-3 flex-wrap"
+          >
+            <div className="flex-1 min-w-[180px]">
+              <div className="text-sm font-bold text-navy">
+                {g.rows.length} × {ITEM_TYPE_LABELS[g.type] || g.type}
+              </div>
+              {g.sum > 0.01 && (
+                <div className="text-[11px] text-ink-slate">
+                  Total: <span className="font-mono">{fmtMoney(g.sum)}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {/* Action set per item_type */}
+              {g.type === "duplicate_invoice" && (
+                <>
+                  <button
+                    onClick={() => confirmAndResolve(g.ids, "direct_void", "Void in QBO")}
+                    className="px-2.5 py-1 text-[11px] font-bold rounded bg-purple-600 text-white hover:bg-purple-700"
+                    title="Void each QBO invoice. Open-period only."
+                  >
+                    Void all {g.rows.length}
+                  </button>
+                  <button
+                    onClick={() =>
+                      onOpenJeModal({
+                        kind: "writeoff",
+                        itemIds: g.ids,
+                        title: `Write off ${g.rows.length} duplicate invoice${g.rows.length === 1 ? "" : "s"}`,
+                        subtitle:
+                          "Posts Dr {target} / Cr A/R for each row. Use when closed-period filed totals must stay intact.",
+                        accountFilter: "writeoff",
+                        resolution: "je_writeoff",
+                      })
+                    }
+                    className="px-2.5 py-1 text-[11px] font-bold rounded bg-red-600 text-white hover:bg-red-700"
+                  >
+                    JE write-off all → pick account…
+                  </button>
+                </>
+              )}
+
+              {g.type === "missing_invoice" && (
+                <>
+                  <button
+                    onClick={() =>
+                      onOpenJeModal({
+                        kind: "missing_invoice_je",
+                        itemIds: g.ids,
+                        title: `Create JE for ${g.rows.length} missing invoice${g.rows.length === 1 ? "" : "s"}`,
+                        subtitle:
+                          "Records the CRM revenue as a JE: Dr A/R, Cr {income account}. Pick the income account + posting date once and apply to every row.",
+                        accountFilter: "income",
+                        resolution: "je_writeoff",
+                      })
+                    }
+                    className="px-2.5 py-1 text-[11px] font-bold rounded bg-teal text-white hover:bg-teal-dark"
+                  >
+                    Bulk JE → pick income account + date…
+                  </button>
+                  <button
+                    onClick={() =>
+                      confirmAndResolve(g.ids, "keep", "Keep (no QBO change)")
+                    }
+                    className="px-2.5 py-1 text-[11px] font-semibold rounded bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                  >
+                    Mark all keep
+                  </button>
+                  <button
+                    onClick={() =>
+                      confirmAndResolve(g.ids, "manual", "Manual (skip for now)")
+                    }
+                    className="px-2.5 py-1 text-[11px] font-semibold rounded bg-white border border-gray-300 text-ink-slate hover:bg-gray-50"
+                  >
+                    Mark all manual
+                  </button>
+                </>
+              )}
+
+              {g.type === "stale_ar" && (
+                <>
+                  {suggestedBadDebt ? (
+                    <button
+                      onClick={() => {
+                        if (!confirm(`Mark all ${g.rows.length} stale A/R items as JE write-off → ${suggestedBadDebt.name}?`)) return;
+                        onResolveSimple(g.ids, "je_writeoff");
+                      }}
+                      className="px-2.5 py-1 text-[11px] font-bold rounded bg-amber-600 text-white hover:bg-amber-700"
+                    >
+                      JE write-off → {suggestedBadDebt.name}
+                    </button>
+                  ) : null}
+                  <button
+                    onClick={() =>
+                      onOpenJeModal({
+                        kind: "writeoff",
+                        itemIds: g.ids,
+                        title: `Write off ${g.rows.length} stale A/R balance${g.rows.length === 1 ? "" : "s"}`,
+                        subtitle:
+                          "Posts Dr {target} / Cr A/R. Typical target: Bad Debt or Sales Returns.",
+                        accountFilter: "writeoff",
+                        resolution: "je_writeoff",
+                      })
+                    }
+                    className="px-2.5 py-1 text-[11px] font-semibold rounded bg-white border border-amber-300 text-amber-800 hover:bg-amber-50"
+                  >
+                    Pick different account…
+                  </button>
+                </>
+              )}
+
+              {g.type === "orphan_uf_payment" && (
+                <span className="text-[11px] text-ink-slate italic">
+                  Resolve per-row — apply_payment needs a target invoice picked individually.
+                </span>
+              )}
+
+              {g.type === "unmatched_job" && (
+                <>
+                  <button
+                    onClick={() => confirmAndResolve(g.ids, "keep", "Keep")}
+                    className="px-2.5 py-1 text-[11px] font-semibold rounded bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                  >
+                    Mark all keep
+                  </button>
+                  <button
+                    onClick={() => confirmAndResolve(g.ids, "manual", "Manual")}
+                    className="px-2.5 py-1 text-[11px] font-semibold rounded bg-white border border-gray-300 text-ink-slate hover:bg-gray-50"
+                  >
+                    Mark all manual
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Bulk JE modal — pick target account + posting date once, apply to N
+// items. Combines BulkAccountPicker's filterable list with a date input
+// at the bottom so the bookkeeper doesn't bounce between two modals.
+// ────────────────────────────────────────────────────────────────────────
+
+function BulkJeModal({
+  accounts,
+  title,
+  subtitle,
+  accountFilter,
+  defaultDate,
+  onClose,
+  onConfirm,
+}: {
+  accounts: QboAccount[];
+  title: string;
+  subtitle: string;
+  accountFilter: "income" | "writeoff";
+  defaultDate: string;
+  onClose: () => void;
+  onConfirm: (opts: { accountId: string; accountName: string; jeDate: string }) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [picked, setPicked] = useState<QboAccount | null>(null);
+  const [jeDate, setJeDate] = useState(defaultDate);
+
+  const eligible = useMemo(() => {
+    return accounts.filter((a) => {
+      const t = (a.accountType || "").toLowerCase();
+      if (accountFilter === "income") {
+        return t.includes("income") || t.includes("revenue");
+      }
+      // writeoff
+      return (
+        t.includes("expense") ||
+        t.includes("equity") ||
+        t.includes("income") ||
+        t.includes("revenue") ||
+        t.includes("cost of goods")
+      );
+    });
+  }, [accounts, accountFilter]);
+
+  const filtered = eligible.filter((a) =>
+    a.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const dateValid = /^\d{4}-\d{2}-\d{2}$/.test(jeDate);
+  const canConfirm = picked != null && dateValid;
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/40 z-40" onClick={onClose} aria-hidden="true" />
+      <div className="fixed inset-0 z-50 flex items-center justify-center px-4 pointer-events-none">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md pointer-events-auto overflow-hidden flex flex-col max-h-[85vh]">
+          <div className="px-5 py-4 border-b border-gray-200">
+            <div className="text-sm font-bold text-navy">{title}</div>
+            <div className="text-xs text-ink-slate mt-0.5 leading-snug">{subtitle}</div>
+          </div>
+
+          {/* Date picker */}
+          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/40">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-ink-slate block mb-1">
+              JE posting date
+            </label>
+            <input
+              type="date"
+              value={jeDate}
+              onChange={(e) => setJeDate(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:border-teal"
+            />
+            <p className="text-[10px] text-ink-light mt-1 leading-snug">
+              Posts every JE on this date in QBO. Pick the CRM job period (or
+              the cleanup "as-of" date) so the period totals reconcile.
+            </p>
+          </div>
+
+          {/* Account search */}
+          <div className="px-4 py-2 border-b border-gray-100">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-ink-slate block mb-1">
+              Target account ({accountFilter === "income" ? "income only" : "writeoff-eligible"})
+            </label>
+            <input
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search accounts…"
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:border-teal"
+            />
+          </div>
+
+          {/* Account list */}
+          <div className="flex-1 overflow-auto divide-y divide-gray-100 max-h-[40vh]">
+            {filtered.length === 0 ? (
+              <div className="px-4 py-8 text-center text-sm text-ink-slate">
+                {search
+                  ? `No accounts match "${search}"`
+                  : accountFilter === "income"
+                  ? "No income accounts found in this QBO. Create one first (e.g. 'Sales — Painting' under Income)."
+                  : "No write-off-eligible accounts in this QBO."}
+              </div>
+            ) : (
+              filtered.map((a) => (
+                <button
+                  key={a.id}
+                  onClick={() => setPicked(a)}
+                  className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${
+                    picked?.id === a.id
+                      ? "bg-teal-lighter/60 border-l-4 border-teal"
+                      : "hover:bg-teal-lighter/30"
+                  }`}
+                >
+                  <div className="font-semibold text-navy">{a.name}</div>
+                  <div className="text-[11px] text-ink-slate">{a.accountType}</div>
+                </button>
+              ))
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="px-4 py-3 border-t border-gray-200 flex items-center justify-between gap-3">
+            <div className="text-[11px] text-ink-slate min-w-0 truncate">
+              {picked ? (
+                <>
+                  Selected: <strong className="text-navy">{picked.name}</strong> · {jeDate}
+                </>
+              ) : (
+                <>Pick an account to continue.</>
+              )}
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                onClick={onClose}
+                className="text-xs font-semibold text-ink-slate hover:text-navy px-3 py-1.5"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (!canConfirm || !picked) return;
+                  onConfirm({ accountId: picked.id, accountName: picked.name, jeDate });
+                }}
+                disabled={!canConfirm}
+                className="text-xs font-bold text-white bg-teal hover:bg-teal-dark disabled:opacity-40 disabled:cursor-not-allowed rounded px-3 py-1.5"
+              >
+                Apply to all
+              </button>
+            </div>
           </div>
         </div>
       </div>

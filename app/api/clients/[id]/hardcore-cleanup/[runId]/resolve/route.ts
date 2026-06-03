@@ -15,6 +15,8 @@ export const dynamic = "force-dynamic";
  *   resolution_target_account_id?: string,
  *   resolution_target_account_name?: string,
  *   resolution_notes?: string,
+ *   resolution_je_date?: string,    // YYYY-MM-DD — TxnDate the QBO
+ *                                    // posting uses. Null = today's date.
  * }
  */
 export async function POST(
@@ -92,11 +94,25 @@ export async function POST(
     }
   }
 
+  // Optional posting-date override. Validate YYYY-MM-DD shape so a typo
+  // in the UI can't corrupt the column.
+  let resolutionJeDate: string | null = null;
+  if (body.resolution_je_date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(body.resolution_je_date)) {
+      return NextResponse.json(
+        { error: "resolution_je_date must be YYYY-MM-DD" },
+        { status: 400 }
+      );
+    }
+    resolutionJeDate = body.resolution_je_date;
+  }
+
   const updates: any = {
     resolution: body.resolution,
     resolution_target_account_id: body.resolution_target_account_id || null,
     resolution_target_account_name: body.resolution_target_account_name || null,
     resolution_notes: body.resolution_notes || null,
+    resolution_je_date: resolutionJeDate,
     resolved_by: body.resolution === "pending" ? null : user.id,
     resolved_at: body.resolution === "pending" ? null : new Date().toISOString(),
   };
