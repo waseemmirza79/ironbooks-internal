@@ -118,7 +118,23 @@ export function BalanceSheetLanding({
   const [suggestions, setSuggestions] = useState<Record<string, Suggestion>>({});
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<{ recons: number; cats: number } | null>(null);
-  const [runningUFAR, setRunningUFAR] = useState(false);
+  // Hardcore-cleanup CSV-less scan state. Posts to /hardcore-cleanup/start
+  // with scan_mode=qbo_only — replaces the standalone /balance-sheet/uf-ar
+  // tool by running the same UF↔A/R matcher inside hardcore-cleanup's
+  // unified items/runs schema. Routes the bookkeeper to the review UI on
+  // success so apply_payment items can be bulk-finalized to QBO.
+  const [runningQboScan, setRunningQboScan] = useState(false);
+  const [qboScanError, setQboScanError] = useState<string>("");
+  const [qboScanResult, setQboScanResult] = useState<
+    | {
+        confident_matches: number;
+        low_confidence_matches: number;
+        unmatched: number;
+        confident_apply_dollars: number;
+        review_url: string;
+      }
+    | null
+  >(null);
   // Payroll double-entry scan state. Posts to the scanner endpoint, which
   // creates a new hardcore_cleanup_run + items. On success we route the
   // bookkeeper straight to the review UI for that run.
@@ -341,6 +357,32 @@ export function BalanceSheetLanding({
     }
   }
 
+  async function runQboScan() {
+    setRunningQboScan(true);
+    setQboScanError("");
+    setQboScanResult(null);
+    try {
+      const res = await fetch(`/api/clients/${clientLinkId}/hardcore-cleanup/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scan_mode: "qbo_only" }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      setQboScanResult({
+        confident_matches: json.confident_matches,
+        low_confidence_matches: json.low_confidence_matches,
+        unmatched: json.unmatched,
+        confident_apply_dollars: json.confident_apply_dollars,
+        review_url: json.review_url,
+      });
+    } catch (e: any) {
+      setQboScanError(e?.message || "QBO scan failed");
+    } finally {
+      setRunningQboScan(false);
+    }
+  }
+
   async function runPayrollScan() {
     setRunningPayrollScan(true);
     setPayrollScanError("");
@@ -364,29 +406,11 @@ export function BalanceSheetLanding({
     }
   }
 
-  async function runUFAR() {
-    setRunningUFAR(true);
-    setError("");
-    try {
-      const res = await fetch("/api/balance-sheet/uf-ar-discover", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_link_id: clientLinkId }),
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        if (json.existing_job_id) {
-          router.push(`/balance-sheet/uf-ar/${json.existing_job_id}/review`);
-          return;
-        }
-        throw new Error(json.error || `HTTP ${res.status}`);
-      }
-      router.push(`/balance-sheet/uf-ar/${json.job_id}/review`);
-    } catch (e: any) {
-      setError(e.message || "Could not start UF→A/R match");
-      setRunningUFAR(false);
-    }
-  }
+  // (Legacy runUFAR removed — replaced by runQboScan which routes UF↔A/R
+  // matching through hardcore_cleanup's unified runs/items so apply_payment
+  // resolutions can be bulk-finalized to QBO in one place. The standalone
+  // /balance-sheet/uf-ar/[id]/review path stays available for in-flight
+  // jobs until commit 3 sunsets it; new scans land on the new flow.)
 
   // Order accounts so banks come first, then CCs, then loans.
   const orderedAccounts = useMemo(() => {
@@ -413,7 +437,11 @@ export function BalanceSheetLanding({
           vs real duplicates correctly. */}
       <ExternalInvoiceUpload clientLinkId={clientLinkId} />
 
-      {/* UF → A/R top action */}
+      {/* UF → A/R direct scan (no CSV required) — runs the same
+          matchUFtoAR engine the legacy /balance-sheet/uf-ar tool used,
+          but persists into hardcore_cleanup_runs/items so the bookkeeper
+          can bulk-finalize in one place. Confident matches land as
+          apply_payment resolutions ready for Finalize. */}
       <div className="rounded-2xl bg-gradient-to-br from-teal-lighter to-white border border-teal/30 p-5">
         <div className="flex items-start gap-3">
           <div className="p-2.5 rounded-xl bg-teal-light flex-shrink-0">
@@ -421,25 +449,73 @@ export function BalanceSheetLanding({
           </div>
           <div className="flex-1 min-w-0">
             <h2 className="text-sm font-bold text-navy">
-              Match Undeposited Funds to A/R
+              Match Undeposited Funds to A/R (no CSV needed)
             </h2>
             <p className="text-xs text-ink-slate mt-1 leading-relaxed">
-              Scan every UF payment and cross-reference against open A/R
-              invoices. Memo refs like INV-1234 → exact match; customer +
-              amount → high-confidence suggestion; rest → manual picker.
+              Scans every QBO UF payment against open A/R invoices.
+              Exact invoice refs (INV-1234 in memo) → auto-applied.
+              Same customer + exact amount → auto-applied. Rest → manual
+              picker. Confident matches push to QBO via Finalize.
             </p>
+            {qboScanError && (
+              <p className="mt-2 text-xs text-red-700 font-semibold">
+                {qboScanError}
+              </p>
+            )}
+            {qboScanResult && (
+              <div className="mt-2 text-xs space-y-0.5">
+                {qboScanResult.confident_matches === 0 &&
+                qboScanResult.low_confidence_matches === 0 &&
+                qboScanResult.unmatched === 0 ? (
+                  <span className="text-green-700 font-semibold">
+                    ✓ No Undeposited Funds payments to reconcile — UF is clean.
+                  </span>
+                ) : (
+                  <>
+                    <a
+                      href={qboScanResult.review_url}
+                      className="inline-flex items-center gap-1.5 text-teal font-bold hover:text-teal-dark underline"
+                    >
+                      {qboScanResult.confident_matches} ready-to-apply
+                      {qboScanResult.confident_apply_dollars > 0 && (
+                        <>
+                          {" "}($
+                          {qboScanResult.confident_apply_dollars.toLocaleString("en-US", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })})
+                        </>
+                      )}
+                      {qboScanResult.low_confidence_matches > 0 && (
+                        <>
+                          {", "}
+                          {qboScanResult.low_confidence_matches} need picker
+                        </>
+                      )}
+                      {qboScanResult.unmatched > 0 && (
+                        <>
+                          {", "}
+                          {qboScanResult.unmatched} unmatched
+                        </>
+                      )}
+                      {" "}— review →
+                    </a>
+                  </>
+                )}
+              </div>
+            )}
           </div>
           <button
-            onClick={runUFAR}
-            disabled={runningUFAR}
+            onClick={runQboScan}
+            disabled={runningQboScan}
             className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-60 text-white text-xs font-semibold px-4 py-2 rounded-lg flex-shrink-0"
           >
-            {runningUFAR ? (
+            {runningQboScan ? (
               <Loader2 size={14} className="animate-spin" />
             ) : (
               <Sparkles size={14} />
             )}
-            {runningUFAR ? "Starting…" : "Scan UF → A/R"}
+            {runningQboScan ? "Scanning…" : "Scan UF → A/R"}
             <ArrowRight size={12} />
           </button>
         </div>

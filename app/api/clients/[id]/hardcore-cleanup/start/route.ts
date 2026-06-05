@@ -13,6 +13,7 @@ import {
   reconcileCrmAgainstQbo,
   type CrmSource,
 } from "@/lib/hardcore-cleanup";
+import { matchUFtoAR } from "@/lib/uf-ar-matcher";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -77,14 +78,35 @@ export async function POST(
   }
 
   const body = await request.json().catch(() => ({} as any));
-  const crmSource = body.crm_source as CrmSource;
-  const crmFilename = body.crm_filename || null;
+  // CSV becomes optional. Two scan modes:
+  //   - "csv"      : bookkeeper uploaded a CRM (DripJobs/Jobber/generic)
+  //                  CSV. Existing flow — CRM↔QBO duplicate detection,
+  //                  CRM↔UF reconciliation, missing-invoice flags.
+  //   - "qbo_only" : no CSV. Just scan QBO directly — UF↔A/R direct
+  //                   matching via matchUFtoAR. Replaces the standalone
+  //                   /balance-sheet/uf-ar tool.
+  // When the body sends a non-empty csv_text we default to "csv"; when
+  // it's empty we default to "qbo_only". An explicit scan_mode overrides.
   const csvText = body.csv_text || "";
-  if (!["drip_jobs", "jobber", "generic"].includes(crmSource)) {
-    return NextResponse.json({ error: "Invalid crm_source" }, { status: 400 });
-  }
-  if (!csvText.trim()) {
-    return NextResponse.json({ error: "csv_text is required" }, { status: 400 });
+  const explicitScanMode = body.scan_mode as "csv" | "qbo_only" | undefined;
+  const scanMode: "csv" | "qbo_only" =
+    explicitScanMode === "csv" || explicitScanMode === "qbo_only"
+      ? explicitScanMode
+      : csvText.trim()
+      ? "csv"
+      : "qbo_only";
+  const crmSource = (body.crm_source as CrmSource | undefined) || "generic";
+  const crmFilename = body.crm_filename || null;
+  if (scanMode === "csv") {
+    if (!["drip_jobs", "jobber", "generic"].includes(crmSource)) {
+      return NextResponse.json({ error: "Invalid crm_source" }, { status: 400 });
+    }
+    if (!csvText.trim()) {
+      return NextResponse.json(
+        { error: "csv_text is required for scan_mode=csv" },
+        { status: 400 }
+      );
+    }
   }
   // Vercel serverless function body limit is ~4.5MB. JSON-encoded CSV
   // adds overhead. Cap at 4MB raw to keep us well under.
@@ -139,6 +161,217 @@ export async function POST(
   const runId = (runIns as any).id as string;
   const t0 = Date.now();
 
+  // ──────────────────────────────────────────────────────────────
+  // SCAN_MODE = "qbo_only" — no CSV, direct UF↔A/R reconciliation.
+  // Replaces the standalone /balance-sheet/uf-ar flow.
+  // ──────────────────────────────────────────────────────────────
+  if (scanMode === "qbo_only") {
+    try {
+      await service
+        .from("hardcore_cleanup_runs" as any)
+        .update({ status: "matching" } as any)
+        .eq("id", runId);
+      const accessToken = await getValidToken(clientLinkId, service as any);
+      const realmId = (client as any).qbo_realm_id as string;
+      if (!realmId) {
+        throw new Error("Client has no qbo_realm_id — connect QBO first.");
+      }
+      const invoices = await fetchOpenInvoices(realmId, accessToken);
+
+      // UF fetch is failure-tolerant: clients without a UF account get
+      // an empty list, scan completes with 0 items, no crash.
+      let ufPayments: Awaited<ReturnType<typeof fetchUndepositedFundsPayments>> = [];
+      try {
+        const ufAcctId = await findUndepositedFundsAccountId(realmId, accessToken);
+        if (ufAcctId) {
+          ufPayments = await fetchUndepositedFundsPayments(realmId, accessToken, ufAcctId);
+        }
+      } catch (err: any) {
+        console.warn(
+          `[hardcore-start ${runId}] UF fetch failed (qbo_only mode): ${err?.message}`
+        );
+      }
+
+      // Persist UF payment snapshots so the review UI is stable + the
+      // resolution UI can show full payment context. Same shape the
+      // CSV flow uses.
+      const ufRowIdByQboId = new Map<string, string>();
+      if (ufPayments.length > 0) {
+        const ufInsertRows = ufPayments.map((p) => ({
+          run_id: runId,
+          qbo_payment_id: p.qbo_payment_id,
+          qbo_object_type: "Payment",
+          qbo_customer_id: p.customer_id,
+          qbo_customer_name: p.customer_name,
+          payment_date: p.date,
+          amount: p.amount,
+          memo: p.memo,
+          existing_linked_txns: null,
+        }));
+        const BATCH = 200;
+        for (let i = 0; i < ufInsertRows.length; i += BATCH) {
+          const { data: returned, error: ue } = await service
+            .from("hardcore_cleanup_uf_payments" as any)
+            .insert(ufInsertRows.slice(i, i + BATCH) as any)
+            .select("id, qbo_payment_id");
+          if (ue) throw new Error(`UF payments insert failed: ${ue.message}`);
+          for (const row of (returned as any[]) || []) {
+            ufRowIdByQboId.set(row.qbo_payment_id, row.id);
+          }
+        }
+      }
+
+      // Run UF↔A/R matcher. Returns one MatchResult per UF payment.
+      const matches = matchUFtoAR(ufPayments, invoices);
+
+      // Map MatchResult → hardcore_cleanup_items row.
+      // - exact_invoice_number / high_confidence → uf_to_ar_match,
+      //   resolution=apply_payment (auto-resolved so the bookkeeper can
+      //   bulk-finalize without picking).
+      // - low_confidence → uf_to_ar_match, resolution=pending (needs
+      //   bookkeeper to pick from candidate list).
+      // - unmatched → unmatched_uf, resolution=pending.
+      const itemsToInsert: any[] = [];
+      for (const m of matches) {
+        const ufRowId = ufRowIdByQboId.get(m.payment.qbo_payment_id) || null;
+        const pickedInv = m.proposed[0] || null;
+        const isConfident =
+          m.kind === "exact_invoice_number" || m.kind === "high_confidence";
+        if (isConfident && pickedInv) {
+          itemsToInsert.push({
+            run_id: runId,
+            client_link_id: clientLinkId,
+            item_type: "uf_to_ar_match",
+            qbo_invoice_id: pickedInv.qbo_invoice_id,
+            qbo_invoice_doc_number: pickedInv.doc_number,
+            qbo_invoice_date: pickedInv.txn_date,
+            qbo_invoice_amount: pickedInv.total_amount,
+            qbo_invoice_balance: pickedInv.balance,
+            qbo_customer_name: pickedInv.customer_name,
+            qbo_customer_id: pickedInv.customer_id,
+            uf_payment_id: m.payment.qbo_payment_id,
+            uf_customer_name: m.payment.customer_name,
+            uf_payment_amount: m.payment.amount,
+            uf_payment_date: m.payment.date,
+            uf_row_id: ufRowId,
+            confidence: m.confidence,
+            reasoning: m.reasoning,
+            // Auto-resolve confident matches: bookkeeper hits Finalize
+            // and the existing applyPaymentToInvoices path runs.
+            resolution: "apply_payment",
+            resolution_target_account_id: null,
+            resolution_target_account_name: null,
+          });
+        } else if (m.kind === "low_confidence" && pickedInv) {
+          itemsToInsert.push({
+            run_id: runId,
+            client_link_id: clientLinkId,
+            item_type: "uf_to_ar_match",
+            qbo_invoice_id: pickedInv.qbo_invoice_id,
+            qbo_invoice_doc_number: pickedInv.doc_number,
+            qbo_invoice_date: pickedInv.txn_date,
+            qbo_invoice_amount: pickedInv.total_amount,
+            qbo_invoice_balance: pickedInv.balance,
+            qbo_customer_name: pickedInv.customer_name,
+            qbo_customer_id: pickedInv.customer_id,
+            uf_payment_id: m.payment.qbo_payment_id,
+            uf_customer_name: m.payment.customer_name,
+            uf_payment_amount: m.payment.amount,
+            uf_payment_date: m.payment.date,
+            uf_row_id: ufRowId,
+            confidence: m.confidence,
+            reasoning: m.reasoning,
+            // Bookkeeper must pick — finalize will skip pending items.
+            resolution: "pending",
+            resolution_target_account_id: null,
+            resolution_target_account_name: null,
+          });
+        } else {
+          // unmatched — no A/R candidate worth surfacing
+          itemsToInsert.push({
+            run_id: runId,
+            client_link_id: clientLinkId,
+            item_type: "unmatched_uf",
+            uf_payment_id: m.payment.qbo_payment_id,
+            uf_customer_name: m.payment.customer_name,
+            uf_payment_amount: m.payment.amount,
+            uf_payment_date: m.payment.date,
+            uf_row_id: ufRowId,
+            confidence: m.confidence,
+            reasoning: m.reasoning,
+            resolution: "pending",
+          });
+        }
+      }
+
+      if (itemsToInsert.length > 0) {
+        const BATCH = 200;
+        for (let i = 0; i < itemsToInsert.length; i += BATCH) {
+          const { error: ie } = await service
+            .from("hardcore_cleanup_items" as any)
+            .insert(itemsToInsert.slice(i, i + BATCH) as any);
+          if (ie) throw new Error(`Items insert failed: ${ie.message}`);
+        }
+      }
+
+      const confidentCount = matches.filter(
+        (m) => m.kind === "exact_invoice_number" || m.kind === "high_confidence"
+      ).length;
+      const lowConfCount = matches.filter((m) => m.kind === "low_confidence").length;
+      const unmatchedCount = matches.filter((m) => m.kind === "unmatched").length;
+      const totalConfidentDollars = matches
+        .filter((m) => m.kind === "exact_invoice_number" || m.kind === "high_confidence")
+        .reduce((s, m) => s + Math.abs(m.payment.amount), 0);
+
+      await service
+        .from("hardcore_cleanup_runs" as any)
+        .update({
+          status: "review",
+          duplicates_detected: matches.length,
+          finalize_results: {
+            scan_mode: "qbo_only",
+            uf_payments_scanned: ufPayments.length,
+            open_invoices_scanned: invoices.length,
+            confident_matches: confidentCount,
+            low_confidence_matches: lowConfCount,
+            unmatched: unmatchedCount,
+            confident_apply_dollars: Math.round(totalConfidentDollars * 100) / 100,
+            duration_ms: Date.now() - t0,
+          },
+        } as any)
+        .eq("id", runId);
+
+      return NextResponse.json({
+        ok: true,
+        run_id: runId,
+        scan_mode: "qbo_only",
+        uf_payments_scanned: ufPayments.length,
+        open_invoices_scanned: invoices.length,
+        confident_matches: confidentCount,
+        low_confidence_matches: lowConfCount,
+        unmatched: unmatchedCount,
+        confident_apply_dollars: Math.round(totalConfidentDollars * 100) / 100,
+        review_url: `/balance-sheet/${clientLinkId}/hardcore-cleanup?run_id=${runId}`,
+      });
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      await service
+        .from("hardcore_cleanup_runs" as any)
+        .update({
+          status: "failed",
+          error_message: msg.slice(0, 1000),
+        } as any)
+        .eq("id", runId);
+      return NextResponse.json(
+        { error: `qbo_only scan failed: ${msg}`, run_id: runId },
+        { status: 500 }
+      );
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────
+  // SCAN_MODE = "csv" — existing CRM CSV upload flow.
+  // ──────────────────────────────────────────────────────────────
   try {
     // 1. Parse CSV
     const rawRows = parseCsv(csvText);
