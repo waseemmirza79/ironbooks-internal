@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   Home, Sparkles, Flag, Users, LogOut, BookOpen, Clock,
   Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight, Receipt, KanbanSquare, Sun,
-  FileSpreadsheet, Wallet, Volume2, VolumeX,
+  FileSpreadsheet, Wallet, Volume2, VolumeX, HeartPulse,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
@@ -18,6 +18,7 @@ const standardItems = [
   { href: "/today", label: "Today", icon: Sun },
   { href: "/kanban", label: "Workflow", icon: KanbanSquare },
   { href: "/clients", label: "Clients", icon: Users },
+  { href: "/advisor", label: "Strategic Advisor", icon: HeartPulse },
   { href: "/templates", label: "Master COA", icon: BookOpen },
   { href: "/history", label: "Job History", icon: Clock },
 ];
