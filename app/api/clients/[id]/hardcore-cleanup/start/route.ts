@@ -14,6 +14,10 @@ import {
   type CrmSource,
 } from "@/lib/hardcore-cleanup";
 import { matchUFtoAR } from "@/lib/uf-ar-matcher";
+import {
+  findUncategorizedIncomeAccount,
+  scanUncatIncome,
+} from "@/lib/uncat-income-recovery";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -395,11 +399,87 @@ export async function POST(
         .filter((m) => m.kind === "exact_invoice_number" || m.kind === "high_confidence")
         .reduce((s, m) => s + Math.abs(m.payment.amount), 0);
 
+      // ── Uncategorized Income scan ────────────────────────────────────
+      // Consolidates the standalone /uncat-income-recovery tool. Pulls
+      // every Deposit/JE Line that posts to an "Uncategorized Income"
+      // account, tries to match each to an open invoice via
+      // classifyDeterministic (same logic the standalone tool uses).
+      // Hits become hardcore_cleanup_items.item_type = 'uncat_income'.
+      // Fail-soft: clients with no Uncat Income account get a no-op +
+      // a note in finalize_results; the UF results above still ship.
+      let uncatItemsCount = 0;
+      let uncatTotalDollars = 0;
+      let uncatScanNote: string | null = null;
+      try {
+        const uncatAccount = await findUncategorizedIncomeAccount(
+          realmId,
+          accessToken
+        );
+        if (!uncatAccount) {
+          uncatScanNote = "No Uncategorized Income account in this QBO — skipped.";
+        } else {
+          const uncatResult = await scanUncatIncome(realmId, accessToken, uncatAccount);
+          const uncatItemsToInsert: any[] = uncatResult.items.map((it) => {
+            const exact = it.classification === "exact_single";
+            const candidate = it.candidates[0] || null;
+            return {
+              run_id: runId,
+              client_link_id: clientLinkId,
+              item_type: "uncat_income",
+              // Re-purpose qbo_invoice_* columns to hold the matched
+              // candidate invoice (when classification != no_match)
+              // so the existing review UI can render the suggestion.
+              qbo_invoice_id: candidate?.qbo_invoice_id || it.qbo_txn_id,
+              qbo_invoice_doc_number: candidate?.doc_number || null,
+              qbo_invoice_date: candidate?.txn_date || it.txn_date,
+              qbo_invoice_amount: candidate?.balance || it.amount,
+              qbo_invoice_balance: candidate?.balance || it.amount,
+              qbo_customer_name:
+                candidate?.customer_name || it.customer_name || null,
+              qbo_customer_id:
+                candidate?.customer_qbo_id || it.customer_qbo_id || null,
+              qbo_invoice_memo: it.description || it.private_note,
+              confidence:
+                it.classification === "exact_single"
+                  ? 0.95
+                  : it.classification === "exact_multi"
+                  ? 0.6
+                  : 0.3,
+              reasoning: buildUncatIncomeReasoning(it),
+              // Conservative v1 resolution: never auto-apply. Bookkeeper
+              // reviews each and picks manual / keep / je_writeoff. The
+              // v2 commit will wire a `recategorize` resolution that
+              // does the sparse update on the Deposit/JE Line.
+              resolution: "pending" as const,
+            };
+          });
+          if (uncatItemsToInsert.length > 0) {
+            const BATCH = 200;
+            for (let i = 0; i < uncatItemsToInsert.length; i += BATCH) {
+              const { error: ie } = await service
+                .from("hardcore_cleanup_items" as any)
+                .insert(uncatItemsToInsert.slice(i, i + BATCH) as any);
+              if (ie) throw new Error(`Uncat income items insert failed: ${ie.message}`);
+            }
+          }
+          uncatItemsCount = uncatResult.items.length;
+          uncatTotalDollars = uncatResult.total_uncat_amount;
+        }
+      } catch (err: any) {
+        // Don't fail the run if uncat-income scan errors — keep the UF
+        // results. Record the error in finalize_results for diagnosis.
+        uncatScanNote = `uncat-income scan failed: ${err?.message || String(err)}`;
+        console.warn(
+          `[hardcore-start ${runId}] uncat-income scan failed:`,
+          err?.message
+        );
+      }
+
       await service
         .from("hardcore_cleanup_runs" as any)
         .update({
           status: "review",
-          duplicates_detected: matches.length,
+          duplicates_detected: matches.length + uncatItemsCount,
           finalize_results: {
             scan_mode: "qbo_only",
             uf_payments_scanned: ufPayments.length,
@@ -408,6 +488,9 @@ export async function POST(
             low_confidence_matches: lowConfCount,
             unmatched: unmatchedCount,
             confident_apply_dollars: Math.round(totalConfidentDollars * 100) / 100,
+            uncat_income_items: uncatItemsCount,
+            uncat_income_dollars: Math.round(uncatTotalDollars * 100) / 100,
+            uncat_income_note: uncatScanNote,
             duration_ms: Date.now() - t0,
           },
         } as any)
@@ -423,6 +506,9 @@ export async function POST(
         low_confidence_matches: lowConfCount,
         unmatched: unmatchedCount,
         confident_apply_dollars: Math.round(totalConfidentDollars * 100) / 100,
+        uncat_income_items: uncatItemsCount,
+        uncat_income_dollars: Math.round(uncatTotalDollars * 100) / 100,
+        uncat_income_note: uncatScanNote,
         review_url: `/balance-sheet/${clientLinkId}/hardcore-cleanup?run_id=${runId}`,
       });
     } catch (err: any) {
@@ -768,4 +854,57 @@ export async function POST(
       { status: 500 }
     );
   }
+}
+
+/**
+ * Bookkeeper-readable reasoning for an uncat-income item. Picks the
+ * tightest description the classifier can produce so the review row
+ * tells the bookkeeper exactly what to do without opening QBO.
+ */
+function buildUncatIncomeReasoning(it: {
+  classification: "exact_single" | "exact_multi" | "ai_inferred" | "no_match";
+  qbo_txn_type: string;
+  txn_date: string;
+  amount: number;
+  description: string;
+  private_note: string;
+  customer_name: string | null;
+  candidates: Array<{
+    qbo_invoice_id: string;
+    doc_number: string | null;
+    customer_name: string | null;
+    balance: number;
+  }>;
+}): string {
+  const cust =
+    it.customer_name ||
+    it.candidates[0]?.customer_name ||
+    "(no customer on txn)";
+  const amt = `$${Math.abs(it.amount).toFixed(2)}`;
+  const memo =
+    (it.description || it.private_note || "").slice(0, 120).trim() || "(no memo)";
+  if (it.classification === "exact_single") {
+    const c = it.candidates[0];
+    return (
+      `${it.qbo_txn_type} ${amt} on ${it.txn_date} for ${cust} hit Uncategorized Income. ` +
+      `Open invoice #${c?.doc_number || c?.qbo_invoice_id} for the same amount is the likely target — ` +
+      `recategorize the deposit line to A/R + Apply to invoice in QBO. Memo: "${memo}".`
+    );
+  }
+  if (it.classification === "exact_multi") {
+    return (
+      `${it.qbo_txn_type} ${amt} on ${it.txn_date} for ${cust} hit Uncategorized Income. ` +
+      `${it.candidates.length} open invoices for this customer share the amount — pick the right one in QBO and apply. Memo: "${memo}".`
+    );
+  }
+  if (it.classification === "ai_inferred") {
+    return (
+      `${it.qbo_txn_type} ${amt} on ${it.txn_date} hit Uncategorized Income with no customer on the line. ` +
+      `AI inferred this might be from ${cust} — confirm before applying. Memo: "${memo}".`
+    );
+  }
+  return (
+    `${it.qbo_txn_type} ${amt} on ${it.txn_date} hit Uncategorized Income — no open invoice matches. ` +
+    `Either recategorize to the correct revenue account (Painting Revenue, etc.) or apply to a paid-already invoice in QBO. Memo: "${memo}".`
+  );
 }
