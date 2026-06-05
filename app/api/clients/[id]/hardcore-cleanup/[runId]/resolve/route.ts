@@ -60,6 +60,9 @@ export async function POST(
   const allowed = new Set([
     "pending", "je_writeoff", "direct_void", "keep", "manual",
     "push_invoice", "apply_payment",
+    // v6 — uncat_income items: bookkeeper picks a target revenue account
+    // and finalize sparse-updates the Deposit/JE Line.AccountRef in QBO.
+    "recategorize",
   ]);
   if (!allowed.has(body.resolution)) {
     return NextResponse.json({ error: `Invalid resolution: ${body.resolution}` }, { status: 400 });
@@ -68,6 +71,14 @@ export async function POST(
   if (body.resolution === "je_writeoff" && !body.resolution_target_account_id) {
     return NextResponse.json(
       { error: "je_writeoff requires resolution_target_account_id (Bad Debt / similar)" },
+      { status: 400 }
+    );
+  }
+  // recategorize also requires a target account — that's the whole point.
+  // Finalize sparse-updates the Deposit/JE Line's AccountRef to this id.
+  if (body.resolution === "recategorize" && !body.resolution_target_account_id) {
+    return NextResponse.json(
+      { error: "recategorize requires resolution_target_account_id (the target revenue account)" },
       { status: 400 }
     );
   }

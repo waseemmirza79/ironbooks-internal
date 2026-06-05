@@ -595,6 +595,149 @@ export async function POST(
         continue;
       }
 
+      // recategorize — sparse-update the Deposit or JournalEntry whose
+      // Line currently posts to Uncategorized Income, swapping that
+      // Line's AccountRef.value to the bookkeeper-picked target. Used
+      // for uncat_income items so the deposit moves from "Uncategorized
+      // Income" to the real revenue account (Painting Revenue etc.)
+      // without the bookkeeper opening QBO.
+      //
+      // Implementation notes:
+      //   - We look up the txn by qbo_invoice_id (re-purposed at ingest
+      //     time to hold the Deposit/JE id for uncat_income items).
+      //   - QBO requires the FULL Line[] array on sparse update; we
+      //     fetch the txn first to get the current SyncToken + Line[]
+      //     shape, then rewrite only the matching Line(s).
+      //   - Two txn types in scope: Deposit (Line[].DepositLineDetail.AccountRef)
+      //     and JournalEntry (Line[].JournalEntryLineDetail.AccountRef).
+      //   - We do NOT attempt to convert a Deposit into a Payment with
+      //     LinkedTxn here — that's a separate "apply_payment" flow.
+      //     recategorize ONLY moves the account; bookkeeper applies to
+      //     an invoice via the apply_payment resolution if needed.
+      if (item.resolution === "recategorize") {
+        const target = accountById.get(item.resolution_target_account_id);
+        if (!target) {
+          throw new Error(
+            `Target account ${item.resolution_target_account_id} not found in QBO. Pick another.`
+          );
+        }
+        if (target.Active === false) {
+          throw new Error(`Target account "${target.Name}" is inactive — pick another.`);
+        }
+        const txnId = item.qbo_invoice_id;
+        if (!txnId) {
+          throw new Error(
+            `recategorize requires the source Deposit/JE id (item.qbo_invoice_id is null).`
+          );
+        }
+
+        // Try Deposit first (most common for uncat_income items), then JE
+        // as a fallback. We don't know which one ahead of time because
+        // uncat_income items don't carry txn_type on the row.
+        let txn: any = null;
+        let txnType: "Deposit" | "JournalEntry" | null = null;
+        try {
+          const q1 = encodeURIComponent(`SELECT * FROM Deposit WHERE Id = '${txnId}'`);
+          const r1: any = await qboCall(`/query?query=${q1}`, undefined, "GET");
+          const d = r1?.QueryResponse?.Deposit?.[0];
+          if (d) {
+            txn = d;
+            txnType = "Deposit";
+          }
+        } catch {
+          // try JE below
+        }
+        if (!txn) {
+          const q2 = encodeURIComponent(`SELECT * FROM JournalEntry WHERE Id = '${txnId}'`);
+          const r2: any = await qboCall(`/query?query=${q2}`, undefined, "GET");
+          const je = r2?.QueryResponse?.JournalEntry?.[0];
+          if (je) {
+            txn = je;
+            txnType = "JournalEntry";
+          }
+        }
+        if (!txn || !txnType) {
+          throw new Error(
+            `Could not find Deposit or JournalEntry with id ${txnId} in QBO (may have been deleted).`
+          );
+        }
+
+        const detailKey =
+          txnType === "Deposit" ? "DepositLineDetail" : "JournalEntryLineDetail";
+        const lines: any[] = Array.isArray(txn.Line) ? txn.Line : [];
+        if (lines.length === 0) {
+          throw new Error(`${txnType} ${txnId} has no Line[] to update.`);
+        }
+        // Rewrite every line whose AccountRef points at the current
+        // (Uncategorized Income) account. We don't have the source
+        // account id on the item, so we identify by name fallback:
+        // any Line whose AccountRef.name matches /uncategori[sz]ed/i
+        // gets swapped. Conservative — if the bookkeeper has a vendor
+        // also literally named "Uncategorized" they'd notice.
+        let mutated = 0;
+        const newLines = lines.map((ln) => {
+          const detail = ln[detailKey] || {};
+          const accRef = detail.AccountRef;
+          if (!accRef) return ln;
+          const isUncat = /uncategori[sz]ed/i.test(String(accRef.name || ""));
+          if (!isUncat) return ln;
+          mutated++;
+          return {
+            ...ln,
+            [detailKey]: {
+              ...detail,
+              AccountRef: { value: target.Id, name: target.Name },
+            },
+          };
+        });
+        if (mutated === 0) {
+          throw new Error(
+            `No Uncategorized Income line found on ${txnType} ${txnId}. ` +
+              `It may have already been recategorized — refresh + re-scan.`
+          );
+        }
+
+        const updateBody: any = {
+          Id: txn.Id,
+          SyncToken: txn.SyncToken,
+          sparse: true,
+          Line: newLines,
+          PrivateNote:
+            (txn.PrivateNote || "") +
+            (txn.PrivateNote ? "\n" : "") +
+            `Ironbooks BS Cleanup (${bookkeeperName}): recategorized ` +
+            `${mutated} line${mutated === 1 ? "" : "s"} from Uncategorized Income → "${target.Name}"`,
+        };
+        const endpoint =
+          txnType === "Deposit"
+            ? "/deposit?minorversion=70"
+            : "/journalentry?minorversion=70";
+        const updated: any = await qboCall(endpoint, updateBody);
+
+        await service
+          .from("hardcore_cleanup_items" as any)
+          .update({
+            resolution: "executed",
+            resolved_at: new Date().toISOString(),
+            resolution_notes:
+              `Recategorized ${mutated} line(s) on ${txnType} ${txnId} ` +
+              `from Uncategorized Income → ${target.Name}.`,
+          } as any)
+          .eq("id", item.id);
+        executed++;
+        results.push({
+          id: item.id,
+          type: "recategorize",
+          status: "ok",
+          txn_type: txnType,
+          txn_id: txnId,
+          lines_updated: mutated,
+          new_account: target.Name,
+          new_sync_token: updated?.[txnType]?.SyncToken,
+        });
+        continue;
+      }
+
       throw new Error(`Unknown resolution ${item.resolution}`);
     } catch (err: any) {
       const msg = err?.message || String(err);
