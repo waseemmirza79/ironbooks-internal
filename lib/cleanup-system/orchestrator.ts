@@ -109,48 +109,60 @@ export async function startCleanupRun(
     .single();
   if (runErr) throw new Error(`Failed to create run: ${runErr.message}`);
 
-  const snapshot = await pullQboSnapshot(service, clientLinkId, asOfDate, bookkeeperId);
+  try {
+    const snapshot = await pullQboSnapshot(service, clientLinkId, asOfDate, bookkeeperId);
 
-  const healthScoreId = await saveHealthScore(
-    service,
-    clientLinkId,
-    run.id,
-    snapshot.snapshotId,
-    { trialBalance: snapshot.trialBalance, balanceSheet: snapshot.balanceSheet }
-  );
+    const healthScoreId = await saveHealthScore(
+      service,
+      clientLinkId,
+      run.id,
+      snapshot.snapshotId,
+      { trialBalance: snapshot.trialBalance, balanceSheet: snapshot.balanceSheet }
+    );
 
-  await service
-    .from("cleanup_runs")
-    .update({
-      snapshot_id: snapshot.snapshotId,
-      health_score_id: healthScoreId,
-      status: "reviewing",
-      current_module: "bank_recon",
-      updated_at: new Date().toISOString(),
-    } as any)
-    .eq("id", run.id);
+    await service
+      .from("cleanup_runs")
+      .update({
+        snapshot_id: snapshot.snapshotId,
+        health_score_id: healthScoreId,
+        status: "reviewing",
+        current_module: "bank_recon",
+        updated_at: new Date().toISOString(),
+      } as any)
+      .eq("id", run.id);
 
-  // Initialize module rows
-  const moduleRows = MODULE_ORDER.map((module, idx) => ({
-    run_id: run.id,
-    module,
-    status: (idx === 0 ? "ready" : "locked") as CleanupModuleStatus,
-  }));
-  await service.from("cleanup_run_modules").insert(moduleRows as any);
-
-  await service.from("audit_log").insert({
-    event_type: "cleanup_run_started",
-    user_id: bookkeeperId,
-    occurred_at: new Date().toISOString(),
-    request_payload: {
-      client_link_id: clientLinkId,
+    // Initialize module rows
+    const moduleRows = MODULE_ORDER.map((module, idx) => ({
       run_id: run.id,
-      period_lock_date: opts.periodLockDate,
-      health_score_id: healthScoreId,
-    },
-  } as any);
+      module,
+      status: (idx === 0 ? "ready" : "locked") as CleanupModuleStatus,
+    }));
+    await service.from("cleanup_run_modules").insert(moduleRows as any);
 
-  return { runId: run.id, healthScoreId };
+    await service.from("audit_log").insert({
+      event_type: "cleanup_run_started",
+      user_id: bookkeeperId,
+      occurred_at: new Date().toISOString(),
+      request_payload: {
+        client_link_id: clientLinkId,
+        run_id: run.id,
+        period_lock_date: opts.periodLockDate,
+        health_score_id: healthScoreId,
+      },
+    } as any);
+
+    return { runId: run.id, healthScoreId };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await service
+      .from("cleanup_runs")
+      .update({
+        status: "failed",
+        updated_at: new Date().toISOString(),
+      } as any)
+      .eq("id", run.id);
+    throw err instanceof Error ? err : new Error(message);
+  }
 }
 
 export function getNextModule(current: CleanupModule): CleanupModule | null {

@@ -2,6 +2,7 @@ import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { CleanupPilotBanner } from "@/components/CleanupPilotBanner";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
+import { getValidToken, QBOReauthRequiredError } from "@/lib/qbo";
 import { redirect, notFound } from "next/navigation";
 import { CleanupStartClient } from "./cleanup-start-client";
 
@@ -25,10 +26,25 @@ export default async function CleanupEntryPage({
   const service = createServiceSupabase();
   const { data: client } = await service
     .from("client_links")
-    .select("id, client_name, jurisdiction, state_province, cleanup_completed_at")
+    .select("id, client_name, jurisdiction, state_province, cleanup_completed_at, qbo_realm_id")
     .eq("id", client_id)
     .single();
   if (!client) notFound();
+
+  const hasQbo = !!(client as any).qbo_realm_id;
+  let qboStatus: "connected" | "token_expired" | "never_connected" = "never_connected";
+  if (hasQbo) {
+    try {
+      await getValidToken(client_id, service as any);
+      qboStatus = "connected";
+    } catch (e) {
+      if (e instanceof QBOReauthRequiredError) {
+        qboStatus = "token_expired";
+      } else {
+        qboStatus = "token_expired";
+      }
+    }
+  }
 
   const { data: activeRun } = await service
     .from("cleanup_runs")
@@ -53,6 +69,7 @@ export default async function CleanupEntryPage({
         <CleanupStartClient
           clientLinkId={(client as any).id}
           clientName={(client as any).client_name}
+          qboStatus={qboStatus}
         />
       </div>
     </AppShell>

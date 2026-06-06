@@ -2,6 +2,7 @@ import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 import { requireStaff, requireOwnerOrSenior } from "@/lib/cleanup-system/auth";
 import { startCleanupRun, checkActiveRun } from "@/lib/cleanup-system/orchestrator";
+import { qboErrorResponse } from "@/lib/qbo";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 800;
@@ -45,8 +46,11 @@ export async function POST(request: Request) {
       { periodLockDate: period_lock_date, workflowMode: workflow_mode, asOfDate: as_of_date }
     );
     return NextResponse.json({ ok: true, run_id: runId, health_score_id: healthScoreId });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (err: unknown) {
+    const qboRes = qboErrorResponse(err);
+    if (qboRes.status !== 500) return qboRes;
+    const message = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
