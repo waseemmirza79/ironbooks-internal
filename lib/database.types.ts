@@ -152,6 +152,7 @@ export type Database = {
           last_sync_at: string | null
           linked_at: string | null
           linked_by: string | null
+          latest_closed_period: string | null
           metadata: Json | null
           notes: string | null
           qbo_access_token: string | null
@@ -1029,6 +1030,684 @@ export type Database = {
         }
         Relationships: []
       }
+      cleanup_runs: {
+        Row: {
+          id: string
+          client_link_id: string
+          bookkeeper_id: string | null
+          status: Database["public"]["Enums"]["cleanup_run_status"]
+          workflow_mode: Database["public"]["Enums"]["cleanup_workflow_mode"]
+          period_lock_id: string | null
+          snapshot_id: string | null
+          health_score_id: string | null
+          current_module: Database["public"]["Enums"]["cleanup_module"] | null
+          period_lock_date: string | null
+          discovery_cursor: Json | null
+          attested: boolean
+          attested_at: string | null
+          attested_by: string | null
+          qa_passed_at: string | null
+          qa_results: Json | null
+          error_message: string | null
+          started_at: string
+          completed_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          client_link_id: string
+          bookkeeper_id?: string | null
+          status?: Database["public"]["Enums"]["cleanup_run_status"]
+          workflow_mode?: Database["public"]["Enums"]["cleanup_workflow_mode"]
+          period_lock_id?: string | null
+          snapshot_id?: string | null
+          health_score_id?: string | null
+          current_module?: Database["public"]["Enums"]["cleanup_module"] | null
+          period_lock_date?: string | null
+          discovery_cursor?: Json | null
+          attested?: boolean
+          attested_at?: string | null
+          attested_by?: string | null
+          qa_passed_at?: string | null
+          qa_results?: Json | null
+          error_message?: string | null
+          started_at?: string
+          completed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          client_link_id?: string
+          bookkeeper_id?: string | null
+          status?: Database["public"]["Enums"]["cleanup_run_status"]
+          workflow_mode?: Database["public"]["Enums"]["cleanup_workflow_mode"]
+          period_lock_id?: string | null
+          snapshot_id?: string | null
+          health_score_id?: string | null
+          current_module?: Database["public"]["Enums"]["cleanup_module"] | null
+          period_lock_date?: string | null
+          discovery_cursor?: Json | null
+          attested?: boolean
+          attested_at?: string | null
+          attested_by?: string | null
+          qa_passed_at?: string | null
+          qa_results?: Json | null
+          error_message?: string | null
+          started_at?: string
+          completed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      cleanup_run_modules: {
+        Row: {
+          id: string
+          run_id: string
+          module: Database["public"]["Enums"]["cleanup_module"]
+          status: Database["public"]["Enums"]["cleanup_module_status"]
+          proposed_count: number
+          approved_count: number
+          executed_count: number
+          skipped_count: number
+          error_message: string | null
+          started_at: string | null
+          completed_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          run_id: string
+          module: Database["public"]["Enums"]["cleanup_module"]
+          status?: Database["public"]["Enums"]["cleanup_module_status"]
+          proposed_count?: number
+          approved_count?: number
+          executed_count?: number
+          skipped_count?: number
+          error_message?: string | null
+          started_at?: string | null
+          completed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          run_id?: string
+          module?: Database["public"]["Enums"]["cleanup_module"]
+          status?: Database["public"]["Enums"]["cleanup_module_status"]
+          proposed_count?: number
+          approved_count?: number
+          executed_count?: number
+          skipped_count?: number
+          error_message?: string | null
+          started_at?: string | null
+          completed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      bs_health_scores: {
+        Row: {
+          id: string
+          client_link_id: string
+          run_id: string | null
+          snapshot_id: string | null
+          overall_score: number
+          overall_grade: Database["public"]["Enums"]["health_grade"]
+          account_grades: Json
+          task_list: Json
+          computed_at: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          client_link_id: string
+          run_id?: string | null
+          snapshot_id?: string | null
+          overall_score?: number
+          overall_grade?: Database["public"]["Enums"]["health_grade"]
+          account_grades?: Json
+          task_list?: Json
+          computed_at?: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          client_link_id?: string
+          run_id?: string | null
+          snapshot_id?: string | null
+          overall_score?: number
+          overall_grade?: Database["public"]["Enums"]["health_grade"]
+          account_grades?: Json
+          task_list?: Json
+          computed_at?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
+      period_locks: {
+        Row: {
+          id: string
+          client_link_id: string
+          lock_date: string
+          qbo_books_close_date: string | null
+          double_close_date: string | null
+          set_by: string | null
+          notes: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          client_link_id: string
+          lock_date: string
+          qbo_books_close_date?: string | null
+          double_close_date?: string | null
+          set_by?: string | null
+          notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          client_link_id?: string
+          lock_date?: string
+          qbo_books_close_date?: string | null
+          double_close_date?: string | null
+          set_by?: string | null
+          notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      qbo_snapshots: {
+        Row: {
+          id: string
+          client_link_id: string
+          snapshot_date: string
+          as_of_date: string
+          trial_balance: Json
+          balance_sheet: Json
+          account_balances: Json
+          created_by: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          client_link_id: string
+          snapshot_date?: string
+          as_of_date: string
+          trial_balance?: Json
+          balance_sheet?: Json
+          account_balances?: Json
+          created_by?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          client_link_id?: string
+          snapshot_date?: string
+          as_of_date?: string
+          trial_balance?: Json
+          balance_sheet?: Json
+          account_balances?: Json
+          created_by?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
+      imported_records: {
+        Row: {
+          id: string
+          client_link_id: string
+          run_id: string | null
+          source: Database["public"]["Enums"]["import_source"]
+          external_id: string
+          record_date: string | null
+          payer_raw: string | null
+          payer_normalized: string | null
+          gross_amount: number | null
+          fee_amount: number | null
+          tax_amount: number | null
+          net_amount: number | null
+          reference: string | null
+          payout_id: string | null
+          currency: string | null
+          record_type: string | null
+          raw_row: Json | null
+          idempotency_key: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          client_link_id: string
+          run_id?: string | null
+          source: Database["public"]["Enums"]["import_source"]
+          external_id: string
+          record_date?: string | null
+          payer_raw?: string | null
+          payer_normalized?: string | null
+          gross_amount?: number | null
+          fee_amount?: number | null
+          tax_amount?: number | null
+          net_amount?: number | null
+          reference?: string | null
+          payout_id?: string | null
+          currency?: string | null
+          record_type?: string | null
+          raw_row?: Json | null
+          idempotency_key: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          client_link_id?: string
+          run_id?: string | null
+          source?: Database["public"]["Enums"]["import_source"]
+          external_id?: string
+          record_date?: string | null
+          payer_raw?: string | null
+          payer_normalized?: string | null
+          gross_amount?: number | null
+          fee_amount?: number | null
+          tax_amount?: number | null
+          net_amount?: number | null
+          reference?: string | null
+          payout_id?: string | null
+          currency?: string | null
+          record_type?: string | null
+          raw_row?: Json | null
+          idempotency_key?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
+      recon_matches: {
+        Row: {
+          id: string
+          run_id: string
+          module: Database["public"]["Enums"]["cleanup_module"]
+          match_type: string
+          confidence: number
+          gross_amount: number | null
+          fee_amount: number | null
+          tax_amount: number | null
+          net_amount: number | null
+          proposed_fix: Json | null
+          reasons: Json
+          source_record_ids: string[] | null
+          qbo_refs: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          run_id: string
+          module: Database["public"]["Enums"]["cleanup_module"]
+          match_type: string
+          confidence?: number
+          gross_amount?: number | null
+          fee_amount?: number | null
+          tax_amount?: number | null
+          net_amount?: number | null
+          proposed_fix?: Json | null
+          reasons?: Json
+          source_record_ids?: string[] | null
+          qbo_refs?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          run_id?: string
+          module?: Database["public"]["Enums"]["cleanup_module"]
+          match_type?: string
+          confidence?: number
+          gross_amount?: number | null
+          fee_amount?: number | null
+          tax_amount?: number | null
+          net_amount?: number | null
+          proposed_fix?: Json | null
+          reasons?: Json
+          source_record_ids?: string[] | null
+          qbo_refs?: Json | null
+          created_at?: string
+        }
+        Relationships: []
+      }
+      proposed_entries: {
+        Row: {
+          id: string
+          run_id: string
+          client_link_id: string
+          module: Database["public"]["Enums"]["cleanup_module"]
+          recon_match_id: string | null
+          entry_type: Database["public"]["Enums"]["proposed_entry_type"]
+          decision: Database["public"]["Enums"]["reclass_decision"]
+          confidence: number | null
+          ai_reasoning: string | null
+          period_impact: Database["public"]["Enums"]["period_impact"]
+          skip_reason: Database["public"]["Enums"]["reclass_skip_reason"] | null
+          qbo_transaction_id: string | null
+          qbo_transaction_type: string | null
+          qbo_line_id: string | null
+          qbo_sync_token: string | null
+          from_account_id: string | null
+          from_account_name: string | null
+          to_account_id: string | null
+          to_account_name: string | null
+          je_lines: Json | null
+          amount: number | null
+          txn_date: string | null
+          memo: string | null
+          bookkeeper_override: boolean
+          bookkeeper_override_target_id: string | null
+          bookkeeper_override_target_name: string | null
+          cpa_flag_id: string | null
+          idempotency_key: string
+          executed: boolean
+          executed_at: string | null
+          executed_by: string | null
+          qbo_result_id: string | null
+          execution_error: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          run_id: string
+          client_link_id: string
+          module: Database["public"]["Enums"]["cleanup_module"]
+          recon_match_id?: string | null
+          entry_type: Database["public"]["Enums"]["proposed_entry_type"]
+          decision?: Database["public"]["Enums"]["reclass_decision"]
+          confidence?: number | null
+          ai_reasoning?: string | null
+          period_impact?: Database["public"]["Enums"]["period_impact"]
+          skip_reason?: Database["public"]["Enums"]["reclass_skip_reason"] | null
+          qbo_transaction_id?: string | null
+          qbo_transaction_type?: string | null
+          qbo_line_id?: string | null
+          qbo_sync_token?: string | null
+          from_account_id?: string | null
+          from_account_name?: string | null
+          to_account_id?: string | null
+          to_account_name?: string | null
+          je_lines?: Json | null
+          amount?: number | null
+          txn_date?: string | null
+          memo?: string | null
+          bookkeeper_override?: boolean
+          bookkeeper_override_target_id?: string | null
+          bookkeeper_override_target_name?: string | null
+          cpa_flag_id?: string | null
+          idempotency_key: string
+          executed?: boolean
+          executed_at?: string | null
+          executed_by?: string | null
+          qbo_result_id?: string | null
+          execution_error?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          run_id?: string
+          client_link_id?: string
+          module?: Database["public"]["Enums"]["cleanup_module"]
+          recon_match_id?: string | null
+          entry_type?: Database["public"]["Enums"]["proposed_entry_type"]
+          decision?: Database["public"]["Enums"]["reclass_decision"]
+          confidence?: number | null
+          ai_reasoning?: string | null
+          period_impact?: Database["public"]["Enums"]["period_impact"]
+          skip_reason?: Database["public"]["Enums"]["reclass_skip_reason"] | null
+          qbo_transaction_id?: string | null
+          qbo_transaction_type?: string | null
+          qbo_line_id?: string | null
+          qbo_sync_token?: string | null
+          from_account_id?: string | null
+          from_account_name?: string | null
+          to_account_id?: string | null
+          to_account_name?: string | null
+          je_lines?: Json | null
+          amount?: number | null
+          txn_date?: string | null
+          memo?: string | null
+          bookkeeper_override?: boolean
+          bookkeeper_override_target_id?: string | null
+          bookkeeper_override_target_name?: string | null
+          cpa_flag_id?: string | null
+          idempotency_key?: string
+          executed?: boolean
+          executed_at?: string | null
+          executed_by?: string | null
+          qbo_result_id?: string | null
+          execution_error?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      cpa_flags: {
+        Row: {
+          id: string
+          client_link_id: string
+          run_id: string | null
+          flag_type: string
+          description: string
+          impact_summary: string | null
+          status: Database["public"]["Enums"]["cpa_flag_status"]
+          signed_off_by: string | null
+          signed_off_at: string | null
+          sign_off_notes: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          client_link_id: string
+          run_id?: string | null
+          flag_type: string
+          description: string
+          impact_summary?: string | null
+          status?: Database["public"]["Enums"]["cpa_flag_status"]
+          signed_off_by?: string | null
+          signed_off_at?: string | null
+          sign_off_notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          client_link_id?: string
+          run_id?: string | null
+          flag_type?: string
+          description?: string
+          impact_summary?: string | null
+          status?: Database["public"]["Enums"]["cpa_flag_status"]
+          signed_off_by?: string | null
+          signed_off_at?: string | null
+          sign_off_notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      month_end_packages: {
+        Row: {
+          id: string
+          client_link_id: string
+          period_year: number
+          period_month: number
+          period_start: string
+          period_end: string
+          status: Database["public"]["Enums"]["month_end_package_status"]
+          pl_snapshot: Json
+          bs_snapshot: Json
+          ar_ap_snapshot: Json
+          daily_recon_stats: Json
+          ai_summary: string | null
+          ai_summary_reviewed: boolean
+          ai_summary_reviewed_by: string | null
+          ai_summary_reviewed_at: string | null
+          portal_published_at: string | null
+          email_sent_at: string | null
+          email_message_id: string | null
+          send_error: string | null
+          reclass_job_id: string | null
+          created_by: string | null
+          sent_by: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          client_link_id: string
+          period_year: number
+          period_month: number
+          period_start: string
+          period_end: string
+          status?: Database["public"]["Enums"]["month_end_package_status"]
+          pl_snapshot?: Json
+          bs_snapshot?: Json
+          ar_ap_snapshot?: Json
+          daily_recon_stats?: Json
+          ai_summary?: string | null
+          ai_summary_reviewed?: boolean
+          ai_summary_reviewed_by?: string | null
+          ai_summary_reviewed_at?: string | null
+          portal_published_at?: string | null
+          email_sent_at?: string | null
+          email_message_id?: string | null
+          send_error?: string | null
+          reclass_job_id?: string | null
+          created_by?: string | null
+          sent_by?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          client_link_id?: string
+          period_year?: number
+          period_month?: number
+          period_start?: string
+          period_end?: string
+          status?: Database["public"]["Enums"]["month_end_package_status"]
+          pl_snapshot?: Json
+          bs_snapshot?: Json
+          ar_ap_snapshot?: Json
+          daily_recon_stats?: Json
+          ai_summary?: string | null
+          ai_summary_reviewed?: boolean
+          ai_summary_reviewed_by?: string | null
+          ai_summary_reviewed_at?: string | null
+          portal_published_at?: string | null
+          email_sent_at?: string | null
+          email_message_id?: string | null
+          send_error?: string | null
+          reclass_job_id?: string | null
+          created_by?: string | null
+          sent_by?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      month_end_delivery_runs: {
+        Row: {
+          id: string
+          period_year: number
+          period_month: number
+          status: Database["public"]["Enums"]["month_end_delivery_run_status"]
+          started_by: string | null
+          total_clients: number
+          sent_count: number
+          failed_count: number
+          skipped_count: number
+          error_summary: Json
+          created_at: string
+          completed_at: string | null
+        }
+        Insert: {
+          id?: string
+          period_year: number
+          period_month: number
+          status?: Database["public"]["Enums"]["month_end_delivery_run_status"]
+          started_by?: string | null
+          total_clients?: number
+          sent_count?: number
+          failed_count?: number
+          skipped_count?: number
+          error_summary?: Json
+          created_at?: string
+          completed_at?: string | null
+        }
+        Update: {
+          id?: string
+          period_year?: number
+          period_month?: number
+          status?: Database["public"]["Enums"]["month_end_delivery_run_status"]
+          started_by?: string | null
+          total_clients?: number
+          sent_count?: number
+          failed_count?: number
+          skipped_count?: number
+          error_summary?: Json
+          created_at?: string
+          completed_at?: string | null
+        }
+        Relationships: []
+      }
+      cleanup_reports: {
+        Row: {
+          id: string
+          client_link_id: string
+          run_id: string | null
+          health_score_id: string | null
+          report_data: Json
+          ai_summary: string | null
+          ai_summary_reviewed: boolean
+          ai_summary_reviewed_by: string | null
+          published_to_portal: boolean
+          published_at: string | null
+          created_by: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          client_link_id: string
+          run_id?: string | null
+          health_score_id?: string | null
+          report_data?: Json
+          ai_summary?: string | null
+          ai_summary_reviewed?: boolean
+          ai_summary_reviewed_by?: string | null
+          published_to_portal?: boolean
+          published_at?: string | null
+          created_by?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          client_link_id?: string
+          run_id?: string | null
+          health_score_id?: string | null
+          report_data?: Json
+          ai_summary?: string | null
+          ai_summary_reviewed?: boolean
+          ai_summary_reviewed_by?: string | null
+          published_to_portal?: boolean
+          published_at?: string | null
+          created_by?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       active_jobs_view: {
@@ -1333,7 +2012,18 @@ export type Database = {
         | "user_excluded"
         | "manual_entry"
       reclass_workflow: "consolidation" | "scrub" | "full_categorization"
-      user_role: "admin" | "lead" | "bookkeeper" | "viewer"
+      user_role: "admin" | "lead" | "bookkeeper" | "viewer" | "client"
+      cleanup_run_status: "discovering" | "reviewing" | "executing" | "complete" | "failed" | "cancelled"
+      cleanup_workflow_mode: "onboarding" | "monthly_close"
+      cleanup_module: "bank_recon" | "undeposited_funds" | "accounts_receivable" | "accounts_payable" | "loans" | "shareholder_draws" | "tax_payroll" | "obe_uncategorized"
+      cleanup_module_status: "locked" | "ready" | "discovering" | "reviewing" | "executing" | "complete" | "skipped" | "failed"
+      health_grade: "green" | "yellow" | "red"
+      period_impact: "current" | "clearing_entry" | "cpa_blocked"
+      proposed_entry_type: "reclass" | "journal_entry" | "receive_payment" | "bill_payment" | "void" | "invoice"
+      cpa_flag_status: "open" | "signed_off" | "dismissed"
+      import_source: "bank" | "stripe" | "jobber" | "drip_jobs" | "loan_statement"
+      month_end_package_status: "draft" | "summary_pending" | "ready_to_send" | "sending" | "sent" | "failed"
+      month_end_delivery_run_status: "running" | "complete" | "failed"
     }
     CompositeTypes: {
       [_ in never]: never

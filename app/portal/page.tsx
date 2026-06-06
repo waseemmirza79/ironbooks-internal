@@ -6,7 +6,10 @@ import {
 import { tryResolvePortalContext } from "@/lib/portal-context";
 import { fetchOverview, resolveClosedPeriod } from "@/lib/portal-data";
 import { createServiceSupabase } from "@/lib/supabase";
+import { fetchPublishedPackage } from "@/lib/month-end/portal-package";
 import { PortalErrorState } from "./error-state";
+import { MonthEndBanner } from "./month-end-banner";
+import type { PlSnapshot } from "@/lib/month-end/types";
 
 /**
  * Portal Overview — live data version.
@@ -34,6 +37,7 @@ export default async function PortalOverview() {
   // when the bookkeeper hasn't reconciled it yet.
   const service = createServiceSupabase();
   const closed = await resolveClosedPeriod(service, ctx.clientLinkId);
+  const publishedPkg = await fetchPublishedPackage(service, ctx.clientLinkId);
 
   const data = await fetchOverview(
     ctx.qboRealmId,
@@ -42,26 +46,42 @@ export default async function PortalOverview() {
     closed.priorMonth
   );
 
-  const incomeDelta = data.primaryPL.totalIncome - data.comparisonPL.totalIncome;
-  const expensesDelta = data.primaryPL.totalExpenses - data.comparisonPL.totalExpenses;
-  const profitDelta = data.primaryPL.netIncome - data.comparisonPL.netIncome;
+  const pkgPl = publishedPkg?.plSnapshot as PlSnapshot | undefined;
+  const incomeDelta = pkgPl
+    ? pkgPl.totalIncome - pkgPl.comparisonIncome
+    : data.primaryPL.totalIncome - data.comparisonPL.totalIncome;
+  const expensesDelta = pkgPl
+    ? pkgPl.totalExpenses - pkgPl.comparisonExpenses
+    : data.primaryPL.totalExpenses - data.comparisonPL.totalExpenses;
+  const profitDelta = pkgPl
+    ? pkgPl.netIncome - pkgPl.comparisonNetIncome
+    : data.primaryPL.netIncome - data.comparisonPL.netIncome;
 
-  // Heuristic narrative
-  const narrative = buildHeuristicNarrative(data, profitDelta, closed.closedMonthLabel);
+  const narrative = publishedPkg?.aiSummary
+    ? {
+        headline: `${publishedPkg.label} is closed and ready`,
+        body: publishedPkg.aiSummary,
+      }
+    : buildHeuristicNarrative(data, profitDelta, closed.closedMonthLabel);
+
+  const monthLabel = publishedPkg?.label || closed.closedMonthLabel;
 
   return (
     <div className="space-y-6">
+      <MonthEndBanner />
       <div>
         <div className="text-xs text-ink-slate uppercase tracking-wider font-semibold">Good day</div>
         <h1 className="text-3xl font-bold text-navy mt-1">Here's how your business is doing</h1>
         <div className="text-sm text-ink-slate mt-1 flex items-center gap-2 flex-wrap">
           <CheckCircle2 size={13} className="text-emerald-600" />
           <span>
-            Most recent closed month: <strong className="text-navy">{closed.closedMonthLabel}</strong>
+            Most recent closed month: <strong className="text-navy">{monthLabel}</strong>
           </span>
           <span className="text-ink-light">·</span>
           <span className="text-ink-light">
-            {closed.source === "reclass_job_closed"
+            {publishedPkg
+              ? "Delivered by your Ironbooks team"
+              : closed.source === "reclass_job_closed"
               ? "Reconciled and closed by your bookkeeper"
               : closed.source === "cleanup_completed"
               ? "Most recent reconciled period"

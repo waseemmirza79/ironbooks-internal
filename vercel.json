@@ -3,6 +3,18 @@
     {
       "path": "/api/cron/stripe-invite-detector",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/jobs/sweep-stale",
+      "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/daily-recon?dryRun=true",
+      "schedule": "0 13,17,21 * * *"
+    },
+    {
+      "path": "/api/cron/month-end-reminder",
+      "schedule": "0 14 1 * *"
     }
   ]
 }

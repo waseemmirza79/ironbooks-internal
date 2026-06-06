@@ -20,19 +20,20 @@ export async function POST(
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await request.json().catch(() => ({}));
-  const { reclass_job_id } = body;
+  const { reclass_job_id, build_package } = body;
   if (!reclass_job_id) {
     return NextResponse.json({ error: "reclass_job_id required" }, { status: 400 });
   }
 
   const service = createServiceSupabase();
 
-  const { data: job } = await service
+  const { data: jobRaw } = await service
     .from("reclass_jobs")
-    .select("id, client_link_id, status, month_closed_at")
+    .select("id, client_link_id, status, month_closed_at, date_range_end")
     .eq("id", reclass_job_id)
     .eq("client_link_id", clientId)
     .single();
+  const job = jobRaw as any;
 
   if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 });
   if (job.month_closed_at) {
@@ -48,5 +49,22 @@ export async function POST(
     } as any)
     .eq("id", reclass_job_id);
 
-  return NextResponse.json({ ok: true });
+  let packageId: string | undefined;
+  if (build_package) {
+    try {
+      const end = new Date(job.date_range_end + "T00:00:00");
+      const { upsertDraftPackage } = await import("@/lib/month-end/package-builder");
+      const result = await upsertDraftPackage(
+        service,
+        clientId,
+        { periodYear: end.getFullYear(), periodMonth: end.getMonth() + 1 },
+        user.id
+      );
+      packageId = result.packageId;
+    } catch (err: any) {
+      console.warn("[close-month] package build failed:", err?.message);
+    }
+  }
+
+  return NextResponse.json({ ok: true, package_id: packageId });
 }

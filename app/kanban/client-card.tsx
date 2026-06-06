@@ -307,7 +307,7 @@ function ActionButton({
           disabled={acting}
           onClick={(e) => {
             e.stopPropagation();
-            window.location.href = `/balance-sheet/${card.id}`;
+            window.location.href = `/balance-sheet/${card.id}/cleanup`;
           }}
           className={`w-full text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors disabled:opacity-50 ${
             inProgress

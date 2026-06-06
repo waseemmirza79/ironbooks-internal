@@ -94,6 +94,25 @@ export default async function PortalCleanupReportsPage() {
     b.end.localeCompare(a.end)
   );
 
+  // BS cleanup wizard reports (published snapshots from cleanup_reports table)
+  let bsReports: Array<{
+    id: string;
+    ai_summary: string | null;
+    published_at: string | null;
+    report_data: any;
+  }> = [];
+  try {
+    const { data: cr } = await service
+      .from("cleanup_reports" as any)
+      .select("id, ai_summary, published_at, report_data")
+      .eq("client_link_id", ctx.clientLinkId)
+      .eq("published_to_portal", true)
+      .order("published_at", { ascending: false });
+    bsReports = (cr as any[]) || [];
+  } catch {
+    bsReports = [];
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -110,7 +129,47 @@ export default async function PortalCleanupReportsPage() {
         </div>
       </div>
 
-      {periods.length === 0 ? (
+      {bsReports.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-sm font-bold text-navy uppercase tracking-wider">
+            Balance Sheet Cleanup Reports
+          </h2>
+          {bsReports.map((r) => (
+            <div
+              key={r.id}
+              className="bg-white border border-gray-200 rounded-2xl p-4 md:p-5"
+            >
+              <div className="flex items-start gap-3">
+                <div className="shrink-0 w-10 h-10 rounded-lg bg-teal-lighter flex items-center justify-center">
+                  <FileText size={18} className="text-teal" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold text-navy">
+                    BS Cleanup Report
+                    {r.published_at && (
+                      <span className="text-xs font-normal text-ink-slate ml-2">
+                        {new Date(r.published_at).toLocaleDateString()}
+                      </span>
+                    )}
+                  </div>
+                  {r.ai_summary && (
+                    <p className="text-xs text-ink-slate mt-2 leading-relaxed">
+                      {r.ai_summary}
+                    </p>
+                  )}
+                  {r.report_data?.health_score && (
+                    <div className="text-xs text-ink-light mt-1">
+                      Health Score: {r.report_data.health_score.overall_score}/100
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {periods.length === 0 && bsReports.length === 0 ? (
         <div className="bg-white border border-gray-200 rounded-2xl p-10 text-center">
           <FileText size={32} className="mx-auto text-ink-slate mb-3" />
           <div className="text-sm font-semibold text-navy">

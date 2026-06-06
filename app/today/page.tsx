@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, ArrowRight, Sparkles, Clock, Pause } from "lucide-react";
 import { ClientFlagsWidget } from "./client-flags-widget";
+import { MonthlyBsCheckButton } from "./monthly-bs-check";
 
 export const dynamic = "force-dynamic";
 
@@ -285,6 +286,7 @@ export default async function TodayPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-3 text-xs">
+                      <MonthlyBsCheckButton clientLinkId={c.id} />
                       <Pill count={autoToday} label="auto" tone="emerald" />
                       <Pill count={pending} label="review" tone={pending > 0 ? "amber" : "gray"} />
                       <Pill count={anomalies} label="anomaly" tone={anomalies > 0 ? "red" : "gray"} />

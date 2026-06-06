@@ -65,6 +65,8 @@ type SweepResult = {
   coa_failed: number;
   reclass_failed: number;
   stripe_recon_failed: number;
+  cleanup_runs_failed: number;
+  month_end_recovered: number;
 };
 
 export async function sweepStaleJobs(): Promise<SweepResult> {
@@ -184,9 +186,38 @@ export async function sweepStaleJobs(): Promise<SweepResult> {
     // table or column may not exist in some envs — non-fatal
   }
 
+  // cleanup_runs — discovering/executing stuck >45 min
+  let cleanupFailed = 0;
+  try {
+    const { data: cr } = await service
+      .from("cleanup_runs" as any)
+      .update({
+        status: "failed",
+        error_message: "Auto-failed by watchdog: stuck in discovering/executing for >45 min.",
+      } as any)
+      .in("status", ["discovering", "executing"])
+      .lt("updated_at", startedStaleCutoff)
+      .select("id");
+    cleanupFailed = cr?.length || 0;
+  } catch {
+    // table may not exist until migration 53 applied
+  }
+
+  // month_end_packages — sending/summary_pending stuck mid-flight
+  let monthEndRecovered = 0;
+  try {
+    const { recoverStaleMonthEndPackages } = await import("./month-end/claim");
+    const recovered = await recoverStaleMonthEndPackages(service);
+    monthEndRecovered = recovered.sendingReset + recovered.summaryPendingReset;
+  } catch {
+    // table may not exist until migration 55 applied
+  }
+
   return {
     coa_failed: (coaA?.length || 0) + (coaB?.length || 0),
     reclass_failed: (reclassA?.length || 0) + (reclassB?.length || 0) + (reclassC?.length || 0),
     stripe_recon_failed: stripeFailed,
+    cleanup_runs_failed: cleanupFailed,
+    month_end_recovered: monthEndRecovered,
   };
 }

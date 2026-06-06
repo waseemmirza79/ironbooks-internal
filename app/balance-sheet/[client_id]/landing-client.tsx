@@ -431,6 +431,22 @@ export function BalanceSheetLanding({
 
   return (
     <div className="space-y-6">
+      {/* Guided BS cleanup wizard — primary path from kanban bs_cleanup stage */}
+      <div className="rounded-2xl bg-navy text-white p-5 flex items-center justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-bold">Guided BS Cleanup</h2>
+          <p className="text-xs text-white/70 mt-1">
+            Health Score, module checklist, review queue, and QA gate — all in one wizard.
+          </p>
+        </div>
+        <a
+          href={`/balance-sheet/${clientLinkId}/cleanup`}
+          className="flex-shrink-0 text-xs font-semibold px-4 py-2 rounded-lg bg-teal hover:bg-teal-dark transition-colors"
+        >
+          Open wizard →
+        </a>
+      </div>
+
       {/* Job-app CSV import card — sits above UF→A/R so the bookkeeper
           uploads source-of-truth invoices first; the duplicate detector
           downstream consumes the lineage_key to label estimate revisions

@@ -72,16 +72,16 @@ async function handleRequest(request: Request) {
 
   const eligible = (clients || []) as Array<{ id: string; client_name: string }>;
 
-  // ── RUN EACH ──
-  // Sequential, not parallel — daily recon hits QBO + Anthropic + DB for each
-  // client. Running them in series keeps us inside rate limits and gives us
-  // a clean log per client. With small pilot scale this is fine; can switch
-  // to bounded concurrency later.
+  // ── RUN WITH BOUNDED CONCURRENCY ──
+  // Process up to CONCURRENCY clients in parallel to scale to ~1000 clients
+  // without exceeding Vercel timeout. QBO rate limits handled per-realm.
+  const CONCURRENCY = 5;
   const results: any[] = [];
-  for (const c of eligible) {
+
+  async function runOne(c: { id: string; client_name: string }) {
     const t0 = Date.now();
     const res = await runDailyRecon(c.id, { dryRun });
-    results.push({
+    return {
       client_link_id: c.id,
       client_name: c.client_name,
       status: res.status,
@@ -91,7 +91,13 @@ async function handleRequest(request: Request) {
       anomalies: res.anomalies_count,
       duration_ms: Date.now() - t0,
       error: res.error,
-    });
+    };
+  }
+
+  for (let i = 0; i < eligible.length; i += CONCURRENCY) {
+    const batch = eligible.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(batch.map(runOne));
+    results.push(...batchResults);
   }
 
   return NextResponse.json({
