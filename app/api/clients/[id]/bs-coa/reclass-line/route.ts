@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { fetchAllAccounts, getValidToken } from "@/lib/qbo";
+import { fetchAllAccounts, getValidToken, qboErrorResponse } from "@/lib/qbo";
 import { reclassifyTransactionLines } from "@/lib/qbo-reclass";
 
 export const dynamic = "force-dynamic";
@@ -76,10 +76,7 @@ export async function POST(
     accessToken = await getValidToken(clientLinkId, service as any);
     allAccounts = await fetchAllAccounts((client as any).qbo_realm_id, accessToken);
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO bootstrap failed: ${err?.message || String(err)}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 
   const target = allAccounts.find((a) => a.Id === newAccountId);
@@ -118,9 +115,6 @@ export async function POST(
       moved_to: { id: target.Id, name: target.Name },
     });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `Reclass failed: ${err?.message || String(err)}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 }

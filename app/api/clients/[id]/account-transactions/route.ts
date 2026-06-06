@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse } from "@/lib/qbo";
 import { fetchProfitAndLossDetail } from "@/lib/qbo-reports";
 import { fetchAccountTransactions } from "@/lib/qbo-balance-sheet";
 
@@ -120,9 +120,6 @@ export async function GET(
     });
   } catch (err: any) {
     console.warn(`[client-account-transactions] failed:`, err?.message);
-    return NextResponse.json(
-      { error: err?.message || "Failed to fetch transactions" },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 }

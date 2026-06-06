@@ -34,6 +34,7 @@ import {
   fetchAllAccounts,
   renameAccount,
   inactivateAccount,
+  qboErrorResponse,
 } from "@/lib/qbo";
 import {
   fetchTransactionsForAccount,
@@ -344,9 +345,6 @@ export async function POST(
       occurred_at: new Date().toISOString(),
     });
 
-    return NextResponse.json(
-      { success: false, error: e?.message || String(e), merge: candidates[idx] },
-      { status: 500 }
-    );
+    return qboErrorResponse(e);
   }
 }

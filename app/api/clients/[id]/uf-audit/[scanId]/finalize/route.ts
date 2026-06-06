@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { createJournalEntry, fetchAllAccounts, getValidToken } from "@/lib/qbo";
+import { createJournalEntry, fetchAllAccounts, getValidToken, qboErrorResponse } from "@/lib/qbo";
 import { findUndepositedFundsAccountId } from "@/lib/qbo-balance-sheet";
 
 export const dynamic = "force-dynamic";
@@ -89,10 +89,7 @@ export async function POST(
       (await findUndepositedFundsAccountId((client as any).qbo_realm_id, accessToken));
     if (!ufAccountId) throw new Error("Undeposited Funds account not found");
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO bootstrap failed: ${err?.message || String(err)}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
   const accountById = new Map(allAccounts.map((a) => [a.Id, a]));
   const ufAccount = accountById.get(ufAccountId);

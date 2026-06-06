@@ -3,7 +3,7 @@ import { TopBar } from "@/components/TopBar";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
-import { fetchAllAccounts, getValidToken } from "@/lib/qbo";
+import { fetchAllAccounts, getValidToken, QBOReauthRequiredError } from "@/lib/qbo";
 import { ArrowLeft, AlertTriangle, Sparkles } from "lucide-react";
 import { DailyReviewTable } from "./daily-review-table";
 
@@ -88,6 +88,8 @@ export default async function TodayClientPage({
         .map((a) => ({ id: a.Id, name: a.Name, type: a.AccountType || "" }))
         .sort((a, b) => a.name.localeCompare(b.name));
     } catch (err: any) {
+      // Dead refresh token → send user to reconnect, not an empty dropdown.
+      if (err instanceof QBOReauthRequiredError) redirect(err.reconnectUrl);
       console.warn(`[today/${clientId}] could not fetch accounts:`, err?.message);
     }
   }

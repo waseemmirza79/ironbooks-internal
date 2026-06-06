@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse } from "@/lib/qbo";
 import { analyzeBs, shouldPreAccept } from "@/lib/bs-ai-cleanup";
 
 export const dynamic = "force-dynamic";
@@ -168,9 +168,6 @@ export async function POST(
         error_message: err?.message || String(err),
       } as any)
       .eq("id", runId);
-    return NextResponse.json(
-      { error: err?.message || String(err) },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 }

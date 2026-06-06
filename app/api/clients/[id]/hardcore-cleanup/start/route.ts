@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse } from "@/lib/qbo";
 import {
   fetchOpenInvoices,
   fetchUndepositedFundsPayments,
@@ -533,10 +533,7 @@ export async function POST(
           error_message: msg.slice(0, 1000),
         } as any)
         .eq("id", runId);
-      return NextResponse.json(
-        { error: `qbo_only scan failed: ${msg}`, run_id: runId },
-        { status: 500 }
-      );
+      return qboErrorResponse(err);
     }
   }
 
@@ -961,10 +958,7 @@ export async function POST(
         duration_ms: Date.now() - t0,
       } as any)
       .eq("id", runId);
-    return NextResponse.json(
-      { error: err?.message || String(err) },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 }
 

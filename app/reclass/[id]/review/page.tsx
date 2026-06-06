@@ -2,7 +2,7 @@ import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { fetchAllAccounts, getValidToken } from "@/lib/qbo";
+import { fetchAllAccounts, getValidToken, QBOReauthRequiredError } from "@/lib/qbo";
 import { redirect } from "next/navigation";
 import { ReclassReview } from "./review-client";
 import { ReclassDiscoveryPending } from "./discovery-pending";
@@ -191,6 +191,7 @@ export default async function ReclassReviewPage({
       }
     }
   } catch (err: any) {
+    if (err instanceof QBOReauthRequiredError) redirect(err.reconnectUrl);
     console.warn(
       `[reclass review] couldn't load QBO Bank/CC accounts (transfers unavailable in dropdown): ${err?.message}`
     );

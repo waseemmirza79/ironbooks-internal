@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse } from "@/lib/qbo";
 import { listBalanceSheetAccounts } from "@/lib/qbo-balance-sheet";
 
 export const dynamic = "force-dynamic";
@@ -37,10 +37,7 @@ export async function GET(
       accessToken
     );
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `Could not fetch QBO accounts: ${err?.message || err}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 
   const grouped = {

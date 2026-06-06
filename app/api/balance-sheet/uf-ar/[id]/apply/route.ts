@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken, applyPaymentToInvoices } from "@/lib/qbo";
+import { getValidToken, applyPaymentToInvoices, qboErrorResponse } from "@/lib/qbo";
 
 /**
  * POST /api/balance-sheet/uf-ar/[id]/apply
@@ -112,17 +112,7 @@ export async function POST(
   try {
     accessToken = await getValidToken((clientLink as any).id, service as any);
   } catch (err: any) {
-    const msg = err?.message || String(err);
-    if (/invalid_grant|token refresh failed|Incorrect Token type/i.test(msg)) {
-      return NextResponse.json(
-        {
-          error:
-            "QBO connection expired. Reconnect QBO for this client and re-run apply.",
-        },
-        { status: 400 }
-      );
-    }
-    return NextResponse.json({ error: `QBO token error: ${msg}` }, { status: 500 });
+    return qboErrorResponse(err);
   }
 
   const outcomes: ApplyOutcome[] = [];

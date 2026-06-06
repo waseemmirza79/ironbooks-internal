@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken, fetchAllAccounts } from "@/lib/qbo";
+import { getValidToken, fetchAllAccounts, qboErrorResponse } from "@/lib/qbo";
 import { fetchAccountTransactions } from "@/lib/qbo-balance-sheet";
 import {
   detectPayrollDoubleEntries,
@@ -216,10 +216,7 @@ export async function POST(
       .from("hardcore_cleanup_runs")
       .update({ status: "failed", finalize_results: { error: msg } })
       .eq("id", runId);
-    return NextResponse.json(
-      { error: `Scan failed: ${msg}`, run_id: runId },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 }
 

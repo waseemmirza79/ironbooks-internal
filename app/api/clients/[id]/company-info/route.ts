@@ -1,5 +1,5 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { fetchCompanyInfo, getValidToken, fiscalStartMonthToNumber, getReclassDateRangePresets } from "@/lib/qbo";
+import { fetchCompanyInfo, getValidToken, fiscalStartMonthToNumber, getReclassDateRangePresets, qboErrorResponse } from "@/lib/qbo";
 import { NextResponse } from "next/server";
 
 /**
@@ -54,9 +54,6 @@ export async function GET(
       date_range_presets: presets,
     });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `Failed to fetch QBO company info: ${err.message}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 }

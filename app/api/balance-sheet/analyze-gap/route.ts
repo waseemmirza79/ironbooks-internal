@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse } from "@/lib/qbo";
 import { fetchAccountTransactions } from "@/lib/qbo-balance-sheet";
 import { analyzeGap } from "@/lib/bs-gap-analyzer";
 
@@ -82,10 +82,7 @@ export async function POST(request: Request) {
       endDate
     );
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO transaction fetch failed: ${err?.message || err}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 
   const analysis = analyzeGap(transactions, Number(gap_amount || 0));

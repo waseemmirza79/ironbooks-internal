@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse } from "@/lib/qbo";
 import {
   scanUncatIncome,
   findUncategorizedIncomeAccount,
@@ -228,9 +228,6 @@ export async function POST(
         duration_ms: Date.now() - t0,
       } as any)
       .eq("id", scanId);
-    return NextResponse.json(
-      { error: err?.message || String(err) },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 }

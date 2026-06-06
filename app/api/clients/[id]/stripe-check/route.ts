@@ -1,5 +1,5 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse } from "@/lib/qbo";
 import { NextResponse } from "next/server";
 
 const QBO_BASE = "https://quickbooks.api.intuit.com";
@@ -95,6 +95,6 @@ export async function POST(
 
     return NextResponse.json({ stripe_detected: detected, match_count: matchCount });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    return qboErrorResponse(e);
   }
 }

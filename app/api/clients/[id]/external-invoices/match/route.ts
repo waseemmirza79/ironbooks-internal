@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse, QBOReauthRequiredError } from "@/lib/qbo";
 import { fetchInvoicesForRange } from "@/lib/qbo-stripe-recon";
 import { matchInvoices, type QboInvoice } from "@/lib/external-invoices/match";
 import type { ParsedRow } from "@/lib/external-invoices/parse";
@@ -88,6 +88,9 @@ export async function GET(
         CustomerMemo: inv.CustomerMemo || null,
       }));
     } catch (err: any) {
+      // Reauth required is NOT a soft failure — bypass partial-data path
+      // and route the user straight to /api/qbo/connect.
+      if (err instanceof QBOReauthRequiredError) return qboErrorResponse(err);
       qboError = err?.message || String(err);
     }
   }

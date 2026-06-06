@@ -1,5 +1,5 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { fetchAllAccounts, getValidToken } from "@/lib/qbo";
+import { fetchAllAccounts, getValidToken, qboErrorResponse } from "@/lib/qbo";
 import { NextResponse } from "next/server";
 
 /**
@@ -52,7 +52,9 @@ export async function GET(
       .sort((a, b) => a.name.localeCompare(b.name));
 
     return NextResponse.json({ accounts: compact });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+  } catch (e) {
+    // Surfaces QBOReauthRequiredError as 401 + reconnect_url so the
+    // client can route the user to /api/qbo/connect cleanly.
+    return qboErrorResponse(e);
   }
 }

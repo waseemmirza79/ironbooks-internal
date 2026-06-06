@@ -77,7 +77,13 @@ export class QBOReauthRequiredError extends Error {
   readonly clientLinkId: string | null;
   readonly reconnectUrl: string;
   constructor(clientLinkId: string | null) {
-    super("QBO refresh token is invalid — user must reconnect");
+    // Phrased as the user-facing message because background jobs persist
+    // err.message verbatim to their error_message column. Foreground
+    // routes route this through qboErrorResponse() which structures it.
+    super(
+      "Your QuickBooks connection has expired or been disconnected. " +
+      "Please reconnect QBO from the client's Settings → QuickBooks page."
+    );
     this.name = "QBOReauthRequiredError";
     this.clientLinkId = clientLinkId;
     this.reconnectUrl = clientLinkId

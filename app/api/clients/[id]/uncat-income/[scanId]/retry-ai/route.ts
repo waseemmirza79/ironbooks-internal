@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse } from "@/lib/qbo";
 import { fetchOpenInvoices } from "@/lib/qbo-balance-sheet";
 import {
   inferCustomersWithClaude,
@@ -187,9 +187,6 @@ export async function POST(
         ai_error_message: err?.message || String(err),
       } as any)
       .eq("id", scanId);
-    return NextResponse.json(
-      { error: err?.message || String(err), ai_status: "failed" },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 }

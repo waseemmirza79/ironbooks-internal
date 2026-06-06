@@ -10,6 +10,7 @@ import {
   findCustomerByName,
   findByPrivateNoteToken,
   fetchOpenInvoicesForCustomer,
+  qboErrorResponse,
 } from "@/lib/qbo";
 
 export const dynamic = "force-dynamic";
@@ -98,10 +99,7 @@ export async function POST(
     accessToken = await getValidToken(clientLinkId, service as any);
     allAccounts = await fetchAllAccounts((client as any).qbo_realm_id, accessToken);
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO bootstrap failed: ${err?.message || String(err)}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
   const accountById = new Map(allAccounts.map((a) => [a.Id, a]));
 

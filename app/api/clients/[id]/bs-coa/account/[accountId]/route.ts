@@ -7,6 +7,7 @@ import {
   inactivateAccount,
   reactivateAccount,
   reparentAccount,
+  qboErrorResponse,
 } from "@/lib/qbo";
 
 export const dynamic = "force-dynamic";
@@ -66,10 +67,7 @@ export async function PATCH(
   try {
     accessToken = await getValidToken(clientLinkId, service as any);
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO token unavailable: ${err?.message || String(err)}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 
   // Fetch the current account snapshot — every QBO sparse update needs the
@@ -80,10 +78,7 @@ export async function PATCH(
   try {
     all = await fetchAllAccounts((client as any).qbo_realm_id, accessToken);
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO fetch failed: ${err?.message || String(err)}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
   const current = all.find((a) => a.Id === accountId);
   if (!current) {
@@ -184,9 +179,6 @@ export async function PATCH(
       { status: 400 }
     );
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO ${action} failed: ${err?.message || String(err)}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 }

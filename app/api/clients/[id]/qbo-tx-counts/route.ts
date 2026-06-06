@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { getValidToken, qboRateLimiter } from "@/lib/qbo";
+import { getValidToken, qboRateLimiter, qboErrorResponse } from "@/lib/qbo";
 
 /**
  * GET /api/clients/[id]/qbo-tx-counts?start=YYYY-MM-DD&end=YYYY-MM-DD
@@ -132,10 +132,7 @@ export async function GET(
   try {
     accessToken = await getValidToken(clientLinkId, service as any);
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO auth failed: ${err?.message || "unknown"}` },
-      { status: 502 }
-    );
+    return qboErrorResponse(err);
   }
 
   // Fire all counts in parallel. With QBO's rate limiter throttle this is

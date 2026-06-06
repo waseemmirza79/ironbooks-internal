@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken, fetchAllAccounts } from "@/lib/qbo";
+import { getValidToken, fetchAllAccounts, qboErrorResponse } from "@/lib/qbo";
 import { fetchProfitAndLoss, extractGstHstAccounts } from "@/lib/qbo-reports";
 import { getProvinceTax } from "@/lib/canadian-tax";
 
@@ -42,13 +42,19 @@ export async function GET(
     return NextResponse.json({ error: "Client province is not set" }, { status: 400 });
   }
 
-  const accessToken = await getValidToken(client_id, service as any);
-
-  // Fetch P&L and COA in parallel
-  const [pnl, allAccounts] = await Promise.all([
-    fetchProfitAndLoss((client as any).qbo_realm_id, accessToken, startDate, endDate),
-    fetchAllAccounts((client as any).qbo_realm_id, accessToken),
-  ]);
+  let accessToken: string;
+  let pnl: Awaited<ReturnType<typeof fetchProfitAndLoss>>;
+  let allAccounts: Awaited<ReturnType<typeof fetchAllAccounts>>;
+  try {
+    accessToken = await getValidToken(client_id, service as any);
+    // Fetch P&L and COA in parallel
+    [pnl, allAccounts] = await Promise.all([
+      fetchProfitAndLoss((client as any).qbo_realm_id, accessToken, startDate, endDate),
+      fetchAllAccounts((client as any).qbo_realm_id, accessToken),
+    ]);
+  } catch (err) {
+    return qboErrorResponse(err);
+  }
 
   const gstAccounts = extractGstHstAccounts(allAccounts);
 

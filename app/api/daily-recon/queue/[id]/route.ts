@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { getValidToken, reclassifyTransactionLines } from "@/lib/qbo-reclass";
+import { qboErrorResponse } from "@/lib/qbo";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -129,10 +130,7 @@ export async function PATCH(
 
       return NextResponse.json({ ok: true, decision: "executed" });
     } catch (err: any) {
-      return NextResponse.json(
-        { error: `QBO write failed: ${err?.message || err}` },
-        { status: 500 }
-      );
+      return qboErrorResponse(err);
     }
   }
 

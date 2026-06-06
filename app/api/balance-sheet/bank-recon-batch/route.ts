@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse } from "@/lib/qbo";
 import {
   listBalanceSheetAccounts,
   fetchBalancesAsOf,
@@ -100,10 +100,7 @@ export async function POST(request: Request) {
       }
     }
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO fetch failed: ${err?.message || err}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
   const byId = new Map(liveAccounts.map((a) => [a.qbo_account_id, a]));
 

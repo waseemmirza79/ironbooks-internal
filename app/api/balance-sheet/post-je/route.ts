@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse } from "@/lib/qbo";
 import {
   listAllAccountsForJE,
   resolveAccount,
@@ -80,10 +80,7 @@ export async function POST(request: Request) {
   try {
     accessToken = await getValidToken(client_link_id, service as any);
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `Could not get QBO access token: ${err?.message}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 
   const realmId = (client as any).qbo_realm_id as string;
@@ -99,10 +96,7 @@ export async function POST(request: Request) {
     try {
       accounts = await listAllAccountsForJE(realmId, accessToken);
     } catch (err: any) {
-      return NextResponse.json(
-        { error: `Could not fetch QBO COA: ${err?.message}` },
-        { status: 500 }
-      );
+      return qboErrorResponse(err);
     }
     for (const h of hintLines) {
       if (!h.account_hint || resolvedHints.has(h.account_hint)) continue;
@@ -150,10 +144,7 @@ export async function POST(request: Request) {
       `Ironbooks BS reconciliation. ${memo || ""}`.slice(0, 4000)
     );
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO JE post failed: ${err?.message || err}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 
   // Audit log

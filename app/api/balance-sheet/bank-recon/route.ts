@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse } from "@/lib/qbo";
 import { listBalanceSheetAccounts } from "@/lib/qbo-balance-sheet";
 
 /**
@@ -66,10 +66,7 @@ export async function POST(request: Request) {
     );
     accountInfo = all.find((a) => a.qbo_account_id === qbo_account_id);
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `Could not fetch account from QBO: ${err?.message}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
   if (!accountInfo) {
     return NextResponse.json(

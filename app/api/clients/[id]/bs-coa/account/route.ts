@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { createAccount, getValidToken } from "@/lib/qbo";
+import { createAccount, getValidToken, qboErrorResponse } from "@/lib/qbo";
 
 export const dynamic = "force-dynamic";
 
@@ -107,9 +107,6 @@ export async function POST(
       },
     });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO create failed: ${err?.message || String(err)}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 }

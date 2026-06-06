@@ -27,7 +27,7 @@ export async function GET(request: Request) {
   const stateValue = crypto.randomBytes(32).toString("hex");
   const stateData = `${stateValue}.${clientLinkId}.${user.id}`;
 
-  const authUrl = getAuthorizeUrl(stateData);
+  const authUrl = await getAuthorizeUrl(stateData);
 
   const response = NextResponse.redirect(authUrl);
   response.cookies.set("qbo_oauth_state", stateValue, {

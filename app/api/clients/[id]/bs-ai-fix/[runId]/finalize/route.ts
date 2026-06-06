@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { createJournalEntry, fetchAllAccounts, getValidToken } from "@/lib/qbo";
+import { createJournalEntry, fetchAllAccounts, getValidToken, qboErrorResponse } from "@/lib/qbo";
 import { reclassifyTransactionLines } from "@/lib/qbo-reclass";
 import type { ProposedFix } from "@/lib/bs-ai-cleanup";
 
@@ -74,10 +74,7 @@ export async function POST(
     accessToken = await getValidToken(clientLinkId, service as any);
     allAccounts = await fetchAllAccounts((client as any).qbo_realm_id, accessToken);
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO bootstrap failed: ${err?.message || String(err)}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
   const accountById = new Map(allAccounts.map((a) => [a.Id, a]));
 

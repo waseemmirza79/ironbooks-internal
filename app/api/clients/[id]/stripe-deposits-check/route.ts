@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse, QBOReauthRequiredError } from "@/lib/qbo";
 import { fetchStripeDeposits } from "@/lib/qbo-stripe-recon";
 
 // Always live — must reflect the QBO state in real time.
@@ -69,6 +69,10 @@ export async function GET(
       end
     );
   } catch (err: any) {
+    // Reauth required is NOT a soft failure — the user needs to know their
+    // QBO connection is dead. Bypass the fail-open path and surface 401 so
+    // the UI routes them to /api/qbo/connect.
+    if (err instanceof QBOReauthRequiredError) return qboErrorResponse(err);
     // Fail-open: if we can't reach QBO, treat as "unknown" so the UI
     // falls back to the normal recon flow rather than silently skipping it.
     console.warn(`[stripe-deposits-check] QBO fetch failed for ${clientLinkId}:`, err?.message);

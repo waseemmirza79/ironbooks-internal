@@ -9,7 +9,7 @@ import {
   fetchInternalSummary,
   fetchClientProgress,
 } from "@/lib/internal-client-profile";
-import { getValidToken } from "@/lib/qbo";
+import { getValidToken, QBOReauthRequiredError } from "@/lib/qbo";
 import {
   fetchOverview,
   fetchBalanceSheetSummary,
@@ -221,6 +221,10 @@ export default async function ClientProfilePage({
 
   const tokenPromise: Promise<string | null> = hasQbo
     ? getValidToken(id, service as any).catch((e) => {
+        // Dead refresh token → bounce the user to the reconnect flow.
+        // redirect() throws an internal Next.js error that the runtime
+        // catches and converts into a 307 — do not swallow it.
+        if (e instanceof QBOReauthRequiredError) redirect(e.reconnectUrl);
         console.warn(`[client-profile ${id}] token fetch failed:`, e?.message);
         return null;
       })

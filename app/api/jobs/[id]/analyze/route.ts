@@ -1,5 +1,5 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { fetchAllAccounts, getValidToken, fetchTransactionCountsForAllAccounts } from "@/lib/qbo";
+import { fetchAllAccounts, getValidToken, fetchTransactionCountsForAllAccounts, qboErrorResponse } from "@/lib/qbo";
 import { analyzeCOA, type MasterCOAEntry } from "@/lib/claude";
 import { NextResponse } from "next/server";
 
@@ -392,9 +392,6 @@ export async function POST(
       error_message: `${error?.message || error} | at ${stack.split("\n")[1]?.trim() || "(unknown)"}`,
     }).eq("id", jobId);
 
-    return NextResponse.json(
-      { error: error?.message || String(error), stack_first_frame: stack.split("\n")[1]?.trim() || null },
-      { status: 500 }
-    );
+    return qboErrorResponse(error);
   }
 }

@@ -2,7 +2,7 @@ import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { fetchAllAccounts, getValidToken } from "@/lib/qbo";
+import { fetchAllAccounts, getValidToken, QBOReauthRequiredError } from "@/lib/qbo";
 import { redirect } from "next/navigation";
 import { BankRulesFromReclassClient } from "./bank-rules-client";
 
@@ -63,6 +63,7 @@ export default async function BankRulesFromReclassPage({
       );
       availablePnLAccounts = active.sort((a, b) => a.name.localeCompare(b.name));
     } catch (err: any) {
+      if (err instanceof QBOReauthRequiredError) redirect(err.reconnectUrl);
       console.warn(`[bank-rules ${id}] Could not fetch accounts:`, err.message);
     }
   }

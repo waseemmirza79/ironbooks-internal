@@ -1,6 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-import { fetchAllAccounts, getValidToken } from "@/lib/qbo";
+import { fetchAllAccounts, getValidToken, qboErrorResponse } from "@/lib/qbo";
 
 export const dynamic = "force-dynamic";
 
@@ -67,10 +67,7 @@ export async function GET(
     const accessToken = await getValidToken(clientLinkId, service as any);
     allAccounts = await fetchAllAccounts((client as any).qbo_realm_id, accessToken);
   } catch (err: any) {
-    return NextResponse.json(
-      { error: `QBO fetch failed: ${err?.message || String(err)}` },
-      { status: 500 }
-    );
+    return qboErrorResponse(err);
   }
 
   // Filter to BS account types, keep both active + inactive (UI can toggle)
