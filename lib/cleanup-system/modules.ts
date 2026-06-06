@@ -3,27 +3,32 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getValidToken } from "@/lib/qbo";
-import {
-  fetchUndepositedFundsPayments,
-  fetchOpenInvoices,
-  findUndepositedFundsAccountId,
-} from "@/lib/qbo-balance-sheet";
-import { findBestMatch, type MatchCandidate } from "./matching-engine";
 import { createProposedEntry } from "./proposed-entries";
 import { createCpaFlag, requiresCpaFlag } from "./cpa-flags";
 import type { CleanupModule } from "./types";
+import { discoverUndepositedFundsModule } from "./uf-discovery";
+import {
+  discoverAccountsReceivableModule,
+  type ArDiscoverOptions,
+} from "./ar-discovery";
 
 export async function discoverBankReconModule(
   service: SupabaseClient,
   runId: string,
   clientLinkId: string
 ): Promise<{ proposed: number }> {
+  // Link any existing per-account recon rows from the legacy BS landing flow.
+  await service
+    .from("bank_recon_jobs")
+    .update({ cleanup_run_id: runId } as any)
+    .eq("client_link_id", clientLinkId)
+    .is("cleanup_run_id", null);
+
   const { data: recons } = await service
     .from("bank_recon_jobs")
     .select("*")
     .eq("client_link_id", clientLinkId)
-    .eq("cleanup_run_id", runId);
+    .or(`cleanup_run_id.eq.${runId},cleanup_run_id.is.null`);
 
   let proposed = 0;
   for (const recon of recons || []) {
@@ -62,184 +67,6 @@ export async function discoverBankReconModule(
     .update({ status: "reviewing", proposed_count: proposed } as any)
     .eq("run_id", runId)
     .eq("module", "bank_recon");
-
-  return { proposed };
-}
-
-export async function discoverUndepositedFundsModule(
-  service: SupabaseClient,
-  runId: string,
-  clientLinkId: string,
-  periodLockDate: string
-): Promise<{ proposed: number; matches: number }> {
-  const { data: client } = await service
-    .from("client_links")
-    .select("qbo_realm_id")
-    .eq("id", clientLinkId)
-    .single();
-  if (!client) throw new Error("Client not found");
-
-  const token = await getValidToken(clientLinkId, service);
-  const realmId = (client as any).qbo_realm_id;
-
-  const ufAccountId = await findUndepositedFundsAccountId(realmId, token);
-  const ufPayments = ufAccountId
-    ? await fetchUndepositedFundsPayments(realmId, token, ufAccountId)
-    : [];
-  const openInvoices = await fetchOpenInvoices(realmId, token);
-
-  const importedRecords = await service
-    .from("imported_records")
-    .select("*")
-    .eq("run_id", runId);
-
-  const bankSources: MatchCandidate[] = (importedRecords.data || []).map((r: any) => ({
-    id: r.id,
-    amount: Number(r.net_amount || r.gross_amount || 0),
-    date: r.record_date,
-    payer: r.payer_raw,
-    reference: r.reference,
-    fee: Number(r.fee_amount || 0),
-    payout_id: r.payout_id,
-  }));
-
-  let proposed = 0;
-  let matches = 0;
-
-  for (const uf of ufPayments) {
-    if (uf.already_applied) continue;
-
-    const ufCandidate: MatchCandidate = {
-      id: uf.qbo_payment_id,
-      amount: uf.amount,
-      date: uf.date,
-      payer: uf.customer_name,
-      reference: uf.invoice_reference || null,
-    };
-
-    const invoiceTargets: MatchCandidate[] = openInvoices
-      .filter((inv) => inv.customer_id === uf.customer_id)
-      .map((inv) => ({
-        id: inv.qbo_invoice_id,
-        amount: inv.balance,
-        date: inv.txn_date,
-        payer: inv.customer_name,
-        reference: inv.doc_number,
-      }));
-
-    const bankTargets = bankSources.filter(
-      (b) => Math.abs(b.amount - uf.amount) < 1
-    );
-
-    const match =
-      findBestMatch(ufCandidate, invoiceTargets) ||
-      findBestMatch(ufCandidate, bankTargets, bankSources);
-
-    if (match) {
-      const { data: reconMatch } = await service
-        .from("recon_matches")
-        .insert({
-          run_id: runId,
-          module: "undeposited_funds",
-          match_type: match.match_type,
-          confidence: match.confidence,
-          gross_amount: match.gross_amount,
-          fee_amount: match.fee_amount,
-          tax_amount: match.tax_amount,
-          net_amount: match.net_amount,
-          proposed_fix: match.proposed_fix,
-          reasons: match.reasons,
-          source_record_ids: match.source_record_ids,
-          qbo_refs: match.qbo_refs,
-        } as any)
-        .select("id")
-        .single();
-
-      let cpaFlagId: string | undefined;
-      if (
-        uf.date &&
-        requiresCpaFlag(uf.date, periodLockDate, "income")
-      ) {
-        cpaFlagId = await createCpaFlag(service, {
-          clientLinkId,
-          runId,
-          flagType: "prior_year_income",
-          description: `UF payment ${uf.qbo_payment_id} dated ${uf.date} is in closed period`,
-          impactSummary: "May affect prior-year income recognition",
-        });
-      }
-
-      await createProposedEntry(service, {
-        runId,
-        clientLinkId,
-        module: "undeposited_funds",
-        entryType: "receive_payment",
-        match,
-        reconMatchId: reconMatch?.id,
-        amount: uf.amount,
-        txnDate: uf.date,
-        memo: `UF match: ${uf.customer_name}`,
-        qboTransactionId: uf.qbo_payment_id,
-        qboTransactionType: "Payment",
-        periodImpact: cpaFlagId ? "cpa_blocked" : "current",
-        cpaFlagId,
-      });
-      proposed++;
-      matches++;
-    }
-  }
-
-  await service
-    .from("cleanup_run_modules")
-    .update({ status: "reviewing", proposed_count: proposed } as any)
-    .eq("run_id", runId)
-    .eq("module", "undeposited_funds");
-
-  return { proposed, matches };
-}
-
-export async function discoverAccountsReceivableModule(
-  service: SupabaseClient,
-  runId: string,
-  clientLinkId: string
-): Promise<{ proposed: number }> {
-  // Wrap hardcore cleanup — look for existing run linked to this cleanup
-  const { data: hcRun } = await service
-    .from("hardcore_cleanup_runs")
-    .select("id")
-    .eq("client_link_id", clientLinkId)
-    .eq("cleanup_run_id", runId)
-    .maybeSingle();
-
-  let proposed = 0;
-  if (hcRun) {
-    const { data: items } = await service
-      .from("hardcore_cleanup_items")
-      .select("*")
-      .eq("run_id", hcRun.id)
-      .eq("resolution", "pending");
-
-    for (const item of items || []) {
-      await createProposedEntry(service, {
-        runId,
-        clientLinkId,
-        module: "accounts_receivable",
-        entryType: "void",
-        amount: Number((item as any).qbo_invoice_balance || 0),
-        txnDate: (item as any).qbo_invoice_date,
-        memo: `Duplicate AR: ${(item as any).qbo_invoice_doc_number}`,
-        qboTransactionId: (item as any).qbo_invoice_id,
-        qboTransactionType: "Invoice",
-      });
-      proposed++;
-    }
-  }
-
-  await service
-    .from("cleanup_run_modules")
-    .update({ status: "reviewing", proposed_count: proposed } as any)
-    .eq("run_id", runId)
-    .eq("module", "accounts_receivable");
 
   return { proposed };
 }
@@ -410,11 +237,18 @@ export async function discoverObeUncategorizedModule(
 
 const DISCOVERERS: Record<
   CleanupModule,
-  (service: SupabaseClient, runId: string, clientLinkId: string, periodLockDate: string) => Promise<{ proposed: number }>
+  (
+    service: SupabaseClient,
+    runId: string,
+    clientLinkId: string,
+    periodLockDate: string,
+    options?: ArDiscoverOptions
+  ) => Promise<{ proposed: number }>
 > = {
   bank_recon: (s, r, c) => discoverBankReconModule(s, r, c),
   undeposited_funds: (s, r, c, d) => discoverUndepositedFundsModule(s, r, c, d),
-  accounts_receivable: (s, r, c) => discoverAccountsReceivableModule(s, r, c),
+  accounts_receivable: (s, r, c, d, o) =>
+    discoverAccountsReceivableModule(s, r, c, d, o || {}),
   accounts_payable: (s, r, c) => discoverAccountsPayableModule(s, r, c),
   loans: (s, r, c, d) => discoverLoansModule(s, r, c, d),
   shareholder_draws: (s, r, c) => discoverShareholderDrawsModule(s, r, c),
@@ -427,7 +261,8 @@ export async function discoverModule(
   runId: string,
   clientLinkId: string,
   module: CleanupModule,
-  periodLockDate: string
+  periodLockDate: string,
+  options?: ArDiscoverOptions
 ): Promise<{ proposed: number }> {
   await service
     .from("cleanup_run_modules")
@@ -435,6 +270,12 @@ export async function discoverModule(
     .eq("run_id", runId)
     .eq("module", module);
 
-  const result = await DISCOVERERS[module](service, runId, clientLinkId, periodLockDate);
+  const result = await DISCOVERERS[module](
+    service,
+    runId,
+    clientLinkId,
+    periodLockDate,
+    options
+  );
   return result;
 }

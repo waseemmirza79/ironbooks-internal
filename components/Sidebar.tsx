@@ -44,7 +44,7 @@ const toolsNav = [
   { href: "/rules/new", label: "Bank Rules", icon: Zap },
   { href: "/stripe-recon/new", label: "Stripe Recon", icon: CreditCard },
   { href: "/balance-sheet/coa", label: "COA Editor", icon: FileSpreadsheet },
-  { href: "/balance-sheet/ar-recovery", label: "A/R Recovery", icon: Wallet },
+  { href: "/balance-sheet/ar-recovery", label: "A/R Recovery (legacy)", icon: Wallet },
   { href: "/tax-audit", label: "GST/HST Audit (CA)", icon: Receipt },
 ];
 

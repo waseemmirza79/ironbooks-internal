@@ -3,12 +3,14 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getValidToken, createJournalEntry } from "@/lib/qbo";
+import { getValidToken } from "@/lib/qbo";
 import {
   reclassifyTransactionLines,
   SUPPORTED_TX_TYPES,
   type SupportedTxType,
 } from "@/lib/qbo-reclass";
+import { applyUfPaymentToInvoice, createJournalEntry, voidQboInvoice } from "./qbo-posting";
+import { parseEntryMeta } from "./entry-meta";
 
 export async function executeProposedEntries(
   service: SupabaseClient,
@@ -60,8 +62,43 @@ export async function executeProposedEntries(
 
     try {
       let qboResultId: string | null = null;
+      let handled = false;
 
-      if (entry.entry_type === "reclass" && entry.qbo_transaction_id) {
+      if (entry.entry_type === "receive_payment" && entry.qbo_transaction_id) {
+        const meta = parseEntryMeta(entry.ai_reasoning);
+        const invoiceId =
+          entry.bookkeeper_override_target_id ||
+          entry.to_account_id ||
+          (meta?.type === "uf_match" ? meta.proposed_invoice_id : null);
+
+        if (!invoiceId) {
+          skipped++;
+          continue;
+        }
+
+        const amount = Number(entry.amount || 0);
+        if (amount <= 0) {
+          skipped++;
+          continue;
+        }
+
+        qboResultId = await applyUfPaymentToInvoice(realmId, accessToken, {
+          paymentId: entry.qbo_transaction_id,
+          invoiceId,
+          amount,
+          runId,
+          entryId: entry.id,
+        });
+        handled = true;
+      } else if (entry.entry_type === "void" && entry.qbo_transaction_id) {
+        qboResultId = await voidQboInvoice(
+          realmId,
+          accessToken,
+          entry.qbo_transaction_id,
+          entry.memo || `BS Cleanup void ${runId}`
+        );
+        handled = true;
+      } else if (entry.entry_type === "reclass" && entry.qbo_transaction_id) {
         const txType = (entry.qbo_transaction_type || "Expense") as SupportedTxType;
         if (!SUPPORTED_TX_TYPES.includes(txType)) {
           skipped++;
@@ -80,6 +117,7 @@ export async function executeProposedEntries(
           auditMemo: `BS Cleanup run ${runId}`,
         });
         qboResultId = result?.tx?.Id || entry.qbo_transaction_id;
+        handled = true;
       } else if (
         (entry.entry_type === "journal_entry" || entry.period_impact === "clearing_entry") &&
         entry.je_lines &&
@@ -98,6 +136,12 @@ export async function executeProposedEntries(
           lines,
         });
         qboResultId = je?.Id || null;
+        handled = true;
+      }
+
+      if (!handled) {
+        skipped++;
+        continue;
       }
 
       await service
@@ -107,6 +151,7 @@ export async function executeProposedEntries(
           executed_at: new Date().toISOString(),
           executed_by: userId,
           qbo_result_id: qboResultId,
+          execution_error: null,
         } as any)
         .eq("id", entry.id);
 

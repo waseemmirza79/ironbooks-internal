@@ -103,20 +103,19 @@ export default async function UFARReviewPage({
             under one Finalize. */}
         <div className="rounded-lg border-2 border-amber-300 bg-amber-50 p-4">
           <div className="text-sm font-bold text-amber-900 mb-1">
-            This UF → A/R surface is moving into Hardcore BS Cleanup
+            UF → A/R matching now lives in BS Cleanup
           </div>
           <p className="text-xs text-amber-900 leading-relaxed">
-            Apply-to-QBO still works here — finish this scan if you&apos;re
-            mid-flow. New scans should start from the consolidated tool,
-            which now scans UF↔A/R, Uncategorized Income, and Stripe
-            payouts together and finalizes them in one click.
+            Apply-to-QBO still works here for in-flight jobs. New work should
+            use the BS Cleanup wizard (Undeposited Funds module) — discover,
+            review, and post matches to QuickBooks in one flow.
           </p>
           {clientLink?.id && (
             <a
-              href={`/balance-sheet/${clientLink.id}/hardcore-cleanup`}
+              href={`/balance-sheet/${clientLink.id}/cleanup`}
               className="mt-2 inline-flex items-center gap-1.5 text-xs font-bold text-amber-900 hover:text-amber-700 underline"
             >
-              Open Hardcore BS Cleanup →
+              Open BS Cleanup →
             </a>
           )}
         </div>

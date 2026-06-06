@@ -13,7 +13,7 @@ export function CleanupPilotBanner() {
           Pilot
         </span>
         <span className="flex-1 min-w-[12rem]">
-          Standalone BS Cleanup — not part of the main Account Cleanup steps yet.
+          UF → A/R matching, duplicate voids, and bank recon in one guided flow.
         </span>
         <Link
           href="/balance-sheet/cleanup"

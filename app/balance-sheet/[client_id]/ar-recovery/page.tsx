@@ -75,31 +75,27 @@ export default async function ArRecoveryLanding({
             jobs but the recommended path is one button up. */}
         <div className="p-4 bg-teal-lighter/40 border-2 border-teal/30 rounded-lg max-w-3xl">
           <div className="text-sm font-bold text-navy mb-1">
-            New: one tool for all three flows
+            Use BS Cleanup for UF → A/R and duplicate invoices
           </div>
           <p className="text-xs text-ink-slate leading-relaxed mb-2">
-            Undeposited Funds audit, UF→A/R matching, and Uncategorized
-            Income recovery now run together in Hardcore BS Cleanup.
-            Single scan, single review, single Finalize that pushes to QBO.
-            The standalone tiles below stay available for in-flight scans;
-            new work should start there.
+            Undeposited Funds matching and A/R duplicate voids now run in the
+            guided BS Cleanup wizard — discover, review, approve, and post to
+            QuickBooks in one flow. Start a new cleanup here; legacy tiles
+            below remain for in-flight scans only.
           </p>
           <Link
-            href={`/balance-sheet/${client_id}/hardcore-cleanup`}
+            href={`/balance-sheet/${client_id}/cleanup`}
             className="inline-flex items-center gap-1.5 text-xs font-bold text-teal hover:text-teal-dark"
           >
-            Open Hardcore BS Cleanup → <ArrowRight size={11} />
+            Open BS Cleanup → <ArrowRight size={11} />
           </Link>
         </div>
 
         <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900 max-w-3xl">
-          <strong>Legacy tiles:</strong> the three flows below are deprecated.
-          If money is stuck in Undeposited Funds and never reached the bank →
-          UF Audit. If a customer payment DID reach the bank but isn&apos;t
-          applied to their open invoice → Match UF → A/R. If a deposit landed
-          in Uncategorized Income because nobody knew who it was from →
-          Uncategorized Income Recovery. All three are now part of Hardcore
-          BS Cleanup above.
+          <strong>Legacy tiles:</strong> UF Audit, standalone UF→A/R matcher, and
+          Uncategorized Income Recovery are deprecated for new work. UF matching
+          and duplicate voids are handled in BS Cleanup; uncat income recovery
+          is not yet in the wizard.
         </div>
 
         <div className="grid md:grid-cols-3 gap-4">

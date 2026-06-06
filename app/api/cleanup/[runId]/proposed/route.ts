@@ -57,5 +57,33 @@ export async function PATCH(
     return NextResponse.json({ ok: true, approved: (count as any) || 0 });
   }
 
+  if (action === "approve_uf_confident") {
+    const { data: rows } = await service
+      .from("proposed_entries")
+      .select("id, ai_reasoning")
+      .eq("run_id", runId)
+      .eq("module", "undeposited_funds")
+      .in("decision", ["auto_approve", "needs_review"]);
+    const confidentIds = (rows || [])
+      .filter((r: any) => {
+        try {
+          const m = JSON.parse(r.ai_reasoning || "{}");
+          return m.kind === "exact_invoice_number" || m.kind === "high_confidence";
+        } catch {
+          return false;
+        }
+      })
+      .map((r: any) => r.id);
+    if (confidentIds.length === 0) {
+      return NextResponse.json({ ok: true, approved: 0 });
+    }
+    const { error } = await service
+      .from("proposed_entries")
+      .update({ decision: "approved", updated_at: new Date().toISOString() } as any)
+      .in("id", confidentIds);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, approved: confidentIds.length });
+  }
+
   return NextResponse.json({ error: "Unknown action" }, { status: 400 });
 }

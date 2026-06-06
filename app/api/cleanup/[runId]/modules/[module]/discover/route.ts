@@ -20,10 +20,13 @@ const VALID_MODULES: CleanupModule[] = [
 ];
 
 export async function POST(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ runId: string; module: string }> }
 ) {
   const { runId, module } = await context.params;
+  const body = await request.json().catch(() => ({}));
+  const crmSource = body.crm_source as string | undefined;
+  const crmCsvText = body.crm_csv_text as string | undefined;
   if (!VALID_MODULES.includes(module as CleanupModule)) {
     return NextResponse.json({ error: "Invalid module" }, { status: 400 });
   }
@@ -55,7 +58,13 @@ export async function POST(
         runId,
         (run as any).client_link_id,
         module as CleanupModule,
-        (run as any).period_lock_date || new Date().toISOString().slice(0, 10)
+        (run as any).period_lock_date || new Date().toISOString().slice(0, 10),
+        module === "accounts_receivable" && crmCsvText
+          ? {
+              crmSource: (crmSource as any) || "generic",
+              crmCsvText,
+            }
+          : undefined
       );
       await service
         .from("cleanup_runs")

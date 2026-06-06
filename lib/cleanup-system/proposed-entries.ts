@@ -26,6 +26,11 @@ export interface ProposedEntryInput {
   periodImpact?: PeriodImpact;
   skipReason?: string;
   cpaFlagId?: string;
+  /** When set, bypasses confidence-based decision (UF/AR matchers). */
+  decisionOverride?: string;
+  /** JSON metadata (UF match, AR duplicate) — stored in ai_reasoning. */
+  aiReasoning?: string;
+  confidenceOverride?: number;
 }
 
 export function buildIdempotencyKey(input: ProposedEntryInput): string {
@@ -47,12 +52,14 @@ export async function createProposedEntry(
   service: SupabaseClient,
   input: ProposedEntryInput
 ): Promise<string> {
-  const confidence = input.match?.confidence ?? 0;
-  const decision = input.skipReason
-    ? "skip"
-    : input.cpaFlagId
-    ? "flagged"
-    : confidenceToDecision(confidence);
+  const confidence = input.confidenceOverride ?? input.match?.confidence ?? 0;
+  const decision =
+    input.decisionOverride ||
+    (input.skipReason
+      ? "skip"
+      : input.cpaFlagId
+      ? "flagged"
+      : confidenceToDecision(confidence));
 
   const idempotencyKey = buildIdempotencyKey(input);
 
@@ -66,7 +73,10 @@ export async function createProposedEntry(
       entry_type: input.entryType,
       decision,
       confidence,
-      ai_reasoning: input.match?.reasons?.join("; ") || null,
+      ai_reasoning:
+        input.aiReasoning ||
+        input.match?.reasons?.join("; ") ||
+        null,
       period_impact: input.periodImpact || "current",
       skip_reason: input.skipReason || null,
       qbo_transaction_id: input.qboTransactionId || null,

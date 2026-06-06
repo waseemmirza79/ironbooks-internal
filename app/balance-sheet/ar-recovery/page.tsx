@@ -28,9 +28,17 @@ export default async function ArRecoveryPickerPage() {
     <AppShell>
       <TopBar
         title="A/R Recovery"
-        subtitle="UF Audit · UF → A/R matcher · Uncategorized Income Recovery — pick a client to open the toolkit"
+        subtitle="Legacy toolkit — new UF/A/R work should use BS Cleanup (Operations sidebar)"
       />
-      <div className="px-8 py-6 max-w-3xl">
+      <div className="px-8 py-6 max-w-3xl space-y-4">
+        <div className="p-4 rounded-xl border border-teal/30 bg-teal-lighter/40 text-sm text-navy">
+          <strong>New work:</strong> use{" "}
+          <a href="/balance-sheet/cleanup" className="font-semibold text-teal hover:underline">
+            BS Cleanup
+          </a>{" "}
+          for UF → A/R matching and duplicate invoice voids. This picker opens
+          the legacy toolkit for in-flight scans only.
+        </div>
         <ArRecoveryPicker clientLinks={(clientLinks as any[]) || []} />
       </div>
     </AppShell>

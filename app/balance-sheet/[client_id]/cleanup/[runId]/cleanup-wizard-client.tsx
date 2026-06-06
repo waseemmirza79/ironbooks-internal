@@ -6,6 +6,7 @@ import {
   ArrowRight, Upload, Shield, FileText, Play,
 } from "lucide-react";
 import { MODULE_LABELS, type CleanupModule } from "@/lib/cleanup-system/types";
+import { ProposedEntryRow } from "./proposed-entry-row";
 
 type WizardStep = "diagnose" | "modules" | "review" | "qa" | "deliver";
 
@@ -53,6 +54,8 @@ export function CleanupWizardClient({
   const [reviewTab, setReviewTab] = useState("needs_review");
   const [attested, setAttested] = useState(false);
   const [aiSummary, setAiSummary] = useState("");
+  const [crmSource, setCrmSource] = useState<"jobber" | "drip_jobs" | "generic">("jobber");
+  const [crmCsv, setCrmCsv] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -106,8 +109,15 @@ export function CleanupWizardClient({
     setActing(true);
     setActiveModule(mod);
     try {
+      const body: Record<string, string> = {};
+      if (mod === "accounts_receivable" && crmCsv.trim()) {
+        body.crm_source = crmSource;
+        body.crm_csv_text = crmCsv;
+      }
       const res = await fetch(`/api/cleanup/${runId}/modules/${mod}/discover`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -136,6 +146,33 @@ export function CleanupWizardClient({
       body: JSON.stringify({ action: "approve_all_auto", module: activeModule }),
     });
     await loadEntries(activeModule || undefined);
+  }
+
+  async function approveUfConfident() {
+    await fetch(`/api/cleanup/${runId}/proposed`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "approve_uf_confident" }),
+    });
+    await loadEntries("undeposited_funds", reviewTab);
+  }
+
+  async function overrideInvoice(
+    entryId: string,
+    invoiceId: string,
+    docNumber: string
+  ) {
+    const entry = entries.find((e) => e.id === entryId);
+    await fetch(`/api/cleanup/${runId}/proposed/${entryId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        decision: entry?.decision || "needs_review",
+        override_target_id: invoiceId,
+        override_target_name: docNumber,
+      }),
+    });
+    await loadEntries(activeModule || undefined, reviewTab);
   }
 
   async function executeModule(mod: CleanupModule) {
@@ -361,14 +398,18 @@ export function CleanupWizardClient({
       {/* MODULES */}
       {step === "modules" && (
         <div className="bg-white rounded-2xl border border-gray-100 p-5">
-          <h3 className="font-semibold text-navy mb-4">Module checklist</h3>
+          <h3 className="font-semibold text-navy mb-2">Module checklist</h3>
+          <p className="text-xs text-ink-light mb-4">
+            Recommended order: Bank Recon → Undeposited Funds → Accounts Receivable.
+            UF matching and duplicate voids post directly to QuickBooks on execute.
+          </p>
           <div className="space-y-2">
             {(status?.modules || []).map((m: any) => {
               const Icon = MODULE_STATUS_ICON[m.status] || ArrowRight;
               const isReady = ["ready", "reviewing", "complete"].includes(m.status);
               return (
+                <div key={m.module}>
                 <div
-                  key={m.module}
                   className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:border-teal/30"
                 >
                   <Icon
@@ -412,9 +453,37 @@ export function CleanupWizardClient({
                     </button>
                   )}
                 </div>
+                {m.module === "accounts_receivable" && m.status !== "complete" && (
+                  <div className="ml-9 mb-2 p-3 rounded-xl border border-amber-100 bg-amber-50/50">
+                    <h4 className="text-xs font-semibold text-navy mb-2">
+                      CRM export (optional — paste before Discover)
+                    </h4>
+                    <div className="flex gap-2 mb-2">
+                      {(["jobber", "drip_jobs", "generic"] as const).map((s) => (
+                        <button
+                          key={s}
+                          onClick={() => setCrmSource(s)}
+                          className={`text-xs px-2 py-1 rounded border ${
+                            crmSource === s ? "bg-teal text-white border-teal" : "border-gray-200"
+                          }`}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                    <textarea
+                      value={crmCsv}
+                      onChange={(e) => setCrmCsv(e.target.value)}
+                      placeholder="Paste Jobber / DripJobs CSV for duplicate-invoice scan…"
+                      className="w-full h-16 text-xs font-mono border border-gray-200 rounded-lg p-2"
+                    />
+                  </div>
+                )}
+                </div>
               );
             })}
           </div>
+
           <button
             onClick={runQA}
             disabled={acting}
@@ -447,13 +516,21 @@ export function CleanupWizardClient({
             </div>
           </div>
 
-          <div className="flex gap-2 mb-4">
+          <div className="flex gap-2 mb-4 flex-wrap">
             <button
               onClick={approveAllAuto}
               className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-green-600 text-white"
             >
               Approve all auto
             </button>
+            {activeModule === "undeposited_funds" && (
+              <button
+                onClick={approveUfConfident}
+                className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-teal text-white"
+              >
+                Approve exact + high confidence
+              </button>
+            )}
             <label className="flex items-center gap-2 text-xs text-ink-slate ml-auto">
               <input
                 type="checkbox"
@@ -471,38 +548,12 @@ export function CleanupWizardClient({
               </div>
             )}
             {entries.map((e) => (
-              <div key={e.id} className="p-3 rounded-xl border border-gray-100 text-sm">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="font-medium text-navy">
-                      {e.entry_type} · ${Number(e.amount || 0).toFixed(2)}
-                    </div>
-                    <div className="text-xs text-ink-light">{e.memo || e.ai_reasoning}</div>
-                    <div className="text-xs mt-1">
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                        e.decision === "approved" ? "bg-green-100 text-green-700" :
-                        e.decision === "flagged" ? "bg-red-100 text-red-700" :
-                        "bg-gray-100 text-gray-700"
-                      }`}>
-                        {e.decision}
-                      </span>
-                      {e.confidence && (
-                        <span className="ml-2 text-ink-light">
-                          {Math.round(Number(e.confidence) * 100)}% conf
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  {e.decision !== "approved" && e.decision !== "skip" && (
-                    <button
-                      onClick={() => approveEntry(e.id)}
-                      className="text-xs font-semibold px-2 py-1 rounded border border-green-300 text-green-700 hover:bg-green-50"
-                    >
-                      Approve
-                    </button>
-                  )}
-                </div>
-              </div>
+              <ProposedEntryRow
+                key={e.id}
+                entry={e}
+                onApprove={approveEntry}
+                onOverrideInvoice={overrideInvoice}
+              />
             ))}
           </div>
 
