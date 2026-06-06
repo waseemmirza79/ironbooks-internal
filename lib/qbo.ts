@@ -63,9 +63,153 @@ export interface QBOTokens {
 // ============== OAUTH ==============
 
 /**
- * Build the QBO authorize URL. User visits this to grant access.
+ * Thrown when QBO refuses to refresh a token because the refresh grant
+ * is permanently dead (user disconnected from inside QuickBooks, refresh
+ * token expired past its 100-day window, app access revoked, etc.).
+ *
+ * API routes should catch this and respond with a structured payload
+ * pointing the user at /api/qbo/connect to re-authorize — see
+ * qboErrorResponse() helper below.
+ *
+ * Required by Intuit SNAP Q6c: app must handle invalid_grant gracefully.
  */
-export function getAuthorizeUrl(state: string): string {
+export class QBOReauthRequiredError extends Error {
+  readonly clientLinkId: string | null;
+  readonly reconnectUrl: string;
+  constructor(clientLinkId: string | null) {
+    super("QBO refresh token is invalid — user must reconnect");
+    this.name = "QBOReauthRequiredError";
+    this.clientLinkId = clientLinkId;
+    this.reconnectUrl = clientLinkId
+      ? `/api/qbo/connect?client_link_id=${encodeURIComponent(clientLinkId)}`
+      : `/api/qbo/connect`;
+  }
+}
+
+/**
+ * Discovery document cache. Intuit publishes the canonical OAuth endpoint
+ * URLs at /.well-known/openid_configuration; fetching them rather than
+ * hardcoding lets the app survive Intuit changing endpoint hostnames
+ * without a redeploy. Required by Intuit SNAP Q5.
+ *
+ * Cached at module scope with a 24h TTL — discovery doc almost never
+ * changes, but we don't want a hardcoded snapshot either.
+ */
+interface DiscoveryDocument {
+  authorization_endpoint: string;
+  token_endpoint: string;
+  revocation_endpoint?: string;
+  userinfo_endpoint?: string;
+  issuer?: string;
+}
+
+const DISCOVERY_TTL_MS = 24 * 60 * 60 * 1000;
+let discoveryCache: { doc: DiscoveryDocument; fetchedAt: number } | null = null;
+let discoveryInflight: Promise<DiscoveryDocument> | null = null;
+
+// Fallback URLs used only if discovery fetch fails entirely. These match
+// Intuit's documented endpoints as of the cutoff; the discovery doc is
+// preferred at runtime.
+const DISCOVERY_FALLBACK: DiscoveryDocument = {
+  authorization_endpoint: 'https://appcenter.intuit.com/connect/oauth2',
+  token_endpoint: `${QBO_AUTH_BASE}/oauth2/v1/tokens/bearer`,
+  revocation_endpoint: `${QBO_AUTH_BASE}/oauth2/v1/tokens/revoke`,
+};
+
+async function getDiscoveryDocument(): Promise<DiscoveryDocument> {
+  const now = Date.now();
+  if (discoveryCache && now - discoveryCache.fetchedAt < DISCOVERY_TTL_MS) {
+    return discoveryCache.doc;
+  }
+  // Coalesce parallel callers so we only fetch once per cache miss
+  if (discoveryInflight) return discoveryInflight;
+
+  discoveryInflight = (async () => {
+    try {
+      const res = await fetchAuthWithRetry(
+        QBO_DISCOVERY,
+        { method: 'GET', headers: { Accept: 'application/json' } },
+        'discovery document'
+      );
+      if (!res.ok) {
+        console.warn(`[qbo-auth] discovery fetch returned ${res.status}, using fallback endpoints`);
+        return DISCOVERY_FALLBACK;
+      }
+      const doc = (await res.json()) as DiscoveryDocument;
+      if (!doc.authorization_endpoint || !doc.token_endpoint) {
+        console.warn('[qbo-auth] discovery doc missing required fields, using fallback');
+        return DISCOVERY_FALLBACK;
+      }
+      discoveryCache = { doc, fetchedAt: now };
+      return doc;
+    } catch (err) {
+      console.warn('[qbo-auth] discovery fetch threw, using fallback:', (err as Error)?.message);
+      return DISCOVERY_FALLBACK;
+    } finally {
+      discoveryInflight = null;
+    }
+  })();
+
+  return discoveryInflight;
+}
+
+/**
+ * Bounded retry wrapper for Intuit auth endpoints.
+ *
+ * Retries on transient failures: network errors, HTTP 429 (rate limited),
+ * and HTTP 5xx (Intuit server hiccup). Does NOT retry on other 4xx —
+ * those are permanent (invalid_grant, bad code, revoked refresh) and
+ * retrying just wastes time before forcing the user to reconnect.
+ *
+ * Exists so a flaky Intuit response on token refresh doesn't surface as
+ * a "please reconnect QBO" to the user when a second attempt 250ms later
+ * would have succeeded. Required by Intuit's SNAP review (Q3: app must
+ * retry failed auth requests).
+ */
+async function fetchAuthWithRetry(
+  url: string,
+  init: RequestInit,
+  context: string,
+  maxAttempts = 3
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      if (res.ok) return res;
+      if (res.status >= 500 || res.status === 429) {
+        if (attempt === maxAttempts) return res;
+        console.warn(`[qbo-auth] ${context} attempt ${attempt}/${maxAttempts} got ${res.status}, retrying`);
+        await sleepWithBackoff(attempt);
+        continue;
+      }
+      // Non-retryable 4xx: hand the response back so caller can read the body and throw
+      return res;
+    } catch (err) {
+      lastErr = err;
+      if (attempt === maxAttempts) throw err;
+      console.warn(`[qbo-auth] ${context} attempt ${attempt}/${maxAttempts} network error, retrying:`, (err as Error)?.message);
+      await sleepWithBackoff(attempt);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+function sleepWithBackoff(attempt: number): Promise<void> {
+  const base = 250 * Math.pow(2, attempt - 1); // 250, 500, 1000 ms
+  const jitter = Math.floor(Math.random() * 150);
+  return new Promise((r) => setTimeout(r, base + jitter));
+}
+
+/**
+ * Build the QBO authorize URL. User visits this to grant access.
+ *
+ * Endpoint URL is sourced from Intuit's discovery document rather than
+ * hardcoded (SNAP Q5). Falls back to the documented URL if discovery
+ * is unreachable so the connect flow never breaks outright.
+ */
+export async function getAuthorizeUrl(state: string): Promise<string> {
+  const discovery = await getDiscoveryDocument();
   const params = new URLSearchParams({
     client_id: process.env.QBO_CLIENT_ID!,
     response_type: 'code',
@@ -73,7 +217,7 @@ export function getAuthorizeUrl(state: string): string {
     redirect_uri: process.env.QBO_REDIRECT_URI!,
     state,
   });
-  return `https://appcenter.intuit.com/connect/oauth2?${params.toString()}`;
+  return `${discovery.authorization_endpoint}?${params.toString()}`;
 }
 
 /**
@@ -85,22 +229,28 @@ export async function exchangeCodeForTokens(code: string): Promise<QBOTokens> {
     `${process.env.QBO_CLIENT_ID}:${process.env.QBO_CLIENT_SECRET}`
   ).toString('base64');
 
-  const res = await fetch(`${QBO_AUTH_BASE}/oauth2/v1/tokens/bearer`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Basic ${auth}`,
-      'Accept': 'application/json',
-      'Content-Type': 'application/x-www-form-urlencoded',
+  const discovery = await getDiscoveryDocument();
+  const res = await fetchAuthWithRetry(
+    discovery.token_endpoint,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: process.env.QBO_REDIRECT_URI!,
+      }),
     },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: process.env.QBO_REDIRECT_URI!,
-    }),
-  });
+    'token exchange'
+  );
 
   if (!res.ok) {
-    throw new Error(`QBO token exchange failed: ${res.status} ${await res.text()}`);
+    const tid = res.headers.get('intuit_tid') || '(no tid)';
+    throw new Error(`QBO token exchange failed: ${res.status} [intuit_tid=${tid}] ${await res.text()}`);
   }
 
   return res.json();
@@ -109,26 +259,42 @@ export async function exchangeCodeForTokens(code: string): Promise<QBOTokens> {
 /**
  * Refresh an expired access token.
  */
-export async function refreshAccessToken(refreshToken: string): Promise<QBOTokens> {
+export async function refreshAccessToken(
+  refreshToken: string,
+  clientLinkId: string | null = null
+): Promise<QBOTokens> {
   const auth = Buffer.from(
     `${process.env.QBO_CLIENT_ID}:${process.env.QBO_CLIENT_SECRET}`
   ).toString('base64');
 
-  const res = await fetch(`${QBO_AUTH_BASE}/oauth2/v1/tokens/bearer`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Basic ${auth}`,
-      'Accept': 'application/json',
-      'Content-Type': 'application/x-www-form-urlencoded',
+  const discovery = await getDiscoveryDocument();
+  const res = await fetchAuthWithRetry(
+    discovery.token_endpoint,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+      }),
     },
-    body: new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-    }),
-  });
+    'token refresh'
+  );
 
   if (!res.ok) {
-    throw new Error(`QBO token refresh failed: ${res.status} ${await res.text()}`);
+    const body = await res.text();
+    const tid = res.headers.get('intuit_tid') || '(no tid)';
+    // invalid_grant = refresh token is permanently dead. Surface a typed
+    // error so API routes can route the user to /api/qbo/connect instead
+    // of bubbling up a raw 400 message. (SNAP Q6c)
+    if (res.status === 400 && /invalid_grant/i.test(body)) {
+      throw new QBOReauthRequiredError(clientLinkId);
+    }
+    throw new Error(`QBO token refresh failed: ${res.status} [intuit_tid=${tid}] ${body}`);
   }
 
   return res.json();
@@ -154,8 +320,9 @@ export async function getValidToken(clientLinkId: string, supabase: ReturnType<t
     return client.qbo_access_token!;
   }
 
-  // Refresh
-  const tokens = await refreshAccessToken(client.qbo_refresh_token!);
+  // Refresh — pass clientLinkId so a dead refresh token surfaces
+  // as a QBOReauthRequiredError pointing at the right reconnect URL.
+  const tokens = await refreshAccessToken(client.qbo_refresh_token!, clientLinkId);
   const newExpiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
 
   await supabase
@@ -170,7 +337,56 @@ export async function getValidToken(clientLinkId: string, supabase: ReturnType<t
   return tokens.access_token;
 }
 
+/**
+ * Convert a thrown QBO error into a structured JSON response.
+ *
+ * For QBOReauthRequiredError: returns 401 with { error: "qbo_reauth_required",
+ * reconnect_url } so the frontend can show a friendly "your QuickBooks
+ * connection needs to be renewed — click to reconnect" UI instead of a
+ * raw error toast. (SNAP Q6c)
+ *
+ * For any other error: returns 500 with the message — same behavior as
+ * existing routes' catch blocks.
+ *
+ * Usage in API routes:
+ *   } catch (e) {
+ *     return qboErrorResponse(e);
+ *   }
+ */
+export function qboErrorResponse(err: unknown): Response {
+  if (err instanceof QBOReauthRequiredError) {
+    return Response.json(
+      {
+        error: "qbo_reauth_required",
+        message: "Your QuickBooks connection needs to be renewed.",
+        reconnect_url: err.reconnectUrl,
+        client_link_id: err.clientLinkId,
+      },
+      { status: 401 }
+    );
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return Response.json({ error: message }, { status: 500 });
+}
+
 // ============== CORE REQUEST ==============
+
+/**
+ * Pull Intuit's request trace ID off a response. Every QBO API response
+ * carries an `intuit_tid` header (e.g. "1-65f8...-d3a2") that Intuit's
+ * support team uses to look up the exact request in their internal logs.
+ *
+ * Recording this in our error messages + write-op success logs means a
+ * future ticket like "client X's createInvoice failed at 10:32 UTC" can
+ * be triaged by Intuit in seconds — they paste the tid into their tools,
+ * not "please reproduce."
+ *
+ * Returns "(no tid)" rather than null so the value is always safe to
+ * interpolate into log strings without `?? "unknown"` everywhere.
+ */
+function extractIntuitTid(res: Response): string {
+  return res.headers.get('intuit_tid') || res.headers.get('Intuit_Tid') || '(no tid)';
+}
 
 async function qboRequest<T>(
   realmId: string,
@@ -189,6 +405,8 @@ async function qboRequest<T>(
     },
   });
 
+  const intuitTid = extractIntuitTid(res);
+
   if (!res.ok) {
     const responseBody = await res.text();
     // Include the request body in the error so audit_log captures EXACTLY
@@ -200,7 +418,18 @@ async function qboRequest<T>(
       sentBody = options.body;
     }
     throw new Error(
-      `QBO API ${res.status} at ${endpoint}: ${responseBody} | Request body sent: ${JSON.stringify(sentBody)}`
+      `QBO API ${res.status} at ${endpoint} [intuit_tid=${intuitTid}]: ${responseBody} | Request body sent: ${JSON.stringify(sentBody)}`
+    );
+  }
+
+  // Log successful write operations with their intuit_tid so we can
+  // correlate post-hoc if a write turns out to have been wrong (e.g.
+  // duplicate invoice created, wrong account hit). GETs are too chatty
+  // to log — only mutating verbs.
+  const method = (options.method || 'GET').toUpperCase();
+  if (method === 'POST' || method === 'PUT' || method === 'DELETE') {
+    console.log(
+      `[qbo-write] realm=${realmId} ${method} ${endpoint} [intuit_tid=${intuitTid}]`
     );
   }
 
