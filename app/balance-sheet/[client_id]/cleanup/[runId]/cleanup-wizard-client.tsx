@@ -111,9 +111,11 @@ function formatMoney(n: number): string {
 
 export function CleanupWizardClient({
   clientLinkId,
+  clientName,
   runId,
 }: {
   clientLinkId: string;
+  clientName: string;
   runId: string;
 }) {
   const [step, setStep] = useState<WizardStep>("diagnose");
@@ -154,11 +156,17 @@ export function CleanupWizardClient({
     setEntries(data.entries || []);
   }, [runId]);
 
+  // Poll for status updates every 5s during active work, but stop polling
+  // once the run is complete/failed/cancelled — no point burning API calls
+  // forever on a terminal state.
   useEffect(() => {
     refresh();
+    const runStatus = status?.run?.status;
+    const isTerminal = runStatus === "complete" || runStatus === "failed" || runStatus === "cancelled";
+    if (isTerminal) return;
     const interval = setInterval(refresh, 5000);
     return () => clearInterval(interval);
-  }, [refresh]);
+  }, [refresh, status?.run?.status]);
 
   // Reset attestation any time you change which module you're reviewing —
   // attestation is a per-execute affirmation, never a sticky checkbox.
@@ -221,7 +229,35 @@ export function CleanupWizardClient({
     await loadEntries(activeModule || undefined, reviewTab);
   }
 
+  /**
+   * Count how many entries the bulk-approve action will affect so we can
+   * surface a confirmation dialog with a real number. Better than a vague
+   * "approve all auto" — the bookkeeper sees "Approve 8 entries?" before
+   * committing. Auto-approve is reversible (sets decision=approved on
+   * already-auto-approved rows), but the next step posts to QBO so the
+   * extra speed bump is worth it.
+   */
+  function countAutoApprovable() {
+    return entries.filter((e) => e.decision === "auto_approve" && !e.executed).length;
+  }
+  function countUfConfident() {
+    return entries.filter(
+      (e) =>
+        !e.executed &&
+        ["needs_review", "auto_approve"].includes(e.decision) &&
+        /(exact_invoice_number|high_confidence)/.test(
+          typeof e.ai_reasoning === "string" ? e.ai_reasoning : JSON.stringify(e.ai_reasoning || "")
+        )
+    ).length;
+  }
+
   async function approveAllAuto() {
+    const n = countAutoApprovable();
+    if (n === 0) {
+      setError("Nothing to bulk-approve in this module — try the Auto-approved tab to confirm.");
+      return;
+    }
+    if (!window.confirm(`Approve ${n} auto-approved ${n === 1 ? "entry" : "entries"}?\n\nNothing posts to QuickBooks until you click Execute.`)) return;
     await fetch(`/api/cleanup/${runId}/proposed`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -231,6 +267,12 @@ export function CleanupWizardClient({
   }
 
   async function approveUfConfident() {
+    const n = countUfConfident();
+    if (n === 0) {
+      setError("No exact / high-confidence UF matches to bulk-approve right now.");
+      return;
+    }
+    if (!window.confirm(`Approve ${n} UF ${n === 1 ? "match" : "matches"} (exact + high confidence)?\n\nNothing posts to QuickBooks until you click Execute.`)) return;
     await fetch(`/api/cleanup/${runId}/proposed`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -348,6 +390,16 @@ export function CleanupWizardClient({
 
   // Execute preview — what's about to hit QBO when bookkeeper clicks
   // the big button. Counted from the currently-loaded entries list.
+  // Per-type labels are pluralized + plain-English so the preview reads
+  // like a sentence instead of a SQL enum dump.
+  const ENTRY_TYPE_PLURAL: Record<string, string> = {
+    receive_payment: "payments to apply",
+    void: "invoices to void",
+    reclass: "reclassifications",
+    journal_entry: "journal entries",
+    bill_payment: "bill payments",
+    invoice: "invoices to create",
+  };
   const executePreview = useMemo(() => {
     const approved = entries.filter(
       (e) => (e.decision === "approved" || e.decision === "auto_approve") && !e.executed
@@ -357,7 +409,10 @@ export function CleanupWizardClient({
     for (const e of approved) {
       byType[e.entry_type] = (byType[e.entry_type] || 0) + 1;
     }
-    return { count: approved.length, total, byType };
+    const breakdown = Object.entries(byType)
+      .map(([t, n]) => `${n} ${ENTRY_TYPE_PLURAL[t] || t.replace("_", " ")}`)
+      .join(" · ");
+    return { count: approved.length, total, byType, breakdown };
   }, [entries]);
 
   if (loading && !status) {
@@ -384,6 +439,22 @@ export function CleanupWizardClient({
 
   return (
     <div className="space-y-6">
+      {/* Persistent client+run strip — the TopBar above the AppShell shows
+          this too, but once you've scrolled or switched tabs the wizard
+          benefits from its own anchor so the bookkeeper never loses track
+          of which client this run is for. */}
+      <div className="flex items-center gap-2 text-xs text-ink-light">
+        <span className="font-semibold text-navy">{clientName}</span>
+        <span>·</span>
+        <span>Cleanup run {runId.slice(0, 8)}</span>
+        {status?.run?.status && (
+          <>
+            <span>·</span>
+            <span className="capitalize">{status.run.status}</span>
+          </>
+        )}
+      </div>
+
       {/* Real stepper — checkmarks on completed steps so progress is visible at a glance */}
       <div className="bg-white rounded-2xl border border-gray-100 p-4">
         <div className="grid grid-cols-5 gap-2">
@@ -670,14 +741,33 @@ export function CleanupWizardClient({
                           Review <ArrowRight size={12} />
                         </button>
                       )}
+                      {/* Retry path for failed modules — without this the
+                          bookkeeper gets stuck and has to refresh the page
+                          or skip the module entirely. */}
+                      {m.status === "failed" && (
+                        <button
+                          onClick={() => discoverModule(m.module)}
+                          disabled={acting}
+                          className="text-xs font-bold px-3 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 inline-flex items-center gap-1.5"
+                          title="Re-run discovery for this module"
+                        >
+                          {acting && activeModule === m.module ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <>Retry discover <RefreshCw size={11} /></>
+                          )}
+                        </button>
+                      )}
                       {isComplete && (
                         <span className="text-xs font-bold text-emerald-700 px-2">Done</span>
                       )}
                     </div>
                   </div>
 
-                  {/* CRM CSV upload — inline on the A/R module so bookkeeper sees the option when it's relevant */}
-                  {m.module === "accounts_receivable" && !isComplete && (
+                  {/* CRM CSV upload — only shown when the A/R module is in
+                      'ready' state (i.e. discovery hasn't run yet). Once it's
+                      reviewing/executing/complete the CSV is locked in. */}
+                  {m.module === "accounts_receivable" && isReady && (
                     <div className="ml-12 mb-2 p-3 rounded-xl border border-amber-100 bg-amber-50/50 mt-1">
                       <h4 className="text-xs font-bold text-navy mb-1 flex items-center gap-1.5">
                         <Upload size={11} /> CRM export (optional)
@@ -812,9 +902,7 @@ export function CleanupWizardClient({
                   </span>
                 </div>
                 <div className="text-xs text-ink-light">
-                  {Object.entries(executePreview.byType)
-                    .map(([t, n]) => `${n} × ${t.replace("_", " ")}`)
-                    .join(" · ")}
+                  {executePreview.breakdown}
                 </div>
 
                 <label className="flex items-start gap-2 text-xs text-navy mt-3 cursor-pointer">
@@ -928,10 +1016,19 @@ export function CleanupWizardClient({
           </p>
           <div className="flex gap-3 justify-center flex-wrap">
             <a
-              href={`/balance-sheet/${clientLinkId}`}
+              href={`/clients/${clientLinkId}`}
               className="text-sm font-bold px-4 py-2.5 rounded-lg border border-emerald-300 text-emerald-800 hover:bg-emerald-100 bg-white"
             >
-              Open BS tools
+              View client profile
+            </a>
+            <a
+              href={`/portal/cleanup-reports`}
+              className="text-sm font-bold px-4 py-2.5 rounded-lg border border-emerald-300 text-emerald-800 hover:bg-emerald-100 bg-white"
+              target="_blank"
+              rel="noopener"
+              title="Sanity-check what the client will see (impersonates via View as client)"
+            >
+              Preview client view ↗
             </a>
             <button
               onClick={async () => {

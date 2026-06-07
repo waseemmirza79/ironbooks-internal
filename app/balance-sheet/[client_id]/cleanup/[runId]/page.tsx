@@ -41,7 +41,11 @@ export default async function CleanupWizardPage({
       />
       <CleanupPilotBanner />
       <div className="px-8 py-6 max-w-6xl">
-        <CleanupWizardClient clientLinkId={client_id} runId={runId} />
+        <CleanupWizardClient
+          clientLinkId={client_id}
+          clientName={(client as any).client_name || "Client"}
+          runId={runId}
+        />
       </div>
     </AppShell>
   );
