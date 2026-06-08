@@ -9,8 +9,8 @@
       "schedule": "*/30 * * * *"
     },
     {
-      "path": "/api/cron/daily-recon?dryRun=true",
-      "schedule": "0 13,17,21 * * *"
+      "path": "/api/cron/daily-recon?dryRun=false",
+      "schedule": "0 7 * * *"
     },
     {
       "path": "/api/cron/month-end-reminder",

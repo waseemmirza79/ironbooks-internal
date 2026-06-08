@@ -19,6 +19,10 @@ import {
   XCircle,
   Plug,
   ArrowRight,
+  Zap,
+  Pause as PauseIcon,
+  Play as PlayIcon,
+  PowerOff,
 } from "lucide-react";
 import type {
   OutstandingWork,
@@ -40,6 +44,11 @@ type ClientLink = {
   last_synced_at: string | null;
   double_client_id: string | null;
   double_client_name: string | null;
+  daily_recon_enabled?: boolean | null;
+  daily_recon_paused?: boolean | null;
+  daily_recon_paused_reason?: string | null;
+  daily_recon_enabled_at?: string | null;
+  cleanup_completed_at?: string | null;
 };
 
 /** A client is "really linked" to Double when double_client_id is set AND
@@ -352,6 +361,243 @@ function ProgressStageCard({
   );
 }
 
+// ─── PRODUCTION STATUS CARD ────────────────────────────────────────────
+
+/**
+ * Promote-to-production lever on the client profile.
+ *
+ * States:
+ *   - Not enabled  → green "Move to production" CTA + 1-line explainer
+ *   - Enabled+live → teal "In production since X" badge with Pause + Disable
+ *   - Enabled+paused → amber banner with paused reason + Unpause + Disable
+ *
+ * Calls POST /api/clients/[id]/production with action: enable | pause |
+ * unpause | disable. Page refresh on success so the next render pulls
+ * the new state from the server (single source of truth).
+ */
+function ProductionStatusCard({
+  clientLinkId,
+  clientName,
+  dailyReconEnabled,
+  dailyReconPaused,
+  pausedReason,
+  enabledAt,
+  cleanupCompletedAt,
+}: {
+  clientLinkId: string;
+  clientName: string;
+  dailyReconEnabled: boolean;
+  dailyReconPaused: boolean;
+  pausedReason: string | null;
+  enabledAt: string | null;
+  cleanupCompletedAt: string | null;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function call(action: "enable" | "pause" | "unpause" | "disable", reason?: string) {
+    setBusy(action);
+    setError(null);
+    try {
+      const res = await fetch(`/api/clients/${clientLinkId}/production`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, reason }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Failed to update production state.");
+        return;
+      }
+      router.refresh();
+    } catch (e: any) {
+      setError(e?.message || "Network error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // Not enrolled — show the "Move to production" CTA. Soft-gate on
+  // cleanup_completed_at: surface a warning if cleanup hasn't been
+  // marked complete, but still allow override (some clients come in
+  // already clean and don't need a cleanup run).
+  if (!dailyReconEnabled) {
+    return (
+      <section className="rounded-2xl border-2 border-teal/20 bg-gradient-to-br from-teal/5 to-white p-5">
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-lg bg-teal/10 flex-shrink-0">
+            <Zap size={20} className="text-teal" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-bold text-navy">Ready for production?</h3>
+              <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-gray-200 text-gray-700">
+                Not enrolled
+              </span>
+            </div>
+            <p className="text-sm text-ink-slate mt-1 leading-relaxed">
+              Moving <strong>{clientName}</strong> to production turns on the daily
+              3am reconciliation cron. New transactions get auto-categorized at ≥95%
+              confidence; anything below or unmatched lands on the Today queue for
+              your sr. to review.
+            </p>
+            {!cleanupCompletedAt && (
+              <div className="mt-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                <strong>Heads up:</strong> cleanup hasn&apos;t been marked complete for
+                this client yet. You can still promote, but ideally finish a cleanup
+                pass first so the AI has clean baseline data to learn from.
+              </div>
+            )}
+            {error && (
+              <div className="mt-3 text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                {error}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={() => call("enable")}
+            disabled={busy !== null}
+            className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-bold px-4 py-2.5 rounded-lg disabled:opacity-50 flex-shrink-0"
+          >
+            {busy === "enable" ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Zap size={14} />
+            )}
+            Move to production
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  // Enrolled + paused — amber banner with unpause / disable actions
+  if (dailyReconPaused) {
+    return (
+      <section className="rounded-2xl border-2 border-amber-200 bg-amber-50 p-5">
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-lg bg-amber-100 flex-shrink-0">
+            <PauseIcon size={20} className="text-amber-700" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-bold text-amber-900">Daily recon paused</h3>
+              <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-200 text-amber-900">
+                In production · paused
+              </span>
+            </div>
+            <p className="text-sm text-amber-900 mt-1 leading-relaxed">
+              <strong>Reason:</strong> {pausedReason || "(no reason given)"}
+            </p>
+            <p className="text-xs text-amber-800 mt-1">
+              The 3am cron will skip this client until you unpause. Already-queued
+              items on /today are still actionable.
+            </p>
+            {error && (
+              <div className="mt-3 text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                {error}
+              </div>
+            )}
+          </div>
+          <div className="flex flex-col gap-2 flex-shrink-0">
+            <button
+              onClick={() => call("unpause")}
+              disabled={busy !== null}
+              className="inline-flex items-center gap-2 bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold px-3 py-2 rounded-lg disabled:opacity-50"
+            >
+              {busy === "unpause" ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <PlayIcon size={12} />
+              )}
+              Unpause
+            </button>
+            <button
+              onClick={() => {
+                if (!confirm("Disable daily recon entirely for this client? They'll need to be re-enrolled to resume.")) return;
+                call("disable");
+              }}
+              disabled={busy !== null}
+              className="inline-flex items-center gap-2 border border-amber-300 hover:bg-amber-100 text-amber-900 text-xs font-bold px-3 py-2 rounded-lg disabled:opacity-50"
+            >
+              {busy === "disable" ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <PowerOff size={12} />
+              )}
+              Disable
+            </button>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  // Enrolled + live — teal success state
+  const enabledLabel = enabledAt
+    ? new Date(enabledAt).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : "(date unknown)";
+
+  return (
+    <section className="rounded-2xl border-2 border-emerald-200 bg-gradient-to-br from-emerald-50 to-white p-5">
+      <div className="flex items-start gap-3">
+        <div className="p-2 rounded-lg bg-emerald-100 flex-shrink-0">
+          <CheckCircle2 size={20} className="text-emerald-700" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-bold text-emerald-900">In production</h3>
+            <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-600 text-white">
+              Daily recon active
+            </span>
+          </div>
+          <p className="text-sm text-emerald-900 mt-1 leading-relaxed">
+            New transactions pulled every morning at 3am ET. Auto-categorized at
+            ≥95% confidence; the rest goes to /today for your sr.&apos;s eyes.
+          </p>
+          <p className="text-xs text-emerald-700 mt-1">
+            Enrolled since <strong>{enabledLabel}</strong>
+          </p>
+          {error && (
+            <div className="mt-3 text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              {error}
+            </div>
+          )}
+        </div>
+        <div className="flex flex-col gap-2 flex-shrink-0">
+          <Link
+            href={`/today/${clientLinkId}`}
+            className="inline-flex items-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold px-3 py-2 rounded-lg"
+          >
+            Open queue <ArrowRight size={12} />
+          </Link>
+          <button
+            onClick={() => {
+              const reason = window.prompt("Reason for pausing daily recon? (Shown to other bookkeepers)");
+              if (reason === null) return;
+              call("pause", reason || undefined);
+            }}
+            disabled={busy !== null}
+            className="inline-flex items-center gap-2 border border-emerald-300 hover:bg-emerald-100 text-emerald-900 text-xs font-bold px-3 py-2 rounded-lg disabled:opacity-50"
+          >
+            {busy === "pause" ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <PauseIcon size={12} />
+            )}
+            Pause
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ─── OVERVIEW TAB ──────────────────────────────────────────────────────
 
 function OverviewTab({
@@ -378,6 +624,22 @@ function OverviewTab({
         qboRealmId={clientLink.qbo_realm_id}
         status={qboStatus}
       />
+
+      {/* Production status — the lever that takes a client from "we
+          cleaned them up once" to "the 3am cron pulls their books
+          every morning." Auto-hides for clients with no QBO connection
+          since promotion is pointless without working tokens. */}
+      {qboStatus === "connected" && (
+        <ProductionStatusCard
+          clientLinkId={clientLink.id}
+          clientName={clientLink.client_name}
+          dailyReconEnabled={!!clientLink.daily_recon_enabled}
+          dailyReconPaused={!!clientLink.daily_recon_paused}
+          pausedReason={clientLink.daily_recon_paused_reason || null}
+          enabledAt={clientLink.daily_recon_enabled_at || null}
+          cleanupCompletedAt={clientLink.cleanup_completed_at || null}
+        />
+      )}
 
       {/* Progress flow chart — bird's-eye view of where this client is in
           their SNAP lifecycle. Renders above Outstanding Work so the

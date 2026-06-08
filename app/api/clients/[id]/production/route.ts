@@ -1,0 +1,135 @@
+import { NextResponse } from "next/server";
+import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
+
+export const dynamic = "force-dynamic";
+
+/**
+ * POST /api/clients/[id]/production
+ *
+ * Flip a client's daily-recon enrollment.
+ *
+ * Body:
+ *   { action: "enable" }     → daily_recon_enabled=true, paused=false
+ *   { action: "pause", reason?: string }  → daily_recon_paused=true (won't run on cron)
+ *   { action: "unpause" }    → daily_recon_paused=false
+ *   { action: "disable" }    → daily_recon_enabled=false (full opt-out)
+ *
+ * Auth: admin/lead only. Audit-logged in both directions so the
+ * Promote-to-production decision and any unpause has a paper trail.
+ *
+ * Why a separate endpoint instead of toggling from /admin/daily-recon:
+ * Lisa lives in the client profile when she's deciding whether a client
+ * is ready for prod. Forcing her to jump to a separate admin page makes
+ * the action feel risky / hidden. This puts the lever exactly where the
+ * decision happens.
+ */
+export async function POST(
+  request: Request,
+  context: { params: Promise<{ id: string }> }
+) {
+  const { id } = await context.params;
+
+  const supabase = await createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const service = createServiceSupabase();
+  const { data: actor } = await service
+    .from("users")
+    .select("role, full_name")
+    .eq("id", user.id)
+    .single();
+  const role = (actor as any)?.role;
+  if (!["admin", "lead"].includes(role)) {
+    return NextResponse.json({ error: "Forbidden — admin or lead only" }, { status: 403 });
+  }
+
+  let body: { action?: string; reason?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+  const action = body.action;
+  if (!["enable", "pause", "unpause", "disable"].includes(action || "")) {
+    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+  }
+
+  // Pull the client first so we have its current state for the audit log
+  // (and so the response can echo it back).
+  const { data: client } = await service
+    .from("client_links")
+    .select("id, client_name, qbo_realm_id, qbo_refresh_token")
+    .eq("id", id)
+    .single();
+  if (!client) {
+    return NextResponse.json({ error: "Client not found" }, { status: 404 });
+  }
+
+  // Sanity: don't let someone enable daily recon on a client with no
+  // QBO connection — the engine will throw on first run anyway and we'd
+  // rather surface the issue here than in a cron failure log.
+  if (action === "enable") {
+    const c: any = client;
+    if (!c.qbo_realm_id || !c.qbo_refresh_token) {
+      return NextResponse.json(
+        {
+          error:
+            "Can't move to production — client has no QuickBooks connection. Connect QBO first, then promote.",
+        },
+        { status: 422 }
+      );
+    }
+  }
+
+  // Build the update payload per action.
+  const now = new Date().toISOString();
+  const updates: Record<string, any> = {};
+  switch (action) {
+    case "enable":
+      updates.daily_recon_enabled = true;
+      updates.daily_recon_paused = false;
+      updates.daily_recon_paused_reason = null;
+      updates.daily_recon_enabled_at = now;
+      break;
+    case "pause":
+      updates.daily_recon_paused = true;
+      updates.daily_recon_paused_reason = body.reason || "Manually paused";
+      break;
+    case "unpause":
+      updates.daily_recon_paused = false;
+      updates.daily_recon_paused_reason = null;
+      break;
+    case "disable":
+      updates.daily_recon_enabled = false;
+      updates.daily_recon_paused = false;
+      updates.daily_recon_paused_reason = null;
+      break;
+  }
+
+  const { error: updateErr } = await service
+    .from("client_links")
+    .update(updates as any)
+    .eq("id", id);
+  if (updateErr) {
+    return NextResponse.json({ error: updateErr.message }, { status: 500 });
+  }
+
+  await service.from("audit_log").insert({
+    event_type: "client_production_state_change",
+    user_id: user.id,
+    request_payload: {
+      client_link_id: id,
+      client_name: (client as any).client_name,
+      action,
+      reason: body.reason || null,
+      actor_name: (actor as any).full_name || user.email,
+    } as any,
+  });
+
+  return NextResponse.json({
+    ok: true,
+    action,
+    client_link_id: id,
+  });
+}
