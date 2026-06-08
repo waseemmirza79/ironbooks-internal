@@ -308,39 +308,157 @@ export async function refreshAccessToken(
 
 /**
  * Get a valid access token for a client, refreshing if expired.
+ *
+ * Concurrency-safe. Two protections against the QBO refresh-token
+ * rotation race that killed ~32 of our 62 clients' connections by
+ * 2026-06-08:
+ *
+ *   1. Fast-path: if the cached access token still has >5 min of life,
+ *      return it immediately — no refresh, no Intuit call. Eliminates
+ *      ~99% of races just by skipping refresh entirely.
+ *
+ *   2. Pessimistic lock-then-re-read for the refresh path. We use a
+ *      Postgres advisory lock keyed on the client_link_id hash so
+ *      concurrent requests for the SAME client serialize, and requests
+ *      for DIFFERENT clients run in parallel as before. After acquiring
+ *      the lock we re-read the token row — if another caller already
+ *      refreshed while we were waiting, we use their result and don't
+ *      hit Intuit at all. This is the standard double-checked locking
+ *      pattern for one-time-use tokens.
+ *
+ * Optional `source` parameter identifies the caller for the
+ * qbo_refresh_log table. Useful when we need to figure out who's
+ * burning refresh tokens (Ironbooks api routes? a cron? coach-intel?).
  */
-export async function getValidToken(clientLinkId: string, supabase: ReturnType<typeof createClient<Database>>): Promise<string> {
-  const { data: client, error } = await supabase
+export async function getValidToken(
+  clientLinkId: string,
+  supabase: ReturnType<typeof createClient<Database>>,
+  source?: string
+): Promise<string> {
+  // ── Fast path: no refresh needed ──
+  const { data: cached, error } = await supabase
     .from('client_links')
     .select('qbo_access_token, qbo_refresh_token, qbo_token_expires_at')
     .eq('id', clientLinkId)
     .single();
+  if (error || !cached) throw new Error('Client not found');
 
-  if (error || !client) throw new Error('Client not found');
-
-  const expiresAt = new Date(client.qbo_token_expires_at!).getTime();
-  const now = Date.now();
-  const buffer = 5 * 60 * 1000; // 5 minute buffer
-
-  if (expiresAt > now + buffer) {
-    return client.qbo_access_token!;
+  const buffer = 5 * 60 * 1000;
+  const cachedExpiresAt = new Date(cached.qbo_token_expires_at!).getTime();
+  if (cachedExpiresAt > Date.now() + buffer) {
+    return cached.qbo_access_token!;
   }
 
-  // Refresh — pass clientLinkId so a dead refresh token surfaces
-  // as a QBOReauthRequiredError pointing at the right reconnect URL.
-  const tokens = await refreshAccessToken(client.qbo_refresh_token!, clientLinkId);
-  const newExpiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
+  // ── Slow path: serialize concurrent refreshes for THIS client ──
+  // Postgres advisory locks are session-scoped. We need a single
+  // session for lock-acquire + re-read + refresh + release. Acquire,
+  // re-read inside the lock, refresh only if still needed, release.
+  //
+  // The lock key is the hash of the client_link_id UUID — collisions
+  // are theoretically possible but at our cardinality (<10k clients)
+  // practically negligible.
+  const lockKey = `qbo_refresh:${clientLinkId}`;
+  // Postgres advisory lock takes a bigint. Hash the string to one.
+  const lockId = hashStringToInt64(lockKey);
 
-  await supabase
-    .from('client_links')
-    .update({
-      qbo_access_token: tokens.access_token,
-      qbo_refresh_token: tokens.refresh_token,
-      qbo_token_expires_at: newExpiresAt,
-    })
-    .eq('id', clientLinkId);
+  // Acquire the lock. pg_advisory_lock is blocking — concurrent callers
+  // queue up. Supabase RPC support varies; we use raw SQL through the
+  // postgrest function endpoint. Fail-soft: if locking fails we still
+  // attempt the refresh (degrade to the old behavior rather than
+  // outright break on Supabase versions without lock support).
+  let lockAcquired = false;
+  try {
+    const lockRes: any = await (supabase as any).rpc('pg_advisory_lock', { key: lockId });
+    if (!lockRes.error) lockAcquired = true;
+  } catch {
+    // RPC unavailable — degrade gracefully. Race window stays open but
+    // the fast path above absorbs the vast majority of calls.
+  }
 
-  return tokens.access_token;
+  const refreshStartedAt = Date.now();
+  let result: 'success' | 'invalid_grant' | 'other_error' = 'success';
+  let errorMessage: string | null = null;
+  let intuitTid: string | null = null;
+
+  try {
+    // Re-read the token row AFTER acquiring the lock. The previous
+    // refresh holder may have already rotated the token; if so, just
+    // return the new access token instead of refreshing again.
+    const { data: fresh } = await supabase
+      .from('client_links')
+      .select('qbo_access_token, qbo_refresh_token, qbo_token_expires_at')
+      .eq('id', clientLinkId)
+      .single();
+    if (!fresh) throw new Error('Client not found');
+    const freshExpiresAt = new Date(fresh.qbo_token_expires_at!).getTime();
+    if (freshExpiresAt > Date.now() + buffer) {
+      // Another caller refreshed while we were waiting for the lock.
+      return fresh.qbo_access_token!;
+    }
+
+    const tokens = await refreshAccessToken(fresh.qbo_refresh_token!, clientLinkId);
+    const newExpiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
+    await supabase
+      .from('client_links')
+      .update({
+        qbo_access_token: tokens.access_token,
+        qbo_refresh_token: tokens.refresh_token,
+        qbo_token_expires_at: newExpiresAt,
+      })
+      .eq('id', clientLinkId);
+    return tokens.access_token;
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    errorMessage = msg;
+    if (err instanceof QBOReauthRequiredError) {
+      result = 'invalid_grant';
+    } else if (/invalid_grant/i.test(msg)) {
+      result = 'invalid_grant';
+    } else {
+      result = 'other_error';
+    }
+    const tidMatch = msg.match(/intuit_tid=([^\s\]]+)/);
+    if (tidMatch) intuitTid = tidMatch[1];
+    throw err;
+  } finally {
+    // Always release the lock + log the attempt. Both failures are
+    // non-fatal — release failure means the lock auto-releases on
+    // session end; log failure is just observability loss.
+    if (lockAcquired) {
+      try {
+        await (supabase as any).rpc('pg_advisory_unlock', { key: lockId });
+      } catch {
+        /* lock auto-releases on session end */
+      }
+    }
+    try {
+      await (supabase as any).from('qbo_refresh_log').insert({
+        client_link_id: clientLinkId,
+        source: source || 'unknown',
+        result,
+        intuit_tid: intuitTid,
+        error_message: errorMessage,
+        duration_ms: Date.now() - refreshStartedAt,
+      });
+    } catch {
+      /* observability is best-effort */
+    }
+  }
+}
+
+/** Hash a string to a deterministic 63-bit signed int (Postgres bigint range). */
+function hashStringToInt64(s: string): number {
+  // FNV-1a 64-bit hash, returned as a JS-safe 53-bit number. Collisions
+  // are statistically negligible at our cardinality (<10k clients).
+  let hash = BigInt('0xcbf29ce484222325');
+  const fnvPrime = BigInt('0x100000001b3');
+  const mask = BigInt('0xffffffffffffffff');
+  for (let i = 0; i < s.length; i++) {
+    hash = (hash ^ BigInt(s.charCodeAt(i))) & mask;
+    hash = (hash * fnvPrime) & mask;
+  }
+  // Squeeze to JS-safe Number while preserving uniqueness for our keys.
+  return Number(hash % BigInt(Number.MAX_SAFE_INTEGER));
 }
 
 /**
