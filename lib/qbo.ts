@@ -60,6 +60,33 @@ export interface QBOTokens {
   token_type: string;
 }
 
+// ============== SOURCE TAGGING ==============
+
+/**
+ * Derive a refresh-log `source` string from the incoming Request URL.
+ *
+ * Drop into any API route that calls getValidToken so the qbo_refresh_log
+ * tells us EXACTLY which Ironbooks endpoint triggered a refresh. Without
+ * this every call shows as "ironbooks-internal/untagged" and we lose the
+ * ability to distinguish (say) a discovery worker from a scan endpoint
+ * when diagnosing a refresh storm.
+ *
+ * Examples:
+ *   sourceFromRequest(req) → "ironbooks/api/reclass/discover"
+ *   sourceFromRequest(req) → "ironbooks/api/clients/<id>/hardcore-cleanup/start"
+ *
+ * IDs in the path are NOT redacted — high-cardinality but useful for
+ * pinpointing which specific run / job caused the refresh.
+ */
+export function sourceFromRequest(request: Request): string {
+  try {
+    const url = new URL(request.url);
+    return `ironbooks${url.pathname}`;
+  } catch {
+    return "ironbooks-internal/untagged";
+  }
+}
+
 // ============== OAUTH ==============
 
 /**
@@ -434,7 +461,12 @@ export async function getValidToken(
     try {
       await (supabase as any).from('qbo_refresh_log').insert({
         client_link_id: clientLinkId,
-        source: source || 'unknown',
+        // Default to 'ironbooks-internal/untagged' so untagged Ironbooks
+        // callers are still distinguishable from external callers (who
+        // hit /api/internal/qbo-token and pass 'external-api/...'). The
+        // only true 'unknown' should be code paths that exist outside
+        // this app.
+        source: source || 'ironbooks-internal/untagged',
         result,
         intuit_tid: intuitTid,
         error_message: errorMessage,

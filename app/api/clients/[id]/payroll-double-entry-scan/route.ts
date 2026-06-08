@@ -107,7 +107,11 @@ export async function POST(
   const runId = (runIns as any).id as string;
 
   try {
-    const accessToken = await getValidToken(clientLinkId, service as any);
+    const accessToken = await getValidToken(
+      clientLinkId,
+      service as any,
+      "ironbooks/api/clients/payroll-double-entry-scan"
+    );
     const allAccounts = await fetchAllAccounts(realmId, accessToken);
     const payrollAccounts = allAccounts.filter((a) => {
       const name = a.Name || "";

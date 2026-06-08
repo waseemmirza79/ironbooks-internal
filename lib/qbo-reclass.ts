@@ -14,7 +14,7 @@
  *    if stale at execution time.
  */
 
-import { qboRateLimiter, getValidToken } from "./qbo";
+import { qboRateLimiter, getValidToken, sourceFromRequest } from "./qbo";
 
 const QBO_BASE =
   process.env.QBO_ENVIRONMENT === "production"
@@ -836,4 +836,4 @@ export function groupLinesByVendor(lines: ReclassLine[]): VendorGroup[] {
 
 // ============== EXPORTS ==============
 
-export { getValidToken };
+export { getValidToken, sourceFromRequest };

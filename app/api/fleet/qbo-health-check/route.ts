@@ -74,7 +74,11 @@ export async function GET(_request: Request) {
       // This is the actual test — getValidToken refreshes if needed,
       // and the refresh either succeeds (token valid) or throws with
       // a recognizable error if the refresh_token is dead.
-      await getValidToken(c.id, service as any);
+      await getValidToken(
+        c.id,
+        service as any,
+        "ironbooks/api/fleet/qbo-health-check"
+      );
       // Re-read the row to capture the new expiry (getValidToken writes
       // it back to client_links on successful refresh).
       const { data: fresh } = await service

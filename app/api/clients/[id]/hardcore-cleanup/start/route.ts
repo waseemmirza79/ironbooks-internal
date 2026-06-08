@@ -260,7 +260,11 @@ export async function POST(
         .from("hardcore_cleanup_runs" as any)
         .update({ status: "matching" } as any)
         .eq("id", runId);
-      const accessToken = await getValidToken(clientLinkId, service as any);
+      const accessToken = await getValidToken(
+        clientLinkId,
+        service as any,
+        "ironbooks/api/clients/hardcore-cleanup/start"
+      );
       const realmId = (client as any).qbo_realm_id as string;
       if (!realmId) {
         throw new Error("Client has no qbo_realm_id — connect QBO first.");
@@ -723,7 +727,11 @@ export async function POST(
       .from("hardcore_cleanup_runs" as any)
       .update({ status: "matching" } as any)
       .eq("id", runId);
-    const accessToken = await getValidToken(clientLinkId, service as any);
+    const accessToken = await getValidToken(
+      clientLinkId,
+      service as any,
+      "ironbooks/api/clients/hardcore-cleanup/start"
+    );
     const realmId = (client as any).qbo_realm_id as string;
     const invoices = await fetchOpenInvoices(realmId, accessToken);
 

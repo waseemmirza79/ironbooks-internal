@@ -96,7 +96,11 @@ export async function POST(
   let accessToken: string;
   let allAccounts;
   try {
-    accessToken = await getValidToken(clientLinkId, service as any);
+    accessToken = await getValidToken(
+      clientLinkId,
+      service as any,
+      "ironbooks/api/clients/hardcore-cleanup/finalize"
+    );
     allAccounts = await fetchAllAccounts((client as any).qbo_realm_id, accessToken);
   } catch (err: any) {
     return qboErrorResponse(err);

@@ -10,6 +10,7 @@ import {
   isDoubleCloseLocked,
   groupLinesByVendor,
   getValidToken,
+  sourceFromRequest,
   type ReclassLine,
 } from "@/lib/qbo-reclass";
 import { fetchAllAccounts, createAccount } from "@/lib/qbo";
@@ -221,7 +222,11 @@ async function runDiscovery(jobId: string) {
   // Get fresh QBO token. QBOReauthRequiredError (from getValidToken) now
   // carries a user-friendly message + reconnect URL, so we just let it
   // propagate — the job row's error_message will be the friendly text.
-  const accessToken = await getValidToken(clientLink.id, service as any);
+  const accessToken = await getValidToken(
+    clientLink.id,
+    service as any,
+    "ironbooks/api/reclass/discover"
+  );
 
   // ─────────── FULL CATEGORIZATION pipeline ───────────
   if (job.workflow === "full_categorization") {

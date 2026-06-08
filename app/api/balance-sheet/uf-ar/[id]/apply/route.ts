@@ -110,7 +110,11 @@ export async function POST(
   // reconnect, doesn't need a stack trace.
   let accessToken: string;
   try {
-    accessToken = await getValidToken((clientLink as any).id, service as any);
+    accessToken = await getValidToken(
+      (clientLink as any).id,
+      service as any,
+      "ironbooks/api/balance-sheet/uf-ar/apply"
+    );
   } catch (err: any) {
     return qboErrorResponse(err);
   }
