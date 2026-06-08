@@ -179,8 +179,8 @@ export default async function ConnectQuickbooksPage({
             </p>
             <p>
               Questions? Email{" "}
-              <a href="mailto:support@ironbooks.com" className="text-blue-600 hover:underline">
-                support@ironbooks.com
+              <a href="mailto:admin@ironbooks.com" className="text-blue-600 hover:underline">
+                admin@ironbooks.com
               </a>
               .
             </p>
