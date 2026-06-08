@@ -4,11 +4,12 @@ import { useCallback, useMemo, useState } from "react";
 import {
   Upload, FileText, Loader2, CheckCircle2, AlertCircle, AlertTriangle,
   Sparkles, ArrowRight, RefreshCw, FileSearch, Wallet, ScrollText,
-  Info, Clipboard, ClipboardCheck,
+  Info, Clipboard, ClipboardCheck, Zap, Calendar,
 } from "lucide-react";
 import type { UfAiResult } from "@/lib/uf-ai-prompt";
 
 type Phase = "upload" | "analyzing" | "results" | "error";
+type SourceMode = "qbo" | "csv";
 
 /**
  * Drop-zone for a single CSV. We accept .csv via the file picker; raw
@@ -181,19 +182,37 @@ function formatMoneyCompact(n: number): string {
 export function UfAiClient({
   clientLinkId,
   clientName,
+  hasQbo,
 }: {
   clientLinkId: string;
   clientName: string;
+  hasQbo: boolean;
 }) {
   const [phase, setPhase] = useState<Phase>("upload");
+  // Default to QBO live-pull when a connection exists — it's the
+  // path that requires zero bookkeeper prep work. CSV is the fallback
+  // for clients with dead tokens or one-off audits.
+  const [source, setSource] = useState<SourceMode>(hasQbo ? "qbo" : "csv");
   const [arCsv, setArCsv] = useState("");
   const [ufCsv, setUfCsv] = useState("");
+  // QBO mode date range — default trailing 12 months
+  const today = new Date().toISOString().slice(0, 10);
+  const oneYearAgo = (() => {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() - 1);
+    return d.toISOString().slice(0, 10);
+  })();
+  const [startDate, setStartDate] = useState(oneYearAgo);
+  const [endDate, setEndDate] = useState(today);
+
   const [result, setResult] = useState<UfAiResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [duration, setDuration] = useState<number | null>(null);
+  const [resultMeta, setResultMeta] = useState<any>(null);
   const [copiedInstructions, setCopiedInstructions] = useState(false);
 
-  const canAnalyze = arCsv.length > 50 && ufCsv.length > 50;
+  const canAnalyzeCsv = arCsv.length > 50 && ufCsv.length > 50;
+  const canAnalyze = source === "qbo" ? !!hasQbo : canAnalyzeCsv;
 
   const analyze = useCallback(async () => {
     setPhase("analyzing");
@@ -203,32 +222,51 @@ export function UfAiClient({
       const res = await fetch("/api/uf-ai/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          client_link_id: clientLinkId,
-          ar_csv_text: arCsv,
-          uf_csv_text: ufCsv,
-        }),
+        body: JSON.stringify(
+          source === "qbo"
+            ? {
+                client_link_id: clientLinkId,
+                source: "qbo",
+                start_date: startDate,
+                end_date: endDate,
+              }
+            : {
+                client_link_id: clientLinkId,
+                source: "csv",
+                ar_csv_text: arCsv,
+                uf_csv_text: ufCsv,
+              }
+        ),
       });
       const data = await res.json();
       if (!res.ok) {
+        // If QBO token is dead, surface a CTA to switch to CSV mode
+        if (data.code === "qbo_token_dead") {
+          setError(data.error || "QBO connection failed. Switch to CSV mode below.");
+          setSource("csv");
+          setPhase("upload");
+          return;
+        }
         setError(data.error || "Analysis failed.");
         setPhase("error");
         return;
       }
       setResult(data.result);
       setDuration(data.meta?.duration_ms ?? null);
+      setResultMeta(data.meta || null);
       setPhase("results");
     } catch (e: any) {
       setError(e?.message || "Network error.");
       setPhase("error");
     }
-  }, [clientLinkId, arCsv, ufCsv]);
+  }, [clientLinkId, arCsv, ufCsv, source, startDate, endDate]);
 
   function resetAll() {
     setPhase("upload");
     setResult(null);
     setError(null);
     setDuration(null);
+    setResultMeta(null);
   }
 
   function copyInstructions() {
@@ -253,46 +291,176 @@ export function UfAiClient({
             <div className="flex-1">
               <h2 className="font-bold text-navy">AI Undeposited Funds Reconciliation</h2>
               <p className="text-sm text-ink-slate mt-1 leading-relaxed">
-                Upload two QuickBooks transaction reports — Accounts Receivable and
-                Undeposited Funds — and Claude will match payments to deposits, find
-                what's still stuck in UF, verify the math, and write step-by-step
-                QuickBooks instructions to clear it.
+                Claude reads the Accounts Receivable + Undeposited Funds transaction
+                reports, matches payments to deposits, finds what&apos;s still stuck in
+                UF, verifies the math, and writes step-by-step QuickBooks instructions
+                to clear it.
               </p>
-              <details className="mt-3">
-                <summary className="text-xs font-bold text-navy cursor-pointer">
-                  How to export the CSVs from QBO →
-                </summary>
-                <ol className="mt-2 text-xs text-ink-slate space-y-1.5 list-decimal pl-5">
-                  <li>In QBO: <strong>Reports → Standard → Transaction List by Account</strong> (or Search → "transaction report")</li>
-                  <li>Filter to the Accounts Receivable account → set date range → <strong>Export → To CSV</strong></li>
-                  <li>Repeat for the Undeposited Funds account with the same date range</li>
-                  <li>Upload both files below (drag-drop or click)</li>
-                </ol>
-              </details>
             </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <CsvDropZone
-            label="1. Accounts Receivable CSV"
-            description="Transaction list for the A/R account — shows payments routed into UF."
-            value={arCsv}
-            onChange={setArCsv}
-            expectedColumns={["Date", "Transaction Type", "Name", "Amount", "Split"]}
-          />
-          <CsvDropZone
-            label="2. Undeposited Funds CSV"
-            description="Transaction list for the UF account — shows deposits that cleared and what's left."
-            value={ufCsv}
-            onChange={setUfCsv}
-            expectedColumns={["Date", "Transaction Type", "Name", "Amount", "Split"]}
-          />
+        {/* Error from a failed prior attempt — surfaced here so it sits
+            right above the source toggle when we auto-switched to CSV */}
+        {error && (
+          <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 flex items-center gap-2">
+            <AlertTriangle size={14} /> {error}
+            <button onClick={() => setError(null)} className="ml-auto text-xs underline">dismiss</button>
+          </div>
+        )}
+
+        {/* Source toggle — QBO live-pull is the default when there's a
+            connection, with CSV as the fallback for dead-token clients
+            or one-off audits */}
+        <div className="bg-white rounded-2xl border border-gray-100 p-1.5 flex">
+          <button
+            onClick={() => setSource("qbo")}
+            disabled={!hasQbo}
+            title={!hasQbo ? "This client has no QuickBooks connection" : undefined}
+            className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-2 ${
+              source === "qbo"
+                ? "bg-teal text-white"
+                : "text-ink-slate hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            }`}
+          >
+            <Zap size={14} />
+            Pull live from QuickBooks
+            {hasQbo && source === "qbo" && (
+              <span className="text-[9px] uppercase font-bold tracking-wider bg-white/20 px-1.5 py-0.5 rounded">
+                Fastest
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setSource("csv")}
+            className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-2 ${
+              source === "csv"
+                ? "bg-navy text-white"
+                : "text-ink-slate hover:bg-gray-50"
+            }`}
+          >
+            <Upload size={14} />
+            Upload CSV exports
+          </button>
         </div>
+
+        {/* QBO live-pull config */}
+        {source === "qbo" && (
+          <div className="bg-white rounded-2xl border border-gray-100 p-5 space-y-4">
+            <div>
+              <h3 className="font-bold text-navy text-sm">QuickBooks pull settings</h3>
+              <p className="text-xs text-ink-light mt-1">
+                We&apos;ll pull the Accounts Receivable and Undeposited Funds transaction
+                lists straight from {clientName}&apos;s QuickBooks for the date range below.
+                No exports needed.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-ink-slate mb-1.5 flex items-center gap-1.5">
+                  <Calendar size={11} /> Start date
+                </span>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  max={endDate}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:border-teal focus:ring-1 focus:ring-teal/30 outline-none"
+                />
+              </label>
+              <label className="block">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-ink-slate mb-1.5 flex items-center gap-1.5">
+                  <Calendar size={11} /> End date
+                </span>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  min={startDate}
+                  max={today}
+                  className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:border-teal focus:ring-1 focus:ring-teal/30 outline-none"
+                />
+              </label>
+            </div>
+
+            {/* Quick presets — saves date-picker hunting for common ranges */}
+            <div className="flex gap-2 flex-wrap">
+              {[
+                { label: "Last 30 days", days: 30 },
+                { label: "Last 90 days", days: 90 },
+                { label: "Last 12 months", days: 365 },
+                { label: "Year to date", ytd: true },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  onClick={() => {
+                    const end = new Date();
+                    const start = new Date();
+                    if (p.ytd) {
+                      start.setMonth(0);
+                      start.setDate(1);
+                    } else if (p.days) {
+                      start.setDate(start.getDate() - p.days);
+                    }
+                    setStartDate(start.toISOString().slice(0, 10));
+                    setEndDate(end.toISOString().slice(0, 10));
+                  }}
+                  className="text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-gray-200 hover:border-teal/40 text-ink-slate hover:text-navy"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* CSV upload mode */}
+        {source === "csv" && (
+          <>
+            <details className="bg-white rounded-2xl border border-gray-100 p-4">
+              <summary className="text-xs font-bold text-navy cursor-pointer">
+                How to export the CSVs from QBO →
+              </summary>
+              <ol className="mt-2 text-xs text-ink-slate space-y-1.5 list-decimal pl-5">
+                <li>In QBO: <strong>Reports → Standard → Transaction List by Account</strong> (or Search → &quot;transaction report&quot;)</li>
+                <li>Filter to the Accounts Receivable account → set date range → <strong>Export → To CSV</strong></li>
+                <li>Repeat for the Undeposited Funds account with the same date range</li>
+                <li>Drop both files below</li>
+              </ol>
+            </details>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <CsvDropZone
+                label="1. Accounts Receivable CSV"
+                description="Transaction list for the A/R account — shows payments routed into UF."
+                value={arCsv}
+                onChange={setArCsv}
+                expectedColumns={["Date", "Transaction Type", "Name", "Amount", "Split"]}
+              />
+              <CsvDropZone
+                label="2. Undeposited Funds CSV"
+                description="Transaction list for the UF account — shows deposits that cleared and what's left."
+                value={ufCsv}
+                onChange={setUfCsv}
+                expectedColumns={["Date", "Transaction Type", "Name", "Amount", "Split"]}
+              />
+            </div>
+          </>
+        )}
 
         <div className="flex items-center justify-between bg-white rounded-2xl border border-gray-100 p-4">
           <div className="text-sm">
-            {canAnalyze ? (
+            {source === "qbo" ? (
+              hasQbo ? (
+                <span className="text-emerald-700 font-semibold flex items-center gap-2">
+                  <CheckCircle2 size={14} /> QuickBooks connected — ready to pull and analyze
+                </span>
+              ) : (
+                <span className="text-red-700 font-semibold flex items-center gap-2">
+                  <AlertCircle size={14} /> No QuickBooks connection — switch to CSV mode
+                </span>
+              )
+            ) : canAnalyzeCsv ? (
               <span className="text-emerald-700 font-semibold flex items-center gap-2">
                 <CheckCircle2 size={14} /> Both reports loaded — ready to analyze
               </span>
@@ -308,7 +476,7 @@ export function UfAiClient({
             className="px-5 py-2.5 rounded-xl bg-teal text-white font-bold hover:bg-teal-dark disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-2"
           >
             <Sparkles size={14} />
-            Analyze with Claude
+            {source === "qbo" ? "Pull & analyze" : "Analyze with Claude"}
             <ArrowRight size={14} />
           </button>
         </div>
@@ -321,15 +489,22 @@ export function UfAiClient({
     return (
       <div className="rounded-2xl border border-gray-100 bg-white p-12 text-center">
         <Loader2 size={32} className="animate-spin text-teal mx-auto mb-4" />
-        <h3 className="font-bold text-navy text-lg">Claude is reading your reports…</h3>
+        <h3 className="font-bold text-navy text-lg">
+          {source === "qbo"
+            ? "Pulling reports from QuickBooks and sending to Claude…"
+            : "Claude is reading your reports…"}
+        </h3>
         <p className="text-sm text-ink-light mt-2 max-w-md mx-auto">
-          Parsing transactions, matching payments to deposits, checking the balance,
-          and drafting your QuickBooks cleanup steps. Usually 20–60 seconds.
+          {source === "qbo"
+            ? `Fetching AR + UF transaction lists for ${startDate} → ${endDate}, then matching payments to deposits and drafting your QuickBooks cleanup steps. Usually 20–90 seconds.`
+            : "Parsing transactions, matching payments to deposits, checking the balance, and drafting your QuickBooks cleanup steps. Usually 20–60 seconds."}
         </p>
-        <div className="mt-6 text-xs text-ink-light flex items-center justify-center gap-2">
-          <FileText size={12} />
-          {(arCsv.length / 1024).toFixed(1)}kb AR · {(ufCsv.length / 1024).toFixed(1)}kb UF
-        </div>
+        {source === "csv" && (
+          <div className="mt-6 text-xs text-ink-light flex items-center justify-center gap-2">
+            <FileText size={12} />
+            {(arCsv.length / 1024).toFixed(1)}kb AR · {(ufCsv.length / 1024).toFixed(1)}kb UF
+          </div>
+        )}
       </div>
     );
   }
@@ -378,9 +553,19 @@ export function UfAiClient({
             <Sparkles size={20} className="text-teal" />
           </div>
           <div className="flex-1">
-            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-teal">
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-teal flex-wrap">
               Claude's analysis
               {duration && <span className="text-ink-light font-normal">· {(duration / 1000).toFixed(1)}s</span>}
+              {resultMeta?.source === "qbo" && resultMeta?.qbo_pull && (
+                <span className="text-ink-light font-normal">
+                  · pulled live from QBO · {resultMeta.qbo_pull.ar_rows} AR rows ·{" "}
+                  {resultMeta.qbo_pull.uf_rows} UF rows ·{" "}
+                  {resultMeta.qbo_pull.date_range?.start} → {resultMeta.qbo_pull.date_range?.end}
+                </span>
+              )}
+              {resultMeta?.source === "csv" && (
+                <span className="text-ink-light font-normal">· from uploaded CSVs</span>
+              )}
             </div>
             <p className="text-base text-navy mt-1 leading-relaxed">{result.summary}</p>
           </div>

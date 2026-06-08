@@ -51,6 +51,7 @@ export default async function UfAiPage({
         <UfAiClient
           clientLinkId={client_id}
           clientName={(client as any).client_name || "Client"}
+          hasQbo={!!(client as any).qbo_realm_id}
         />
       </div>
     </AppShell>

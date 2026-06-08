@@ -512,7 +512,7 @@ function extractIntuitTid(res: Response): string {
   return res.headers.get('intuit_tid') || res.headers.get('Intuit_Tid') || '(no tid)';
 }
 
-async function qboRequest<T>(
+export async function qboRequest<T>(
   realmId: string,
   accessToken: string,
   endpoint: string,
