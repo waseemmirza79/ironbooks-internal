@@ -3,13 +3,16 @@
 import { useEffect, useState } from "react";
 import {
   ChevronDown, AlertTriangle, X, Loader2, ChevronRight, Flag, CheckCircle2,
-  Sparkles, Info, ArrowDown, TrendingUp, TrendingDown,
+  Sparkles, Info, ArrowDown, TrendingUp, TrendingDown, CalendarRange,
 } from "lucide-react";
 import type { ProfitLossData } from "@/lib/qbo-reports";
 import { classifyProfitLoss, marginVerdict, type PortalPl, type PlBucket } from "@/lib/portal-pl";
 import { AskAboutButton } from "../ask-about";
 
-type RangeKey = "lastMonth" | "thisMonth" | "quarter" | "ytd" | "lastYear";
+/** The five ranges the server pre-fetches. */
+type FixedRangeKey = "lastMonth" | "thisMonth" | "quarter" | "ytd" | "lastYear";
+/** Plus a client-side "custom" range fetched on demand. */
+type RangeKey = FixedRangeKey | "custom";
 
 /**
  * Portal P&L — restructured into the four numbers a contractor lives by:
@@ -28,8 +31,8 @@ export function ProfitLossClient({
   data,
   closedSource,
 }: {
-  ranges: Record<RangeKey, { label: string; start: string; end: string }>;
-  data: Record<RangeKey, ProfitLossData | null>;
+  ranges: Record<FixedRangeKey, { label: string; start: string; end: string }>;
+  data: Record<FixedRangeKey, ProfitLossData | null>;
   closedSource: "reclass_job_closed" | "cleanup_completed" | "calendar_default";
 }) {
   const [activeRange, setActiveRange] = useState<RangeKey>("lastMonth");
@@ -39,11 +42,55 @@ export function ProfitLossClient({
     amount: number;
   } | null>(null);
 
-  const pl = data[activeRange];
-  const range = ranges[activeRange];
+  // Custom range — fetched on demand from /api/portal/profit-loss.
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+  const [customData, setCustomData] = useState<ProfitLossData | null>(null);
+  const [customRange, setCustomRange] = useState<{ start: string; end: string } | null>(null);
+  const [customLoading, setCustomLoading] = useState(false);
+  const [customError, setCustomError] = useState<string | null>(null);
+
+  const isCustom = activeRange === "custom";
   const isThisMonth = activeRange === "thisMonth";
+
+  const pl: ProfitLossData | null = isCustom ? customData : data[activeRange as FixedRangeKey];
+  const range: { label: string; start: string; end: string } | null = isCustom
+    ? customRange
+      ? { label: "Custom range", start: customRange.start, end: customRange.end }
+      : null
+    : ranges[activeRange as FixedRangeKey];
   const c: PortalPl | null = pl ? classifyProfitLoss(pl) : null;
-  const periodLabel = `${range.label} · ${formatDate(range.start)} → ${formatDate(range.end)}`;
+  const periodLabel = range
+    ? `${range.label} · ${formatDate(range.start)} → ${formatDate(range.end)}`
+    : "Custom range — pick dates below";
+
+  async function applyCustom() {
+    if (!customStart || !customEnd) {
+      setCustomError("Pick both a start and end date.");
+      return;
+    }
+    if (customStart > customEnd) {
+      setCustomError("Start date must be on or before the end date.");
+      return;
+    }
+    setCustomLoading(true);
+    setCustomError(null);
+    try {
+      const res = await fetch(
+        `/api/portal/profit-loss?start=${customStart}&end=${customEnd}`
+      );
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      setCustomData(body.profit_loss ?? null);
+      setCustomRange({ start: customStart, end: customEnd });
+    } catch (e: any) {
+      setCustomError(e?.message || "Couldn't load that range.");
+      setCustomData(null);
+      setCustomRange(null);
+    } finally {
+      setCustomLoading(false);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -57,14 +104,15 @@ export function ProfitLossClient({
             <div className="text-sm text-white/70 mt-1">{periodLabel}</div>
           </div>
           <div className="flex bg-white/10 backdrop-blur rounded-lg p-0.5 flex-wrap self-start">
-            {(["lastMonth", "thisMonth", "quarter", "ytd", "lastYear"] as RangeKey[]).map((k) => (
+            {(["lastMonth", "thisMonth", "quarter", "ytd", "lastYear", "custom"] as RangeKey[]).map((k) => (
               <button
                 key={k}
                 onClick={() => setActiveRange(k)}
-                className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors ${
+                className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors inline-flex items-center gap-1 ${
                   activeRange === k ? "bg-white text-navy" : "text-white/75 hover:bg-white/10"
                 }`}
               >
+                {k === "custom" && <CalendarRange size={12} />}
                 {shortLabel(k, ranges)}
               </button>
             ))}
@@ -86,7 +134,31 @@ export function ProfitLossClient({
         </div>
       )}
 
-      {!pl ? (
+      {/* Custom range picker */}
+      {isCustom && (
+        <CustomRangePicker
+          start={customStart}
+          end={customEnd}
+          onStart={setCustomStart}
+          onEnd={setCustomEnd}
+          onApply={applyCustom}
+          loading={customLoading}
+          error={customError}
+          applied={customRange}
+        />
+      )}
+
+      {isCustom && customLoading ? (
+        <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center text-sm text-ink-slate">
+          <Loader2 size={20} className="animate-spin mx-auto mb-2 text-teal-dark" />
+          Pulling your P&L for that range…
+        </div>
+      ) : isCustom && !customData ? (
+        <div className="bg-white border border-dashed border-slate-300 rounded-2xl p-8 text-center text-sm text-ink-slate">
+          Pick a start and end date above, then hit <strong>Run</strong> to see your P&amp;L for any
+          period.
+        </div>
+      ) : !pl || !range ? (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900">
           We couldn't load the P&L for this range. Try a different range or refresh — if it keeps
           happening, let your bookkeeper know.
@@ -180,7 +252,7 @@ export function ProfitLossClient({
         for an instant explanation.
       </div>
 
-      {drillLine && (
+      {drillLine && range && (
         <DrillDownDrawer line={drillLine} range={range} onClose={() => setDrillLine(null)} />
       )}
     </div>
@@ -463,9 +535,88 @@ function ResultBand({
 
 // ─── HELPERS ────────────────────────────────────────────────────────────
 
-function shortLabel(key: RangeKey, ranges: Record<RangeKey, { label: string }>): string {
+function shortLabel(key: RangeKey, ranges: Record<FixedRangeKey, { label: string }>): string {
   if (key === "lastMonth") return "Last month";
+  if (key === "custom") return "Custom";
   return ranges[key].label;
+}
+
+// ─── CUSTOM RANGE PICKER ──────────────────────────────────────────────────
+
+function CustomRangePicker({
+  start,
+  end,
+  onStart,
+  onEnd,
+  onApply,
+  loading,
+  error,
+  applied,
+}: {
+  start: string;
+  end: string;
+  onStart: (v: string) => void;
+  onEnd: (v: string) => void;
+  onApply: () => void;
+  loading: boolean;
+  error: string | null;
+  applied: { start: string; end: string } | null;
+}) {
+  const today = new Date().toISOString().slice(0, 10);
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <CalendarRange size={16} className="text-teal-dark" />
+        <h3 className="text-sm font-bold text-navy">Custom date range</h3>
+        {applied && (
+          <span className="text-xs text-ink-light">
+            Showing {formatDate(applied.start)} → {formatDate(applied.end)}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+        <label className="text-xs font-semibold text-ink-slate">
+          <span className="block uppercase tracking-wider mb-1">From</span>
+          <input
+            type="date"
+            value={start}
+            max={end || today}
+            onChange={(e) => onStart(e.target.value)}
+            className="w-full sm:w-44 px-3 py-2 text-sm border border-slate-200 rounded-lg text-navy focus:border-teal/50 focus:outline-none"
+          />
+        </label>
+        <label className="text-xs font-semibold text-ink-slate">
+          <span className="block uppercase tracking-wider mb-1">To</span>
+          <input
+            type="date"
+            value={end}
+            min={start || undefined}
+            max={today}
+            onChange={(e) => onEnd(e.target.value)}
+            className="w-full sm:w-44 px-3 py-2 text-sm border border-slate-200 rounded-lg text-navy focus:border-teal/50 focus:outline-none"
+          />
+        </label>
+        <button
+          onClick={onApply}
+          disabled={loading || !start || !end}
+          className="px-4 py-2 bg-gradient-to-r from-teal to-teal-dark text-white rounded-lg text-sm font-semibold hover:from-teal-dark hover:to-teal-dark disabled:opacity-50 inline-flex items-center gap-1.5 flex-shrink-0 transition-all"
+        >
+          {loading ? <Loader2 size={13} className="animate-spin" /> : <CalendarRange size={13} />}
+          {loading ? "Loading…" : "Run"}
+        </button>
+      </div>
+      {error && (
+        <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800 flex items-start gap-1.5">
+          <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+          {error}
+        </div>
+      )}
+      <div className="mt-3 text-[11px] text-ink-light">
+        Custom ranges pull live from QuickBooks — they may include in-progress months that aren't
+        fully reconciled yet.
+      </div>
+    </div>
+  );
 }
 
 function fmtMoney(n: number): string {

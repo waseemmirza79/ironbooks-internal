@@ -90,6 +90,22 @@ export function quarterRange(): DateRange {
 }
 
 /**
+ * The full calendar month immediately BEFORE the given month range.
+ * `range.start` is expected to be the first of a month (YYYY-MM-01).
+ * Used to step back when the "closed" month turns out to be empty.
+ */
+export function priorMonthOf(range: DateRange): DateRange {
+  const d = new Date(range.start + "T00:00:00");
+  const start = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+  const end = new Date(d.getFullYear(), d.getMonth(), 0);
+  return {
+    start: start.toISOString().slice(0, 10),
+    end: end.toISOString().slice(0, 10),
+    label: start.toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+  };
+}
+
+/**
  * Resolve the most-recent fully-closed accounting period for a client.
  *
  * Priority order:
@@ -191,6 +207,69 @@ export async function resolveClosedPeriod(
     priorMonth,
     closedMonthLabel: closedMonth.label!,
     source,
+  };
+}
+
+export interface ClosedPeriodWithRevenue {
+  /** The raw closed-period result (before the empty-month step-back). */
+  base: ClosedPeriodResult;
+  /** The month we actually landed on — has revenue, or is the oldest we tried. */
+  effectiveMonth: DateRange;
+  /** Calendar month before effectiveMonth (for vs-prior comparisons). */
+  priorMonth: DateRange;
+  /** The P&L we already fetched for effectiveMonth — reuse, don't refetch. */
+  effectivePL: ProfitLossData | null;
+  /** How many months we stepped back from the resolved closed month (0 = none). */
+  steppedBack: number;
+}
+
+/**
+ * resolveClosedPeriod + a sanity check on revenue.
+ *
+ * The closed-period indicators can point at a month that hasn't actually
+ * been reconciled yet (e.g. the calendar default lands on last month, but
+ * the books for it are still being posted). Such a month typically reports
+ * $0 income, which is confusing for clients. When that happens we step back
+ * one calendar month at a time — up to `maxLookback` — until we find a month
+ * with real revenue.
+ *
+ * Needs QBO creds because it fetches the P&L per candidate month. Returns the
+ * P&L it landed on so callers don't double-fetch.
+ */
+export async function resolveClosedPeriodWithRevenue(
+  service: any,
+  clientLinkId: string,
+  realmId: string,
+  accessToken: string,
+  maxLookback = 6
+): Promise<ClosedPeriodWithRevenue> {
+  const base = await resolveClosedPeriod(service, clientLinkId);
+
+  let month = base.closedMonth;
+  let pl = await safe(
+    () => fetchProfitAndLoss(realmId, accessToken, month.start, month.end),
+    null as ProfitLossData | null
+  );
+  let stepped = 0;
+
+  // Step back while: the fetch succeeded AND it shows ~$0 income AND we
+  // haven't hit the cap. A failed fetch (null) means we can't tell — stop
+  // rather than loop on errors.
+  while (pl !== null && Math.abs(pl.totalIncome) <= 0.5 && stepped < maxLookback) {
+    month = priorMonthOf(month);
+    pl = await safe(
+      () => fetchProfitAndLoss(realmId, accessToken, month.start, month.end),
+      null as ProfitLossData | null
+    );
+    stepped++;
+  }
+
+  return {
+    base,
+    effectiveMonth: month,
+    priorMonth: priorMonthOf(month),
+    effectivePL: pl,
+    steppedBack: stepped,
   };
 }
 

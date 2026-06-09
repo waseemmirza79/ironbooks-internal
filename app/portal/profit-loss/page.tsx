@@ -1,20 +1,34 @@
 import { tryResolvePortalContext } from "@/lib/portal-context";
 import { fetchProfitAndLoss } from "@/lib/qbo-reports";
-import { resolveClosedPeriod, lastYearRange, ytdRange, thisMonthRange, quarterRange, type DateRange } from "@/lib/portal-data";
+import {
+  resolveClosedPeriodWithRevenue,
+  lastYearRange,
+  ytdRange,
+  thisMonthRange,
+  quarterRange,
+  type DateRange,
+} from "@/lib/portal-data";
 import { createServiceSupabase } from "@/lib/supabase";
 import { PortalErrorState } from "../error-state";
 import { ProfitLossClient } from "./profit-loss-client";
 
 /**
- * Live P&L page. Defaults to the most-recently-closed month ("Last month")
- * — see resolveClosedPeriod for the priority order.
+ * Live P&L page. Defaults to the most-recently-CLOSED month ("Last month").
  *
- * 5 ranges pre-fetched in parallel so the period switcher is instant:
- *   - Last month     (closed period, the default)
+ * The closed-period indicators sometimes point at a month that hasn't truly
+ * been reconciled yet (it reports $0 income). resolveClosedPeriodWithRevenue
+ * steps back one month at a time until it finds a month with real revenue —
+ * so a client like Zuno never lands on an empty May when April has the books.
+ *
+ * Ranges pre-fetched in parallel so the period switcher is instant:
+ *   - Last month     (the resolved closed period — the default)
  *   - This month     (in-progress, may be unreconciled — caveat shown)
  *   - This quarter
  *   - Year to date
  *   - Last year      (full calendar year prior)
+ *
+ * A sixth "Custom" range is fetched on demand client-side via
+ * /api/portal/profit-loss.
  */
 export const dynamic = "force-dynamic";
 
@@ -24,29 +38,51 @@ export default async function ProfitLossPage() {
   const { ctx } = ctxResult;
 
   const service = createServiceSupabase();
-  const closed = await resolveClosedPeriod(service, ctx.clientLinkId);
+
+  // Resolve the effective closed month (with the $0-revenue step-back) and
+  // the other four ranges concurrently. resolveClosedPeriodWithRevenue already
+  // fetched the P&L for the month it landed on, so we reuse it below.
+  const closedPromise = resolveClosedPeriodWithRevenue(
+    service,
+    ctx.clientLinkId,
+    ctx.qboRealmId,
+    ctx.accessToken
+  );
+
+  const thisMonth = thisMonthRange();
+  const quarter = quarterRange();
+  const ytd = ytdRange();
+  const lastYear = lastYearRange();
+
+  const othersPromise = Promise.all([
+    safeFetch(() => fetchProfitAndLoss(ctx.qboRealmId, ctx.accessToken, thisMonth.start, thisMonth.end)),
+    safeFetch(() => fetchProfitAndLoss(ctx.qboRealmId, ctx.accessToken, quarter.start, quarter.end)),
+    safeFetch(() => fetchProfitAndLoss(ctx.qboRealmId, ctx.accessToken, ytd.start, ytd.end)),
+    safeFetch(() => fetchProfitAndLoss(ctx.qboRealmId, ctx.accessToken, lastYear.start, lastYear.end)),
+  ]);
+
+  const closed = await closedPromise;
+  const [thisMonthPL, quarterPL, ytdPL, lastYearPL] = await othersPromise;
 
   const ranges: Record<string, DateRange> = {
-    lastMonth: { ...closed.closedMonth, label: `Last month (${closed.closedMonthLabel})` },
-    thisMonth: thisMonthRange(),
-    quarter: quarterRange(),
-    ytd: ytdRange(),
-    lastYear: lastYearRange(),
+    lastMonth: { ...closed.effectiveMonth, label: `Last month (${closed.effectiveMonth.label})` },
+    thisMonth,
+    quarter,
+    ytd,
+    lastYear,
   };
-
-  const [lastMonth, thisMonth, quarter, ytd, lastYear] = await Promise.all([
-    safeFetch(() => fetchProfitAndLoss(ctx.qboRealmId, ctx.accessToken, ranges.lastMonth.start, ranges.lastMonth.end)),
-    safeFetch(() => fetchProfitAndLoss(ctx.qboRealmId, ctx.accessToken, ranges.thisMonth.start, ranges.thisMonth.end)),
-    safeFetch(() => fetchProfitAndLoss(ctx.qboRealmId, ctx.accessToken, ranges.quarter.start, ranges.quarter.end)),
-    safeFetch(() => fetchProfitAndLoss(ctx.qboRealmId, ctx.accessToken, ranges.ytd.start, ranges.ytd.end)),
-    safeFetch(() => fetchProfitAndLoss(ctx.qboRealmId, ctx.accessToken, ranges.lastYear.start, ranges.lastYear.end)),
-  ]);
 
   return (
     <ProfitLossClient
       ranges={ranges as any}
-      data={{ lastMonth, thisMonth, quarter, ytd, lastYear }}
-      closedSource={closed.source}
+      data={{
+        lastMonth: closed.effectivePL,
+        thisMonth: thisMonthPL,
+        quarter: quarterPL,
+        ytd: ytdPL,
+        lastYear: lastYearPL,
+      }}
+      closedSource={closed.base.source}
     />
   );
 }
