@@ -129,6 +129,37 @@ export async function POST(request: Request) {
     } as any,
   });
 
+  // Mirror into client_communications so the question shows up in the
+  // bookkeeper's /today inbox + the client's message thread. Without this
+  // the question only lives in audit_log (+ maybe email) and the
+  // bookkeeper never sees it in-app. Best-effort: the audit row above is
+  // the durable record, so a failure here must not fail the request.
+  try {
+    const ctxLines = Object.entries(context as Record<string, unknown>)
+      .filter(([, v]) => v !== null && v !== undefined && v !== "")
+      .map(([k, v]) => `${k.replace(/_/g, " ")}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`);
+    const commBody = [
+      `❓ Question about ${KIND_LABEL[kind]}${label ? ` — ${label}` : ""}`,
+      amount != null ? `Amount: $${Math.abs(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : null,
+      period ? `Period: ${period}` : null,
+      ...(ctxLines.length ? ctxLines : []),
+      ``,
+      question,
+    ]
+      .filter((l) => l !== null)
+      .join("\n");
+    await (service as any).from("client_communications").insert({
+      client_link_id: ctx.clientLinkId,
+      sender_user_id: user.id,
+      direction: "from_client",
+      kind: "message",
+      body: commBody.slice(0, 8000),
+      attachments: [],
+    });
+  } catch (commErr) {
+    console.warn("[ask-about] client_communications mirror failed:", commErr);
+  }
+
   // Email via Resend (best-effort)
   const apiKey = process.env.RESEND_API_KEY;
   const fromEmail =

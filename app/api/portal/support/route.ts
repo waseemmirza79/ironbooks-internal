@@ -84,6 +84,26 @@ export async function POST(request: Request) {
     } as any,
   });
 
+  // Mirror into client_communications so the ticket shows up in the
+  // bookkeeper's /today inbox + the client's message thread (audit_log +
+  // email alone are invisible in-app). Best-effort: the audit row above
+  // is the durable record. Skipped while impersonating — test tickets
+  // shouldn't land in the real inbox.
+  if (!ctx.impersonating) {
+    try {
+      await (service as any).from("client_communications").insert({
+        client_link_id: ctx.clientLinkId,
+        sender_user_id: user.id,
+        direction: "from_client",
+        kind: "message",
+        body: `🛟 Support: ${subject || "(no subject)"}\n\n${message}`.slice(0, 8000),
+        attachments: [],
+      });
+    } catch (commErr) {
+      console.warn("[support] client_communications mirror failed:", commErr);
+    }
+  }
+
   // Email via Resend
   const apiKey = process.env.RESEND_API_KEY;
   const fromEmail = process.env.SUPPORT_FROM_EMAIL || "Ironbooks Support <onboarding@resend.dev>";
