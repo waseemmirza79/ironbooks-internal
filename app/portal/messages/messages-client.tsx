@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Bell, Loader2, Paperclip, Send, X, FileText, Download,
 } from "lucide-react";
-import { createBrowserSupabase } from "@/lib/supabase";
+import { createBrowserSupabase } from "@/lib/supabase-browser";
 import {
   CLIENT_UPLOADS_BUCKET,
   MAX_UPLOAD_BYTES,

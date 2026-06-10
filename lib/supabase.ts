@@ -9,18 +9,16 @@
  * Never expose the service role key to the browser.
  */
 
-import { createBrowserClient, createServerClient } from '@supabase/ssr';
+import { createServerClient } from '@supabase/ssr';
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import type { Database } from './database.types';
 
 // ============== BROWSER CLIENT ==============
-export function createBrowserSupabase() {
-  return createBrowserClient<Database>(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
-}
+// Re-exported from lib/supabase-browser.ts (its own file so "use client"
+// components can import it without dragging next/headers into the bundle).
+// Client components should import from "@/lib/supabase-browser" directly.
+export { createBrowserSupabase } from './supabase-browser';
 
 // ============== SERVER CLIENT (with cookies, respects RLS) ==============
 export async function createServerSupabase() {
