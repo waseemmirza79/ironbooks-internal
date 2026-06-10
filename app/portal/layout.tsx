@@ -4,7 +4,6 @@ import {
   Home, Wallet, Receipt, MessageSquare,
   GraduationCap, Settings, FileCheck2, Mail,
 } from "lucide-react";
-import { FinancialStatementsNav } from "./financial-statements-nav";
 import { MessagesNavLink } from "./messages-nav-link";
 import { SignOutButton } from "./sign-out-button";
 import { ImpersonationBanner } from "./impersonation-banner";
@@ -115,7 +114,8 @@ export default async function PortalLayout({ children }: { children: React.React
 
           <nav className="flex-1 px-2 py-3 space-y-0.5">
             <NavLink href="/portal" icon={Home} label="Overview" />
-            <FinancialStatementsNav />
+            <NavLink href="/portal/profit-loss" icon={FileText} label="Profit & Loss" />
+            <NavLink href="/portal/balance-sheet" icon={Scale} label="Balance Sheet" />
             <NavLink href="/portal/whos-paying" icon={Wallet} label="Who owes you" />
             <NavLink href="/portal/whats-due" icon={Receipt} label="What you owe" />
             <NavLink href="/portal/cleanup-reports" icon={FileCheck2} label="Cleanup Reports" />
