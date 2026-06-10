@@ -2,6 +2,8 @@ import { tryResolvePortalContext } from "@/lib/portal-context";
 import { createServiceSupabase } from "@/lib/supabase";
 import { PortalErrorState } from "../error-state";
 import { FileText, Download, Calendar, CheckCircle2 } from "lucide-react";
+import { CreateReportButton } from "./create-report-button";
+import { CLIENT_UPLOADS_BUCKET } from "@/lib/client-comms";
 
 export const dynamic = "force-dynamic";
 
@@ -94,6 +96,39 @@ export default async function PortalCleanupReportsPage() {
     b.end.localeCompare(a.end)
   );
 
+  // Client-generated reports — PDFs saved by POST /api/portal/cleanup-report/
+  // generate into the client's own folder in the private uploads bucket.
+  // Filename shape: <ts>-Cleanup-Report-<start>-to-<end>.pdf
+  let savedReports: Array<{
+    path: string;
+    name: string;
+    start: string | null;
+    end: string | null;
+    createdAt: string | null;
+  }> = [];
+  try {
+    const { data: files } = await service.storage
+      .from(CLIENT_UPLOADS_BUCKET)
+      .list(`${ctx.clientLinkId}/reports`, {
+        limit: 100,
+        sortBy: { column: "created_at", order: "desc" },
+      });
+    savedReports = ((files as any[]) || [])
+      .filter((f) => f.name?.endsWith(".pdf"))
+      .map((f) => {
+        const m = f.name.match(/Cleanup-Report-(\d{4}-\d{2}-\d{2})-to-(\d{4}-\d{2}-\d{2})/);
+        return {
+          path: `${ctx.clientLinkId}/reports/${f.name}`,
+          name: f.name.replace(/^\d{10,}-/, ""),
+          start: m?.[1] || null,
+          end: m?.[2] || null,
+          createdAt: f.created_at || null,
+        };
+      });
+  } catch {
+    savedReports = [];
+  }
+
   // BS cleanup wizard reports (published snapshots from cleanup_reports table)
   let bsReports: Array<{
     id: string;
@@ -128,6 +163,55 @@ export default async function PortalCleanupReportsPage() {
           exactly what was reviewed and reconciled.
         </div>
       </div>
+
+      {/* Self-serve report builder — pick any period, the PDF saves below */}
+      <CreateReportButton />
+
+      {savedReports.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-sm font-bold text-navy uppercase tracking-wider">
+            Your generated reports
+          </h2>
+          {savedReports.map((r) => (
+            <div
+              key={r.path}
+              className="bg-white border border-gray-200 rounded-2xl p-4 md:p-5 flex items-center justify-between gap-4 flex-wrap hover:border-teal-light transition-colors"
+            >
+              <div className="flex items-start gap-3 min-w-0 flex-1">
+                <div className="shrink-0 w-10 h-10 rounded-lg bg-teal-lighter flex items-center justify-center">
+                  <FileText size={18} className="text-teal" />
+                </div>
+                <div className="min-w-0">
+                  <div className="font-bold text-navy">
+                    {r.start && r.end ? formatPeriodLabel(r.start, r.end) : r.name}
+                  </div>
+                  <div className="text-xs text-ink-slate mt-1 flex items-center gap-2 flex-wrap">
+                    <Calendar size={12} />
+                    {r.start && r.end ? (
+                      <>
+                        {r.start} → {r.end}
+                      </>
+                    ) : null}
+                    {r.createdAt && (
+                      <>
+                        <span className="text-ink-slate/50">·</span>
+                        <span>Created {new Date(r.createdAt).toLocaleDateString()}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <a
+                href={`/api/client-files/download?path=${encodeURIComponent(r.path)}`}
+                className="shrink-0 inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white font-semibold text-sm px-4 py-2 rounded-lg transition-colors"
+              >
+                <Download size={14} />
+                Download PDF
+              </a>
+            </div>
+          ))}
+        </div>
+      )}
 
       {bsReports.length > 0 && (
         <div className="space-y-3">
@@ -169,16 +253,15 @@ export default async function PortalCleanupReportsPage() {
         </div>
       )}
 
-      {periods.length === 0 && bsReports.length === 0 ? (
+      {periods.length === 0 && bsReports.length === 0 && savedReports.length === 0 ? (
         <div className="bg-white border border-gray-200 rounded-2xl p-10 text-center">
           <FileText size={32} className="mx-auto text-ink-slate mb-3" />
           <div className="text-sm font-semibold text-navy">
             No cleanup reports available yet
           </div>
           <p className="text-xs text-ink-slate mt-2 max-w-md mx-auto">
-            Once Ironbooks completes a bookkeeping cleanup for a period, the
-            report will appear here automatically. Reach out to your
-            bookkeeper if you expected one.
+            Reports from completed Ironbooks cleanups appear here automatically
+            — or build your own for any period with the button above.
           </p>
         </div>
       ) : (
@@ -237,9 +320,10 @@ export default async function PortalCleanupReportsPage() {
       )}
 
       <div className="text-[11px] text-ink-slate/70 max-w-2xl">
-        PDFs are generated on-demand from your live QuickBooks data and the
-        Ironbooks cleanup audit trail for the requested period. The files are
-        not stored — each download is freshly built.
+        PDFs are generated from your live QuickBooks data and the Ironbooks
+        cleanup audit trail for the requested period. Reports you create with
+        the button above are saved here; the per-period downloads below them
+        are freshly built on each click.
       </div>
     </div>
   );
