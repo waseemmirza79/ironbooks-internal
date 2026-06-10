@@ -51,6 +51,7 @@ export async function POST(
     "duplicate_recategorize",
     "void_duplicate",
     "create_deposit",
+    "clear_duplicate",
     "ask_client",
     "manual_investigation",
     "pending",
@@ -81,6 +82,23 @@ export async function POST(
       { error: "create_deposit requires deposit_bank_account_id (the bank to sweep UF into)" },
       { status: 400 }
     );
+  }
+
+  // clear_duplicate posts a ZERO-dollar deposit: payments in (+), income
+  // offset out (−). Needs the income account (target) AND a container bank.
+  if (resolution === "clear_duplicate") {
+    if (!targetAccountId) {
+      return NextResponse.json(
+        { error: "clear_duplicate requires target_account_id (the income account to reverse the double-count against)" },
+        { status: 400 }
+      );
+    }
+    if (!depositBankAccountId) {
+      return NextResponse.json(
+        { error: "clear_duplicate requires deposit_bank_account_id (the bank the $0 deposit is recorded against)" },
+        { status: 400 }
+      );
+    }
   }
 
   // Build the selector

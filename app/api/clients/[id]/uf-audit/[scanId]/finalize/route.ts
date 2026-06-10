@@ -127,6 +127,7 @@ export async function POST(
   const noTargetItems: any[] = [];
   const voidItems: any[] = [];
   const depositItems: any[] = [];
+  const clearDupItems: any[] = [];
 
   for (const item of queue) {
     if (NON_QBO_RESOLUTIONS.has(item.resolution)) continue;
@@ -136,6 +137,10 @@ export async function POST(
     }
     if (item.resolution === "create_deposit") {
       depositItems.push(item);
+      continue;
+    }
+    if (item.resolution === "clear_duplicate") {
+      clearDupItems.push(item);
       continue;
     }
     if (!JE_RESOLUTIONS.has(item.resolution)) continue;
@@ -376,6 +381,99 @@ export async function POST(
         failed++;
       }
       results.push({ group: key, status: "failed", type: "deposit", error: msg, items: items.length });
+    }
+  }
+
+  // 6) Clear duplicates — ZERO-dollar deposits. The payment's cash was
+  //    already recorded by a separate bank-feed deposit (CRM double-count),
+  //    so we sweep the stuck payments out of UF (+$X) and offset the full
+  //    amount to the chosen income account (−$X). Net deposit: $0. Clears UF,
+  //    reverses the double-counted income, touches neither bank nor A/R.
+  //    Group by (bank, income account, payment date) so the income reversal
+  //    lands in the same period as the original double count.
+  const clearDupGroups = new Map<string, any[]>();
+  for (const item of clearDupItems) {
+    if (!item.deposit_bank_account_id || !item.resolution_target_account_id) {
+      await service
+        .from("uf_audit_items" as any)
+        .update({
+          resolution: "failed",
+          execution_error: !item.deposit_bank_account_id
+            ? "No bank account selected for the $0 deposit — pick one before finalizing."
+            : "No income account selected for the duplicate offset — pick one before finalizing.",
+        } as any)
+        .eq("id", item.id);
+      failed++;
+      results.push({ id: item.id, status: "failed", type: "clear_duplicate", error: "missing account" });
+      continue;
+    }
+    const key = [
+      item.deposit_bank_account_id,
+      item.resolution_target_account_id,
+      item.payment_date,
+    ].join("|");
+    if (!clearDupGroups.has(key)) clearDupGroups.set(key, []);
+    clearDupGroups.get(key)!.push(item);
+  }
+
+  for (const [key, items] of clearDupGroups) {
+    const sample = items[0];
+    const bank = accountById.get(sample.deposit_bank_account_id);
+    const income = accountById.get(sample.resolution_target_account_id);
+    const total =
+      Math.round(items.reduce((s, it) => s + Number(it.payment_amount || 0), 0) * 100) / 100;
+    try {
+      const deposit = await createDeposit((client as any).qbo_realm_id, accessToken, {
+        bankAccountId: String(sample.deposit_bank_account_id),
+        bankAccountName: bank?.Name || sample.deposit_bank_account_name || undefined,
+        txnDate: String(sample.payment_date),
+        privateNote: `Ironbooks UF Audit (by ${bookkeeperName}) — clear ${items.length} duplicate UF payment${items.length === 1 ? "" : "s"} already deposited via bank feed ($0 deposit, offset to ${income?.Name || "income"})`,
+        lines: items.map((it: any) => ({
+          txnId: String(it.qbo_payment_id),
+          txnType: it.qbo_payment_txn_type === "SalesReceipt" ? "SalesReceipt" : "Payment",
+          amount: Math.round(Number(it.payment_amount) * 100) / 100,
+        })),
+        offsetLines: [
+          {
+            accountId: String(sample.resolution_target_account_id),
+            accountName: income?.Name || sample.resolution_target_account_name || undefined,
+            amount: -total,
+            description: `Reverse double-counted income — cash already recorded via bank-feed deposit (${items.length} payment${items.length === 1 ? "" : "s"}, ${sample.payment_date})`,
+          },
+        ],
+      });
+      for (const it of items) {
+        await service
+          .from("uf_audit_items" as any)
+          .update({
+            resolution: "executed",
+            resolution_deposit_id: deposit.Id,
+            resolved_at: new Date().toISOString(),
+            resolution_notes:
+              (it.resolution_notes ? it.resolution_notes + " — " : "") +
+              `$0 deposit ${deposit.Id}: cleared from UF, income offset to ${income?.Name || "income"}`,
+          } as any)
+          .eq("id", it.id);
+        executed++;
+      }
+      results.push({
+        group: key,
+        deposit_id: deposit.Id,
+        status: "ok",
+        type: "clear_duplicate",
+        items: items.length,
+        total,
+      });
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      for (const it of items) {
+        await service
+          .from("uf_audit_items" as any)
+          .update({ resolution: "failed", execution_error: msg } as any)
+          .eq("id", it.id);
+        failed++;
+      }
+      results.push({ group: key, status: "failed", type: "clear_duplicate", error: msg, items: items.length });
     }
   }
 

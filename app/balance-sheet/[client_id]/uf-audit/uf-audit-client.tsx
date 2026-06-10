@@ -71,6 +71,7 @@ const RESOLUTION_LABELS: Record<string, { label: string; color: string; descript
   duplicate_recategorize: { label: "Duplicate", color: "bg-blue-100 text-blue-800", description: "Real deposit exists elsewhere — bookkeeper finds + re-categorizes in QBO" },
   void_duplicate: { label: "Void duplicate", color: "bg-rose-100 text-rose-800", description: "Confirmed duplicate — VOIDS the duplicate Payment in QBO (removes the double-counted cash)" },
   create_deposit: { label: "Create deposit", color: "bg-teal-100 text-teal-800", description: "Real money still in UF — posts a Bank Deposit to sweep UF → the chosen bank account" },
+  clear_duplicate: { label: "Clear duplicate", color: "bg-indigo-100 text-indigo-800", description: "Cash already in bank via a separate bank-feed deposit — posts a $0 deposit that clears UF and reverses the double-counted income. Bank + A/R untouched." },
   ask_client: { label: "Ask Client", color: "bg-orange-100 text-orange-800", description: "Queue for confirmation email — no auto-write" },
   manual_investigation: { label: "Investigate", color: "bg-gray-100 text-gray-700", description: "Flag, do nothing automated" },
   executed: { label: "Done ✓", color: "bg-emerald-100 text-emerald-700", description: "Posted to QBO" },
@@ -199,6 +200,7 @@ export function UfAuditClient({
     const writeOffCount = resolved.filter((i) => i.resolution === "write_off").length;
     const voidCount = resolved.filter((i) => i.resolution === "void_duplicate").length;
     const depositCount = resolved.filter((i) => i.resolution === "create_deposit").length;
+    const clearDupCount = resolved.filter((i) => i.resolution === "clear_duplicate").length;
     const noQboCount = resolved.filter((i) =>
       ["duplicate_recategorize", "ask_client", "manual_investigation"].includes(i.resolution)
     ).length;
@@ -222,6 +224,9 @@ export function UfAuditClient({
             : "") +
           (depositCount > 0
             ? `  • ${depositCount} payment${depositCount === 1 ? "" : "s"} swept into the bank via Bank Deposit\n`
+            : "") +
+          (clearDupCount > 0
+            ? `  • ${clearDupCount} duplicate${clearDupCount === 1 ? "" : "s"} cleared via $0 deposit (UF down, income reversed — bank & A/R untouched)\n`
             : "") +
           (noQboCount > 0
             ? `  • ${noQboCount} non-QBO resolution${noQboCount === 1 ? "" : "s"} (just marked done)\n`
@@ -706,6 +711,7 @@ function CustomerOrphanGroup({
   const targetSuggestions: Record<string, string[]> = {
     owner_draw: ["Owner", "Draw", "Distribution", "Shareholder"],
     write_off: ["Bad Debt", "Customer Discount", "Sales Discount"],
+    clear_duplicate: ["Painting Income", "Sales", "Income", "Revenue", "Services"],
   };
   useEffect(() => {
     if (!pickedResolution) return;
@@ -722,14 +728,22 @@ function CustomerOrphanGroup({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickedResolution]);
 
-  const needsTarget = pickedResolution === "owner_draw" || pickedResolution === "write_off";
-  const needsBank = pickedResolution === "create_deposit";
+  const needsTarget =
+    pickedResolution === "owner_draw" ||
+    pickedResolution === "write_off" ||
+    pickedResolution === "clear_duplicate";
+  const needsBank =
+    pickedResolution === "create_deposit" || pickedResolution === "clear_duplicate";
   const targetAccount = accounts.find((a) => a.id === targetAccountId);
   const bankAccount = bankAccounts.find((a) => a.id === bankAccountId);
 
-  // Auto-pick the first/operating bank when create_deposit is selected
+  // Auto-pick the first/operating bank when a deposit-creating resolution is selected
   useEffect(() => {
-    if (pickedResolution !== "create_deposit" || bankAccountId) return;
+    if (
+      (pickedResolution !== "create_deposit" && pickedResolution !== "clear_duplicate") ||
+      bankAccountId
+    )
+      return;
     const operating =
       bankAccounts.find((a) => /(checking|operating|current)/i.test(a.name)) ||
       bankAccounts[0];
@@ -845,6 +859,7 @@ function CustomerOrphanGroup({
             className="px-2 py-1 rounded border border-gray-200 text-xs"
           >
             <option value="">— pick a resolution —</option>
+            <option value="clear_duplicate">Clear duplicate — already deposited ($0 deposit)</option>
             <option value="create_deposit">Create bank deposit (sweep UF → bank)</option>
             <option value="void_duplicate">Void duplicate (remove double-count)</option>
             <option value="owner_draw">Owner Draw (JE)</option>

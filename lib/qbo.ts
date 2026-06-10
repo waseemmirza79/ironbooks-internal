@@ -1743,6 +1743,19 @@ export interface DepositLineInput {
   amount: number;
 }
 
+export interface DepositOffsetLineInput {
+  /**
+   * Account-based offset line (no LinkedTxn). Used for the zero-dollar
+   * deposit pattern: sweep stuck UF payments (+) and offset the full amount
+   * to an income account (−) when the cash was ALREADY recorded via a
+   * separate bank-feed deposit. Negative amounts are allowed by QBO.
+   */
+  accountId: string;
+  accountName?: string;
+  amount: number; // negative for the duplicate-income reversal
+  description?: string;
+}
+
 export interface CreatedDeposit {
   Id: string;
   TxnDate: string;
@@ -1770,6 +1783,7 @@ export async function createDeposit(
     bankAccountName?: string;
     txnDate: string; // YYYY-MM-DD
     lines: DepositLineInput[];
+    offsetLines?: DepositOffsetLineInput[];
     privateNote?: string;
   }
 ): Promise<CreatedDeposit> {
@@ -1780,14 +1794,24 @@ export async function createDeposit(
     DepositToAccountRef: { value: params.bankAccountId, name: params.bankAccountName },
     TxnDate: params.txnDate,
     PrivateNote: params.privateNote || undefined,
-    Line: params.lines.map((l) => ({
-      Amount: Number(l.amount.toFixed(2)),
-      DetailType: "DepositLineDetail",
-      // LinkedTxn pulls the payment OUT of Undeposited Funds. No
-      // DepositLineDetail.AccountRef here — that's only for funds NOT already
-      // in UF (e.g. direct income). For a UF sweep we just link the payment.
-      LinkedTxn: [{ TxnId: l.txnId, TxnType: l.txnType }],
-    })),
+    Line: [
+      ...params.lines.map((l) => ({
+        Amount: Number(l.amount.toFixed(2)),
+        DetailType: "DepositLineDetail",
+        // LinkedTxn pulls the payment OUT of Undeposited Funds. No
+        // DepositLineDetail.AccountRef here — that's only for funds NOT already
+        // in UF (e.g. direct income). For a UF sweep we just link the payment.
+        LinkedTxn: [{ TxnId: l.txnId, TxnType: l.txnType }],
+      })),
+      ...(params.offsetLines || []).map((l) => ({
+        Amount: Number(l.amount.toFixed(2)),
+        DetailType: "DepositLineDetail",
+        Description: l.description || undefined,
+        DepositLineDetail: {
+          AccountRef: { value: l.accountId, name: l.accountName },
+        },
+      })),
+    ],
   };
 
   const data = await qboRequest<{ Deposit: CreatedDeposit }>(
