@@ -6,6 +6,7 @@ import {
   fetchAllAccounts,
   getValidToken,
   qboErrorResponse,
+  voidInvoice,
   voidPayment,
 } from "@/lib/qbo";
 import { findUndepositedFundsAccountId } from "@/lib/qbo-balance-sheet";
@@ -126,6 +127,7 @@ export async function POST(
   const groups = new Map<GroupKey, any[]>();
   const noTargetItems: any[] = [];
   const voidItems: any[] = [];
+  const voidPairItems: any[] = [];
   const depositItems: any[] = [];
   const clearDupItems: any[] = [];
 
@@ -133,6 +135,10 @@ export async function POST(
     if (NON_QBO_RESOLUTIONS.has(item.resolution)) continue;
     if (item.resolution === "void_duplicate") {
       voidItems.push(item);
+      continue;
+    }
+    if (item.resolution === "void_pair") {
+      voidPairItems.push(item);
       continue;
     }
     if (item.resolution === "create_deposit") {
@@ -309,6 +315,86 @@ export async function POST(
         .eq("id", item.id);
       failed++;
       results.push({ id: item.id, status: "failed", type: "void", error: msg });
+    }
+  }
+
+  // 4b) Void pairs — void the duplicate payment AND the invoice(s) it was
+  //     applied to. UF drops by the payment; A/R drops by any open invoice
+  //     balance; income backs out (un-double-counting CRM-pushed revenue).
+  //     No bank account involved. Payment voided FIRST (unlinks it from the
+  //     invoice), then each applied invoice. A shared voided-invoice set
+  //     handles two payments applied to the same invoice.
+  const voidedInvoices = new Set<string>();
+  for (const item of voidPairItems) {
+    try {
+      const txnType =
+        item.qbo_payment_txn_type === "SalesReceipt" ? "SalesReceipt" : "Payment";
+      await voidPayment(
+        (client as any).qbo_realm_id,
+        accessToken,
+        String(item.qbo_payment_id),
+        txnType
+      );
+      const invoiceIds: string[] = Array.isArray(item.applied_invoice_ids)
+        ? item.applied_invoice_ids.map(String)
+        : [];
+      const invoiceErrors: string[] = [];
+      let invoicesVoided = 0;
+      for (const invId of invoiceIds) {
+        if (voidedInvoices.has(invId)) continue;
+        try {
+          await voidInvoice((client as any).qbo_realm_id, accessToken, invId);
+          voidedInvoices.add(invId);
+          invoicesVoided++;
+        } catch (invErr: any) {
+          invoiceErrors.push(`Invoice ${invId}: ${invErr?.message || invErr}`);
+        }
+      }
+      if (invoiceErrors.length > 0) {
+        // Payment voided but an invoice void failed — surface loudly so the
+        // bookkeeper finishes it in QBO (a re-opened invoice inflates A/R).
+        await service
+          .from("uf_audit_items" as any)
+          .update({
+            resolution: "failed",
+            execution_error: `Payment voided, but invoice void failed — finish in QBO: ${invoiceErrors.join("; ")}`,
+          } as any)
+          .eq("id", item.id);
+        failed++;
+        results.push({ id: item.id, status: "failed", type: "void_pair", error: invoiceErrors.join("; ") });
+        continue;
+      }
+      await service
+        .from("uf_audit_items" as any)
+        .update({
+          resolution: "executed",
+          resolved_at: new Date().toISOString(),
+          resolution_notes:
+            (item.resolution_notes ? item.resolution_notes + " — " : "") +
+            `Voided ${txnType} ${item.qbo_payment_id}` +
+            (invoicesVoided > 0
+              ? ` + ${invoicesVoided} invoice${invoicesVoided === 1 ? "" : "s"} (${invoiceIds.join(", ")})`
+              : invoiceIds.length > 0
+              ? ` (invoice${invoiceIds.length === 1 ? "" : "s"} ${invoiceIds.join(", ")} already voided this run)`
+              : " (no applied invoice)"),
+        } as any)
+        .eq("id", item.id);
+      executed++;
+      results.push({
+        id: item.id,
+        status: "ok",
+        type: "void_pair",
+        payment_id: item.qbo_payment_id,
+        invoices_voided: invoicesVoided,
+      });
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      await service
+        .from("uf_audit_items" as any)
+        .update({ resolution: "failed", execution_error: msg } as any)
+        .eq("id", item.id);
+      failed++;
+      results.push({ id: item.id, status: "failed", type: "void_pair", error: msg });
     }
   }
 

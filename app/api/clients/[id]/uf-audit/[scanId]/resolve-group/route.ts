@@ -50,6 +50,7 @@ export async function POST(
     "write_off",
     "duplicate_recategorize",
     "void_duplicate",
+    "void_pair",
     "create_deposit",
     "clear_duplicate",
     "ask_client",

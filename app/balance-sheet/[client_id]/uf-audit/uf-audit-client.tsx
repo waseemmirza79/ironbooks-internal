@@ -70,6 +70,7 @@ const RESOLUTION_LABELS: Record<string, { label: string; color: string; descript
   write_off: { label: "Write-off", color: "bg-red-100 text-red-800", description: "Not a real payment — JE: Dr Bad Debt (or similar), Cr UF" },
   duplicate_recategorize: { label: "Duplicate", color: "bg-blue-100 text-blue-800", description: "Real deposit exists elsewhere — bookkeeper finds + re-categorizes in QBO" },
   void_duplicate: { label: "Void duplicate", color: "bg-rose-100 text-rose-800", description: "Confirmed duplicate — VOIDS the duplicate Payment in QBO (removes the double-counted cash)" },
+  void_pair: { label: "Void pair", color: "bg-rose-100 text-rose-900", description: "CRM duplicate pair — VOIDS the payment AND the invoice it was applied to. UF down, A/R down by any open invoice balance, income backed out. No bank involved." },
   create_deposit: { label: "Create deposit", color: "bg-teal-100 text-teal-800", description: "Real money still in UF — posts a Bank Deposit to sweep UF → the chosen bank account" },
   clear_duplicate: { label: "Clear duplicate", color: "bg-indigo-100 text-indigo-800", description: "Cash already in bank via a separate bank-feed deposit — posts a $0 deposit that clears UF and reverses the double-counted income. Bank + A/R untouched." },
   ask_client: { label: "Ask Client", color: "bg-orange-100 text-orange-800", description: "Queue for confirmation email — no auto-write" },
@@ -199,6 +200,7 @@ export function UfAuditClient({
     const ownerDrawCount = resolved.filter((i) => i.resolution === "owner_draw").length;
     const writeOffCount = resolved.filter((i) => i.resolution === "write_off").length;
     const voidCount = resolved.filter((i) => i.resolution === "void_duplicate").length;
+    const voidPairCount = resolved.filter((i) => i.resolution === "void_pair").length;
     const depositCount = resolved.filter((i) => i.resolution === "create_deposit").length;
     const clearDupCount = resolved.filter((i) => i.resolution === "clear_duplicate").length;
     const noQboCount = resolved.filter((i) =>
@@ -221,6 +223,9 @@ export function UfAuditClient({
             : "") +
           (voidCount > 0
             ? `  • ${voidCount} duplicate${voidCount === 1 ? "" : "s"} VOIDED in QBO (removes double-counted cash)\n`
+            : "") +
+          (voidPairCount > 0
+            ? `  • ${voidPairCount} duplicate PAIR${voidPairCount === 1 ? "" : "S"} voided — payment + applied invoice (UF & A/R down, income backed out)\n`
             : "") +
           (depositCount > 0
             ? `  • ${depositCount} payment${depositCount === 1 ? "" : "s"} swept into the bank via Bank Deposit\n`
@@ -577,6 +582,17 @@ export function UfAuditClient({
         </div>
       )}
 
+      {filter === "orphan" && orphanGroups.length > 0 && scan.status !== "finalized" && (
+        <BulkApplyBar
+          orphanItems={items.filter(
+            (i) => i.classification === "orphan" && i.resolution !== "executed"
+          )}
+          groupCount={orphanGroups.length}
+          accounts={accounts}
+          onResolve={resolveGroup}
+        />
+      )}
+
       {filter === "orphan" &&
         orphanGroups.map((g) => (
           <CustomerOrphanGroup
@@ -685,6 +701,173 @@ export function UfAuditClient({
 }
 
 // ─── SUB-COMPONENTS ────────────────────────────────────────────────────
+
+/**
+ * One-shot resolution across EVERY orphan group. Same pickers as the
+ * per-group bar; posts payment_ids for all non-executed orphans so already
+ * finalized items are never touched. Per-group bars still override after.
+ */
+function BulkApplyBar({
+  orphanItems,
+  groupCount,
+  accounts,
+  onResolve,
+}: {
+  orphanItems: Item[];
+  groupCount: number;
+  accounts: QboAccount[];
+  onResolve: (opts: any) => Promise<void>;
+}) {
+  const [pickedResolution, setPickedResolution] = useState<string>("");
+  const [targetAccountId, setTargetAccountId] = useState<string>("");
+  const [bankAccountId, setBankAccountId] = useState<string>("");
+  const [applying, setApplying] = useState(false);
+
+  const bankAccounts = accounts.filter((a) => /bank/i.test(a.accountType));
+  const total = orphanItems.reduce((s, i) => s + i.payment_amount, 0);
+
+  const targetSuggestions: Record<string, string[]> = {
+    owner_draw: ["Owner", "Draw", "Distribution", "Shareholder"],
+    write_off: ["Bad Debt", "Customer Discount", "Sales Discount"],
+    clear_duplicate: ["Painting Income", "Sales", "Income", "Revenue", "Services"],
+  };
+  useEffect(() => {
+    if (!pickedResolution) return;
+    const sugg = targetSuggestions[pickedResolution];
+    if (sugg) {
+      for (const pattern of sugg) {
+        const re = new RegExp(pattern, "i");
+        const hit = accounts.find((a) => re.test(a.name));
+        if (hit) {
+          setTargetAccountId(hit.id);
+          break;
+        }
+      }
+    }
+    if (
+      (pickedResolution === "create_deposit" || pickedResolution === "clear_duplicate") &&
+      !bankAccountId
+    ) {
+      const operating =
+        bankAccounts.find((a) => /(checking|operating|current)/i.test(a.name)) ||
+        bankAccounts[0];
+      if (operating) setBankAccountId(operating.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickedResolution]);
+
+  const needsTarget =
+    pickedResolution === "owner_draw" ||
+    pickedResolution === "write_off" ||
+    pickedResolution === "clear_duplicate";
+  const needsBank =
+    pickedResolution === "create_deposit" || pickedResolution === "clear_duplicate";
+  const targetAccount = accounts.find((a) => a.id === targetAccountId);
+  const bankAccount = bankAccounts.find((a) => a.id === bankAccountId);
+
+  async function applyAll() {
+    if (!pickedResolution || orphanItems.length === 0) return;
+    if (
+      !confirm(
+        `Apply "${RESOLUTION_LABELS[pickedResolution]?.label || pickedResolution}" to ALL ${orphanItems.length} orphan payment${orphanItems.length === 1 ? "" : "s"} across ${groupCount} customer${groupCount === 1 ? "" : "s"} ($${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})?\n\nNothing posts to QBO until you click Finalize — you can still override individual groups after.`
+      )
+    )
+      return;
+    setApplying(true);
+    try {
+      await onResolve({
+        payment_ids: orphanItems.map((i) => i.qbo_payment_id),
+        resolution: pickedResolution,
+        target_account_id: needsTarget ? targetAccountId : undefined,
+        target_account_name: needsTarget && targetAccount ? targetAccount.name : undefined,
+        deposit_bank_account_id: needsBank ? bankAccountId : undefined,
+        deposit_bank_account_name: needsBank && bankAccount ? bankAccount.name : undefined,
+      });
+      setPickedResolution("");
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  return (
+    <div className="bg-navy/[0.03] border-2 border-navy/20 rounded-2xl p-3 flex items-center gap-2 flex-wrap">
+      <span className="text-xs font-bold text-navy uppercase tracking-wider">
+        Apply to ALL {groupCount} groups:
+      </span>
+      <select
+        value={pickedResolution}
+        onChange={(e) => setPickedResolution(e.target.value)}
+        className="px-2 py-1 rounded border border-gray-200 text-xs"
+      >
+        <option value="">— pick a resolution —</option>
+        <option value="void_pair">Void pair — payment + invoice (UF & A/R down, no bank)</option>
+        <option value="clear_duplicate">Clear duplicate — already deposited ($0 deposit)</option>
+        <option value="create_deposit">Create bank deposit (sweep UF → bank)</option>
+        <option value="void_duplicate">Void duplicate (payment only)</option>
+        <option value="owner_draw">Owner Draw (JE)</option>
+        <option value="write_off">Write-off (JE)</option>
+        <option value="duplicate_recategorize">Duplicate — handle in QBO</option>
+        <option value="ask_client">Ask Client</option>
+        <option value="manual_investigation">Manual investigation</option>
+        <option value="pending">Reset to pending</option>
+      </select>
+      {needsTarget && (
+        <select
+          value={targetAccountId}
+          onChange={(e) => setTargetAccountId(e.target.value)}
+          className="px-2 py-1 rounded border border-gray-200 text-xs max-w-[260px]"
+        >
+          <option value="">
+            {pickedResolution === "clear_duplicate"
+              ? "— income account to offset —"
+              : "— target account —"}
+          </option>
+          {accounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name} ({a.accountType})
+            </option>
+          ))}
+        </select>
+      )}
+      {needsBank && (
+        <select
+          value={bankAccountId}
+          onChange={(e) => setBankAccountId(e.target.value)}
+          className="px-2 py-1 rounded border border-gray-200 text-xs max-w-[260px]"
+        >
+          <option value="">
+            {pickedResolution === "clear_duplicate"
+              ? "— $0 deposit container bank (balance unchanged) —"
+              : "— deposit into which bank? —"}
+          </option>
+          {bankAccounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+      )}
+      <button
+        onClick={applyAll}
+        disabled={
+          applying ||
+          !pickedResolution ||
+          (needsTarget && !targetAccountId) ||
+          (needsBank && !bankAccountId)
+        }
+        className="inline-flex items-center gap-1 px-3 py-1 rounded bg-navy hover:bg-ink-light text-white text-xs font-bold disabled:opacity-50"
+      >
+        {applying ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
+        Apply to all {orphanItems.length}
+      </button>
+      {pickedResolution && (
+        <span className="text-[11px] text-ink-light italic w-full">
+          {RESOLUTION_LABELS[pickedResolution]?.description || ""}
+        </span>
+      )}
+    </div>
+  );
+}
 
 function CustomerOrphanGroup({
   group,
@@ -859,9 +1042,10 @@ function CustomerOrphanGroup({
             className="px-2 py-1 rounded border border-gray-200 text-xs"
           >
             <option value="">— pick a resolution —</option>
+            <option value="void_pair">Void pair — payment + invoice (UF & A/R down, no bank)</option>
             <option value="clear_duplicate">Clear duplicate — already deposited ($0 deposit)</option>
             <option value="create_deposit">Create bank deposit (sweep UF → bank)</option>
-            <option value="void_duplicate">Void duplicate (remove double-count)</option>
+            <option value="void_duplicate">Void duplicate (payment only)</option>
             <option value="owner_draw">Owner Draw (JE)</option>
             <option value="write_off">Write-off (JE)</option>
             <option value="duplicate_recategorize">Duplicate — handle in QBO</option>
@@ -889,7 +1073,11 @@ function CustomerOrphanGroup({
               onChange={(e) => setBankAccountId(e.target.value)}
               className="px-2 py-1 rounded border border-gray-200 text-xs max-w-[260px]"
             >
-              <option value="">— deposit into which bank? —</option>
+              <option value="">
+                {pickedResolution === "clear_duplicate"
+                  ? "— $0 deposit container bank (balance unchanged) —"
+                  : "— deposit into which bank? —"}
+              </option>
               {bankAccounts.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.name}

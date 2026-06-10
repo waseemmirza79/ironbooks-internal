@@ -1736,6 +1736,43 @@ export async function voidPayment(
   return { Id: String(out.Id || paymentId), SyncToken: String(out.SyncToken || ""), PrivateNote: out.PrivateNote };
 }
 
+/**
+ * Void an Invoice in QBO (operation=void). Reverses Dr A/R / Cr Income —
+ * removes any open balance from A/R and backs the revenue out. Used by the
+ * UF Audit "void pair" resolution for CRM-duplicated invoice+payment pairs:
+ * void the payment FIRST (unlinks it), then the invoice.
+ */
+export async function voidInvoice(
+  realmId: string,
+  accessToken: string,
+  invoiceId: string
+): Promise<{ Id: string; SyncToken: string }> {
+  const query = encodeURIComponent(
+    `SELECT Id, SyncToken FROM Invoice WHERE Id = '${invoiceId}' MAXRESULTS 1`
+  );
+  const fetchData: any = await qboRequest(
+    realmId,
+    accessToken,
+    `/query?query=${query}`,
+    { method: "GET" }
+  );
+  const existing = fetchData?.QueryResponse?.Invoice?.[0];
+  if (!existing) {
+    throw new Error(`Invoice ${invoiceId} not found in QBO (can't void)`);
+  }
+  const data = await qboRequest<any>(
+    realmId,
+    accessToken,
+    `/invoice?operation=void&minorversion=70`,
+    {
+      method: "POST",
+      body: JSON.stringify({ Id: invoiceId, SyncToken: existing.SyncToken }),
+    }
+  );
+  const out = data?.Invoice || {};
+  return { Id: String(out.Id || invoiceId), SyncToken: String(out.SyncToken || "") };
+}
+
 export interface DepositLineInput {
   /** The Payment / SalesReceipt sitting in UF to sweep into the bank. */
   txnId: string;
