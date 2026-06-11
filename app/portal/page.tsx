@@ -9,6 +9,7 @@ import { fetchOverview, resolveClosedPeriodWithRevenue } from "@/lib/portal-data
 import { createServiceSupabase } from "@/lib/supabase";
 import { fetchPublishedPackage } from "@/lib/month-end/portal-package";
 import { classifyProfitLoss, marginVerdict, netMarginVerdict, type PortalPl } from "@/lib/portal-pl";
+import { getOrGenerateDashboardNarrative } from "@/lib/dashboard-narrative";
 import { PortalErrorState } from "./error-state";
 import { MonthEndBanner } from "./month-end-banner";
 import { AskAboutButton } from "./ask-about";
@@ -66,14 +67,38 @@ export default async function PortalOverview() {
   const monthShort = data.primaryMonth.label?.split(" ")[0] || "the month";
   const prevShort = data.comparisonMonth.label?.split(" ")[0] || "prior month";
 
-  // Narrative: prefer the team's published AI summary; otherwise build a
-  // plain-English one from the classifier.
-  const narrative = publishedPkg?.aiSummary
-    ? {
-        headline: `${publishedPkg.label} is closed and ready`,
-        body: publishedPkg.aiSummary,
-      }
-    : buildHeuristicNarrative(c, netDelta, monthLabel, prevShort);
+  // Narrative resolution, in priority order:
+  //   1. Bookkeeper-published month-end summary (premium, human-written) →
+  //      coaching section is omitted, the human note is the whole story.
+  //   2. AI-generated coaching narrative (cached per closed month) →
+  //      headline + summary + coaching, painter-fluent via the brief.
+  //   3. Heuristic fallback (offline-safe, no AI call) → headline + summary.
+  let narrativeHeadline: string;
+  let narrativeSummary: string;
+  let narrativeCoaching: string | null = null;
+  if (publishedPkg?.aiSummary) {
+    narrativeHeadline = `${publishedPkg.label} is closed and ready`;
+    narrativeSummary = publishedPkg.aiSummary;
+  } else {
+    const ai = await getOrGenerateDashboardNarrative(service as any, {
+      clientLinkId: ctx.clientLinkId,
+      clientName: ctx.clientName,
+      periodLabel: monthLabel,
+      periodEnd: closed.effectiveMonth.end,
+      c,
+      cPrior,
+      data,
+    });
+    if (ai) {
+      narrativeHeadline = ai.headline;
+      narrativeSummary = ai.summary;
+      narrativeCoaching = ai.coaching;
+    } else {
+      const fallback = buildHeuristicNarrative(c, netDelta, monthLabel, prevShort);
+      narrativeHeadline = fallback.headline;
+      narrativeSummary = fallback.body;
+    }
+  }
 
   const periodLabel = `${monthLabel}`;
   const firstName = (ctx.userFullName || "").trim().split(/\s+/)[0] || "";
@@ -137,8 +162,20 @@ export default async function PortalOverview() {
             <div className="text-xs font-bold text-teal-dark uppercase tracking-wider">
               This month in plain English
             </div>
-            <h2 className="text-lg font-bold text-navy mt-1">{narrative.headline}</h2>
-            <p className="text-sm text-navy/80 leading-relaxed mt-1 whitespace-pre-line">{narrative.body}</p>
+            <h2 className="text-lg font-bold text-navy mt-1">{narrativeHeadline}</h2>
+            <p className="text-sm text-navy/80 leading-relaxed mt-1 whitespace-pre-line">{narrativeSummary}</p>
+            {narrativeCoaching && (
+              <div className="mt-4 pt-4 border-t border-teal/20">
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-teal-dark">
+                    What I'd focus on next
+                  </span>
+                </div>
+                <p className="text-sm text-navy/85 leading-relaxed whitespace-pre-line">
+                  {narrativeCoaching}
+                </p>
+              </div>
+            )}
             <div className="mt-3 flex items-center gap-3 flex-wrap">
               <Link
                 href="/portal/ask-ai"
