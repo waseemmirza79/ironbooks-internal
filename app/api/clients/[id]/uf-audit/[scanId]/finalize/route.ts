@@ -416,9 +416,14 @@ export async function POST(
       results.push({ id: item.id, status: "failed", type: "deposit", error: "missing bank account" });
       continue;
     }
-    const key = [item.deposit_bank_account_id, item.payment_date].join("|");
+    // Effective deposit date: bookkeeper-supplied override falls back to
+    // the payment date (legacy behavior). Grouping uses the effective
+    // date so payments the bookkeeper batched together for one bank
+    // statement line all land on one QBO Deposit.
+    const effectiveDate = String(item.deposit_date || item.payment_date);
+    const key = [item.deposit_bank_account_id, effectiveDate].join("|");
     if (!depositGroups.has(key)) depositGroups.set(key, []);
-    depositGroups.get(key)!.push(item);
+    depositGroups.get(key)!.push({ ...item, _effective_deposit_date: effectiveDate });
   }
 
   for (const [key, items] of depositGroups) {
@@ -430,7 +435,7 @@ export async function POST(
       const deposit = await createDeposit((client as any).qbo_realm_id, accessToken, {
         bankAccountId: String(sample.deposit_bank_account_id),
         bankAccountName: bank?.Name || sample.deposit_bank_account_name || undefined,
-        txnDate: String(sample.payment_date),
+        txnDate: String(sample._effective_deposit_date),
         privateNote: `Ironbooks UF Audit (by ${bookkeeperName}) — sweep ${items.length} UF payment${items.length === 1 ? "" : "s"} → ${bank?.Name || "bank"}`,
         lines: items.map((it: any) => ({
           txnId: String(it.qbo_payment_id),
@@ -493,13 +498,17 @@ export async function POST(
       results.push({ id: item.id, status: "failed", type: "clear_duplicate", error: "missing account" });
       continue;
     }
+    // Same effective-date logic as create_deposit above — bookkeeper
+    // override beats payment_date so the $0 reversing deposit lines up
+    // with the bank statement's matching deposit row.
+    const effectiveDate = String(item.deposit_date || item.payment_date);
     const key = [
       item.deposit_bank_account_id,
       item.resolution_target_account_id,
-      item.payment_date,
+      effectiveDate,
     ].join("|");
     if (!clearDupGroups.has(key)) clearDupGroups.set(key, []);
-    clearDupGroups.get(key)!.push(item);
+    clearDupGroups.get(key)!.push({ ...item, _effective_deposit_date: effectiveDate });
   }
 
   for (const [key, items] of clearDupGroups) {
@@ -512,7 +521,7 @@ export async function POST(
       const deposit = await createDeposit((client as any).qbo_realm_id, accessToken, {
         bankAccountId: String(sample.deposit_bank_account_id),
         bankAccountName: bank?.Name || sample.deposit_bank_account_name || undefined,
-        txnDate: String(sample.payment_date),
+        txnDate: String(sample._effective_deposit_date),
         privateNote: `Ironbooks UF Audit (by ${bookkeeperName}) — clear ${items.length} duplicate UF payment${items.length === 1 ? "" : "s"} already deposited via bank feed ($0 deposit, offset to ${income?.Name || "income"})`,
         lines: items.map((it: any) => ({
           txnId: String(it.qbo_payment_id),

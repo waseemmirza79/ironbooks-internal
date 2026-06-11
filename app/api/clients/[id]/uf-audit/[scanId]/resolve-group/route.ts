@@ -85,6 +85,24 @@ export async function POST(
     );
   }
 
+  // Optional override for the QBO Deposit's TxnDate. Bookkeepers reconcile
+  // against bank statements which group payments into a single deposit on
+  // the date the money cleared (not each payment's individual receipt
+  // date). When null, finalize falls back to payment_date.
+  let depositDate: string | null = null;
+  if (body.deposit_date != null) {
+    const raw = String(body.deposit_date).trim();
+    if (raw !== "") {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+        return NextResponse.json(
+          { error: "deposit_date must be YYYY-MM-DD" },
+          { status: 400 }
+        );
+      }
+      depositDate = raw;
+    }
+  }
+
   // clear_duplicate posts a ZERO-dollar deposit: payments in (+), income
   // offset out (−). Needs the income account (target) AND a container bank.
   if (resolution === "clear_duplicate") {
@@ -111,6 +129,10 @@ export async function POST(
       resolution_target_account_name: targetAccountName,
       deposit_bank_account_id: depositBankAccountId,
       deposit_bank_account_name: depositBankAccountName,
+      // Always write the column — sending null explicitly clears any
+      // previous override, which is what we want when the bookkeeper
+      // toggles between resolutions on the same group.
+      deposit_date: depositDate,
       resolution_notes: notes,
       resolved_by: user.id,
       resolved_at: new Date().toISOString(),

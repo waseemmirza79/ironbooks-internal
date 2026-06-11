@@ -53,6 +53,7 @@ interface Item {
   resolution_target_account_name: string | null;
   deposit_bank_account_id: string | null;
   deposit_bank_account_name: string | null;
+  deposit_date: string | null;
   resolution_notes: string | null;
   resolved_at: string | null;
   execution_error: string | null;
@@ -173,6 +174,7 @@ export function UfAuditClient({
     target_account_name?: string;
     deposit_bank_account_id?: string;
     deposit_bank_account_name?: string;
+    deposit_date?: string;
   }) {
     if (!scan) return;
     try {
@@ -721,6 +723,9 @@ function BulkApplyBar({
   const [pickedResolution, setPickedResolution] = useState<string>("");
   const [targetAccountId, setTargetAccountId] = useState<string>("");
   const [bankAccountId, setBankAccountId] = useState<string>("");
+  const [depositDate, setDepositDate] = useState<string>(
+    new Date().toISOString().slice(0, 10)
+  );
   const [applying, setApplying] = useState(false);
 
   const bankAccounts = accounts.filter((a) => /bank/i.test(a.accountType));
@@ -782,6 +787,7 @@ function BulkApplyBar({
         target_account_name: needsTarget && targetAccount ? targetAccount.name : undefined,
         deposit_bank_account_id: needsBank ? bankAccountId : undefined,
         deposit_bank_account_name: needsBank && bankAccount ? bankAccount.name : undefined,
+        deposit_date: needsBank ? depositDate : undefined,
       });
       setPickedResolution("");
     } finally {
@@ -847,13 +853,26 @@ function BulkApplyBar({
           ))}
         </select>
       )}
+      {needsBank && (
+        <label className="inline-flex items-center gap-1 text-[11px] text-ink-slate">
+          <span className="font-semibold uppercase tracking-wider">Deposit date</span>
+          <input
+            type="date"
+            value={depositDate}
+            onChange={(e) => setDepositDate(e.target.value)}
+            className="px-1.5 py-0.5 rounded border border-gray-200 text-xs"
+            title="Use the date the money cleared on the bank statement"
+          />
+        </label>
+      )}
       <button
         onClick={applyAll}
         disabled={
           applying ||
           !pickedResolution ||
           (needsTarget && !targetAccountId) ||
-          (needsBank && !bankAccountId)
+          (needsBank && !bankAccountId) ||
+          (needsBank && !depositDate)
         }
         className="inline-flex items-center gap-1 px-3 py-1 rounded bg-navy hover:bg-ink-light text-white text-xs font-bold disabled:opacity-50"
       >
@@ -884,6 +903,14 @@ function CustomerOrphanGroup({
   const [targetAccountId, setTargetAccountId] = useState<string>("");
   const [bankAccountId, setBankAccountId] = useState<string>("");
   const [pickedResolution, setPickedResolution] = useState<string>("");
+  // Bookkeeper-chosen deposit date. Defaults to today (the bank statement
+  // date the bookkeeper is reconciling against), not the payment date —
+  // that's the whole reason this exists.
+  const [depositDate, setDepositDate] = useState<string>(() => {
+    const existing = group.items.find((i) => i.deposit_date)?.deposit_date;
+    return existing || new Date().toISOString().slice(0, 10);
+  });
+  const [askingClient, setAskingClient] = useState(false);
   const total = group.items.reduce((s, i) => s + i.payment_amount, 0);
   const dupCount = group.items.filter((i) => i.suspected_duplicate).length;
 
@@ -948,8 +975,26 @@ function CustomerOrphanGroup({
       target_account_name: needsTarget && targetAccount ? targetAccount.name : undefined,
       deposit_bank_account_id: needsBank ? bankAccountId : undefined,
       deposit_bank_account_name: needsBank && bankAccount ? bankAccount.name : undefined,
+      deposit_date: needsBank ? depositDate : undefined,
     });
     setPickedResolution("");
+  }
+
+  // One-click Ask Client: marks every payment in this group as needing
+  // client confirmation. Surfaces in the "Draft client email" flow so the
+  // bookkeeper can send one branded email per client covering all their
+  // questioned orphans.
+  async function applyAskClient() {
+    setAskingClient(true);
+    try {
+      await onResolve({
+        customer_qbo_id: group.customer_qbo_id,
+        customer_name: group.customer_qbo_id ? undefined : group.customer_name,
+        resolution: "ask_client",
+      });
+    } finally {
+      setAskingClient(false);
+    }
   }
 
   return (
@@ -987,6 +1032,17 @@ function CustomerOrphanGroup({
         <div className="font-mono text-base font-bold text-navy tabular-nums whitespace-nowrap">
           ${formatMoney(total)}
         </div>
+        {!scanFinalized && currentResolution !== "ask_client" && (
+          <button
+            onClick={applyAskClient}
+            disabled={askingClient}
+            title="Mark every payment in this group as needing client confirmation"
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-orange-100 text-orange-800 hover:bg-orange-200 text-[11px] font-bold disabled:opacity-50"
+          >
+            {askingClient ? <Loader2 size={11} className="animate-spin" /> : <Mail size={11} />}
+            Ask Client
+          </button>
+        )}
       </div>
 
       {expanded && (
@@ -1085,9 +1141,21 @@ function CustomerOrphanGroup({
               ))}
             </select>
           )}
+          {needsBank && (
+            <label className="inline-flex items-center gap-1 text-[11px] text-ink-slate">
+              <span className="font-semibold uppercase tracking-wider">Deposit date</span>
+              <input
+                type="date"
+                value={depositDate}
+                onChange={(e) => setDepositDate(e.target.value)}
+                className="px-1.5 py-0.5 rounded border border-gray-200 text-xs"
+                title="Use the date the money actually cleared on the bank statement (not each payment's individual date)"
+              />
+            </label>
+          )}
           <button
             onClick={apply}
-            disabled={!pickedResolution || (needsTarget && !targetAccountId) || (needsBank && !bankAccountId)}
+            disabled={!pickedResolution || (needsTarget && !targetAccountId) || (needsBank && !bankAccountId) || (needsBank && !depositDate)}
             className="inline-flex items-center gap-1 px-3 py-1 rounded bg-teal hover:bg-teal-dark text-white text-xs font-bold disabled:opacity-50"
           >
             <CheckCircle2 size={11} />
