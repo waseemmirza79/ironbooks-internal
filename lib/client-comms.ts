@@ -131,6 +131,7 @@ export async function sendResendEmail(params: {
   to: string[];
   subject: string;
   text: string;
+  html?: string;
   replyTo?: string;
 }): Promise<boolean> {
   const apiKey = process.env.RESEND_API_KEY;
@@ -153,6 +154,7 @@ export async function sendResendEmail(params: {
         reply_to: params.replyTo,
         subject: params.subject,
         text: params.text,
+        html: params.html,
       }),
     });
     if (!res.ok) {
@@ -166,9 +168,16 @@ export async function sendResendEmail(params: {
   }
 }
 
+export type MessageEmailDelivery =
+  | { sent: true; recipients: number }
+  | { sent: false; reason: "no_portal_user" | "no_active_email" | "send_failed" | "error" };
+
 /**
  * Look up the active portal users for a client and email them that a new
- * message/notification is waiting. Best-effort — failures only log.
+ * message/notification is waiting. Best-effort — failures only log — but
+ * the outcome is RETURNED so the sending bookkeeper can be warned
+ * immediately when the client won't get an email (no portal login,
+ * Resend failure).
  */
 export async function emailPortalUsersAboutMessage(
   service: any,
@@ -180,7 +189,7 @@ export async function emailPortalUsersAboutMessage(
     body: string;
     portalOrigin: string;
   }
-): Promise<void> {
+): Promise<MessageEmailDelivery> {
   try {
     const { data: mappings } = await service
       .from("client_users")
@@ -188,7 +197,7 @@ export async function emailPortalUsersAboutMessage(
       .eq("client_link_id", params.clientLinkId)
       .eq("active", true);
     const userIds = ((mappings as any[]) || []).map((m) => m.user_id).filter(Boolean);
-    if (userIds.length === 0) return;
+    if (userIds.length === 0) return { sent: false, reason: "no_portal_user" };
 
     const { data: portalUsers } = await service
       .from("users")
@@ -196,23 +205,63 @@ export async function emailPortalUsersAboutMessage(
       .in("id", userIds)
       .eq("is_active", true);
     const emails = ((portalUsers as any[]) || []).map((u) => u.email).filter(Boolean);
-    if (emails.length === 0) return;
+    if (emails.length === 0) return { sent: false, reason: "no_active_email" };
 
     const noun = params.kind === "notification" ? "notification" : "message";
     const snippet = params.body.length > 400 ? `${params.body.slice(0, 400)}…` : params.body;
-    await sendResendEmail({
+    const link = `${params.portalOrigin}/portal/messages`;
+
+    // Plain-text fallback for clients whose mail app blocks HTML
+    const text = [
+      `Ironbooks has sent you a ${noun} in SNAP!`,
+      ``,
+      snippet,
+      ``,
+      `Log in to read and reply: ${link}`,
+      ``,
+      `Do not reply to this email — replies aren't monitored. Use the portal to respond.`,
+    ].join("\n");
+
+    // Branded HTML card — inline styles only (email clients strip <style>)
+    const esc = (s: string) =>
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br/>");
+    const html = `
+<div style="background:#F4F5F7;padding:32px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #E5E7EB;">
+    <div style="background:#0F1F2E;padding:22px 28px;">
+      <div style="color:#ffffff;font-size:18px;font-weight:700;">Ironbooks</div>
+      <div style="color:#8CD3CC;font-size:12px;margin-top:2px;">SNAP — your books, live</div>
+    </div>
+    <div style="padding:28px;">
+      <h2 style="margin:0 0 6px;color:#0F1F2E;font-size:18px;">Ironbooks has sent you a ${noun} in SNAP!</h2>
+      ${params.subject ? `<div style="color:#0F1F2E;font-size:14px;font-weight:600;margin:0 0 12px;">${esc(params.subject)}</div>` : ""}
+      <div style="background:#F8FAFA;border:1px solid #E5E7EB;border-left:3px solid #1A9B8F;border-radius:8px;padding:14px 16px;margin:14px 0 22px;color:#33414E;font-size:14px;line-height:1.55;">
+        ${esc(snippet)}
+      </div>
+      <a href="${link}" style="display:inline-block;background:#1A9B8F;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;padding:11px 22px;border-radius:8px;">Log in to reply</a>
+      <p style="color:#8A94A0;font-size:12px;margin:24px 0 0;line-height:1.5;">
+        Do not reply to this email — replies aren't monitored.<br/>
+        Read and respond securely in your portal: <a href="${link}" style="color:#1A9B8F;">${link}</a>
+      </p>
+    </div>
+  </div>
+  <div style="max-width:560px;margin:12px auto 0;text-align:center;color:#9AA3AD;font-size:11px;">
+    Sent to you by your Ironbooks bookkeeping team for ${esc(params.clientName)}.
+  </div>
+</div>`;
+
+    const ok = await sendResendEmail({
       to: emails,
+      // Safety net: the email says "do not reply", but if someone does
+      // anyway it lands in the monitored support inbox instead of bouncing.
       replyTo: process.env.SUPPORT_INBOX_EMAIL || "admin@ironbooks.com",
-      subject: `[Ironbooks] New ${noun}${params.subject ? `: ${params.subject}` : ""} — ${params.clientName}`,
-      text: [
-        `Your Ironbooks bookkeeper sent you a new ${noun}.`,
-        ``,
-        snippet,
-        ``,
-        `Read and reply in your portal: ${params.portalOrigin}/portal/messages`,
-      ].join("\n"),
+      subject: `Ironbooks sent you a ${noun} in SNAP${params.subject ? ` — ${params.subject}` : ""}`,
+      text,
+      html,
     });
+    return ok ? { sent: true, recipients: emails.length } : { sent: false, reason: "send_failed" };
   } catch (err: any) {
     console.error(`[client-comms] emailPortalUsersAboutMessage failed: ${err?.message}`);
+    return { sent: false, reason: "error" };
   }
 }

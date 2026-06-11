@@ -34,6 +34,9 @@ export function BookkeeperMessagesClient({
   const [kind, setKind] = useState<"message" | "notification">("message");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Non-blocking warning: the message saved, but the client won't get an
+  // email notification (no portal login / send failure).
+  const [deliveryWarning, setDeliveryWarning] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -98,6 +101,16 @@ export function BookkeeperMessagesClient({
       setMessages((prev) => [...prev, json.message]);
       setDraft("");
       setSubject("");
+      const d = json.email_delivery;
+      if (d && !d.sent) {
+        setDeliveryWarning(
+          d.reason === "no_portal_user" || d.reason === "no_active_email"
+            ? "Message saved — but this client has NO portal login, so they won't get an email and can't see it. Invite them to the portal or reach them another way."
+            : "Message saved, but the email notification failed to send — they won't know it's waiting until they log in."
+        );
+      } else {
+        setDeliveryWarning(null);
+      }
     } catch (err: any) {
       setError(err?.message || "Send failed — try again");
     } finally {
@@ -179,6 +192,19 @@ export function BookkeeperMessagesClient({
           </div>
 
           {error && <div className="text-xs text-red-600">{error}</div>}
+          {deliveryWarning && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <Bell size={13} className="flex-shrink-0 mt-0.5 text-amber-600" />
+              <div className="flex-1">{deliveryWarning}</div>
+              <button
+                onClick={() => setDeliveryWarning(null)}
+                className="text-amber-700 hover:text-amber-900 font-bold flex-shrink-0"
+                aria-label="Dismiss warning"
+              >
+                ✕
+              </button>
+            </div>
+          )}
           <div className="text-[11px] text-ink-light">
             The client also gets an email pointing them to their portal inbox.
           </div>

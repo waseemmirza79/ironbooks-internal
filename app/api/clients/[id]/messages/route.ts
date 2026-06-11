@@ -123,8 +123,11 @@ export async function POST(
     return NextResponse.json({ error: insertErr.message }, { status: 500 });
   }
 
-  // Best-effort email so the client knows to check their portal
-  await emailPortalUsersAboutMessage(service, {
+  // Best-effort email so the client knows to check their portal. The
+  // outcome goes back to the composer so the bookkeeper is warned
+  // IMMEDIATELY when the client won't be notified (no portal login,
+  // send failure) — otherwise messages sit unseen until the next login.
+  const emailDelivery = await emailPortalUsersAboutMessage(service, {
     clientLinkId: id,
     clientName: (client as any).client_name || "your business",
     kind,
@@ -133,5 +136,5 @@ export async function POST(
     portalOrigin: new URL(request.url).origin,
   });
 
-  return NextResponse.json({ ok: true, message: inserted });
+  return NextResponse.json({ ok: true, message: inserted, email_delivery: emailDelivery });
 }
