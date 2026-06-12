@@ -54,11 +54,9 @@ export function Sidebar() {
   const [unreadComms, setUnreadComms] = useState(0);
   const [stripeModalOpen, setStripeModalOpen] = useState(false);
 
-  const isOnToolsRoute = toolsNav.some((i) => pathname.startsWith(i.href));
-  const [toolsOpen, setToolsOpen] = useState(isOnToolsRoute);
-  useEffect(() => {
-    if (isOnToolsRoute) setToolsOpen(true);
-  }, [isOnToolsRoute]);
+  // Tools always starts collapsed — even on a tools route — so the Work
+  // section stays the visual default. The user can pop it open per page.
+  const [toolsOpen, setToolsOpen] = useState(false);
 
   const supabase = createBrowserClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,

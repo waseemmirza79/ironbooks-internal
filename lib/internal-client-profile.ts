@@ -395,7 +395,9 @@ export async function fetchClientProgress(
         : coaFailed > 0
         ? `${coaFailed} failed — needs retry`
         : "Not started",
-    href: coaList[0] ? `/jobs/${coaList[0].id}/review` : `/clients`,
+    // No job yet → start one with this client preselected (the /clients
+    // fallback forced a re-find of the client you were already viewing).
+    href: coaList[0] ? `/jobs/${coaList[0].id}/review` : `/jobs/new?client=${clientLinkId}`,
   });
 
   // ── 3. Reclass / Categorization ─────────────────────────────────────

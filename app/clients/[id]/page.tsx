@@ -23,10 +23,10 @@ import {
 /**
  * Resolve the ?range= URL param to a primary + comparison DateRange pair.
  *
- * Default behaviour: pick "last month" when we're early in the current
- * month (< 7 days elapsed). Today-is-June-1 was showing an empty P&L
- * because thisMonthRange returns a 1-day window — that's accurate but
- * useless when the bookkeeper expects to see real activity.
+ * Default behaviour: always "last month" — the most recent completed
+ * (closeable) period. A partial current month reads as wrong numbers to
+ * anyone reviewing statements; This Month is one click away when the
+ * bookkeeper wants in-progress activity.
  *
  * Comparison period mirrors the primary: this-month vs last-month,
  * last-month vs the month before, YTD vs prior YTD, etc. Always exactly
@@ -36,12 +36,12 @@ function resolveDateRanges(
   rangeParam: string | undefined
 ): { primary: DateRange; comparison: DateRange; activeKey: string } {
   const now = new Date();
-  const daysIntoMonth = now.getDate();
 
-  // No explicit range → pick a useful default. Early in the month, show
-  // the just-completed month so the bookkeeper sees real numbers.
-  const key =
-    rangeParam || (daysIntoMonth < 7 ? "last-month" : "this-month");
+  // No explicit range → default to the last completed month (the most
+  // recent closeable period). A partial current month reads as "wrong
+  // numbers" to anyone reviewing statements; This Month stays one click
+  // away for in-progress checks.
+  const key = rangeParam || "last-month";
 
   switch (key) {
     case "this-month": {
@@ -139,8 +139,8 @@ function resolveDateRanges(
       };
     }
     default:
-      // Unknown key — fall back to the smart default
-      return resolveDateRanges(daysIntoMonth < 7 ? "last-month" : "this-month");
+      // Unknown key — fall back to the default (last completed month)
+      return resolveDateRanges("last-month");
   }
 }
 
