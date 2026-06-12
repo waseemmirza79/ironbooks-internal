@@ -383,6 +383,8 @@ export function InviteClientUI({
         </button>
       </form>
 
+      <BulkCreatePanel clients={clients} existingMappings={existingMappings} />
+
       {/* Existing portal users */}
       <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
         <div className="p-4 border-b border-slate-200 flex items-center justify-between gap-3">
@@ -523,4 +525,215 @@ function timeAgo(iso: string): string {
   if (hours >= 1) return `${hours}h ago`;
   if (mins >= 1) return `${mins}m ago`;
   return "just now";
+}
+
+/* ── Bulk account creation ────────────────────────────────────────────
+   One row per active client with NO active portal user. Email/name
+   prefill from client_links; rows without an email start unchecked.
+   A single switch decides whether invite emails go out or accounts are
+   provisioned silently (admin can impersonate + invite later). Each row
+   drives the same POST /api/admin/invite-client as the single form, run
+   sequentially so per-row failures are isolated and readable. */
+
+interface BulkRowState {
+  checked: boolean;
+  email: string;
+  fullName: string;
+  status: "idle" | "working" | "ok" | "error";
+  message: string;
+}
+
+function BulkCreatePanel({
+  clients,
+  existingMappings,
+}: {
+  clients: Client[];
+  existingMappings: Mapping[];
+}) {
+  const missing = useMemo(() => {
+    const covered = new Set(
+      existingMappings.filter((m) => m.active).map((m) => m.client_link_id)
+    );
+    return clients.filter((c) => !covered.has(c.id));
+  }, [clients, existingMappings]);
+
+  const [open, setOpen] = useState(false);
+  const [sendEmails, setSendEmails] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [rows, setRows] = useState<Record<string, BulkRowState>>(() => {
+    const init: Record<string, BulkRowState> = {};
+    for (const c of missing) {
+      init[c.id] = {
+        checked: !!c.client_email,
+        email: c.client_email || "",
+        fullName: c.suggested_full_name || c.client_name,
+        status: "idle",
+        message: "",
+      };
+    }
+    return init;
+  });
+
+  const row = (id: string): BulkRowState =>
+    rows[id] || { checked: false, email: "", fullName: "", status: "idle", message: "" };
+  const patch = (id: string, p: Partial<BulkRowState>) =>
+    setRows((r) => ({ ...r, [id]: { ...row(id), ...p } }));
+
+  const validEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
+  const selected = missing.filter((c) => row(c.id).checked && validEmail(row(c.id).email));
+  const doneCount = missing.filter((c) => row(c.id).status === "ok").length;
+
+  async function runBulk() {
+    if (selected.length === 0 || running) return;
+    setRunning(true);
+    for (const c of selected) {
+      const r = row(c.id);
+      if (r.status === "ok") continue;
+      patch(c.id, { status: "working", message: "" });
+      try {
+        const res = await fetch("/api/admin/invite-client", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: r.email.trim(),
+            full_name: r.fullName.trim() || c.client_name,
+            client_link_id: c.id,
+            send_invite: sendEmails,
+          }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        patch(c.id, { status: "ok", message: body.message || "Created" });
+      } catch (e: any) {
+        patch(c.id, { status: "error", message: e?.message || "Failed" });
+      }
+    }
+    setRunning(false);
+  }
+
+  if (missing.length === 0) {
+    return (
+      <div className="bg-white border border-slate-200 rounded-2xl p-4 text-sm text-emerald-700 flex items-center gap-2">
+        <CheckCircle2 size={15} /> Every active client has a portal account.
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full p-4 flex items-center justify-between gap-3 text-left"
+      >
+        <div>
+          <h2 className="font-bold text-navy">
+            Bulk-create portal accounts
+            <span className="ml-2 text-xs font-semibold bg-red-100 text-red-700 px-2 py-0.5 rounded-full">
+              {missing.length} client{missing.length === 1 ? "" : "s"} without portal access
+            </span>
+          </h2>
+          <p className="text-xs text-ink-slate mt-0.5">
+            Create accounts for everyone at once — with or without sending invite emails.
+          </p>
+        </div>
+        <span className="text-xs font-semibold text-teal flex-shrink-0">{open ? "Hide" : "Open"}</span>
+      </button>
+
+      {open && (
+        <div className="border-t border-slate-200">
+          {/* Controls */}
+          <div className="p-4 bg-slate-50 flex items-center justify-between gap-3 flex-wrap">
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sendEmails}
+                onChange={(e) => setSendEmails(e.target.checked)}
+                className="accent-teal"
+                disabled={running}
+              />
+              <span className="text-navy font-semibold">Send invite emails</span>
+              <span className="text-xs text-ink-slate">
+                {sendEmails
+                  ? "— each client gets a magic-link signup email immediately"
+                  : "— accounts are created silently; invite or impersonate later"}
+              </span>
+            </label>
+            <button
+              type="button"
+              onClick={runBulk}
+              disabled={selected.length === 0 || running}
+              className="px-4 py-2 bg-teal text-white rounded-lg text-sm font-semibold hover:bg-teal-dark disabled:opacity-50 inline-flex items-center gap-2"
+            >
+              {running ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+              {running
+                ? `Creating… (${doneCount}/${selected.length})`
+                : `Create ${selected.length} account${selected.length === 1 ? "" : "s"}${sendEmails ? " + send invites" : " (no emails)"}`}
+            </button>
+          </div>
+
+          {/* Rows */}
+          <div className="divide-y divide-slate-100 max-h-[28rem] overflow-y-auto">
+            {missing.map((c) => {
+              const r = row(c.id);
+              const emailOk = validEmail(r.email);
+              return (
+                <div key={c.id} className="px-4 py-2.5 flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={r.checked}
+                    onChange={(e) => patch(c.id, { checked: e.target.checked })}
+                    disabled={running || r.status === "ok"}
+                    className="accent-teal flex-shrink-0"
+                  />
+                  <div className="w-56 flex-shrink-0 text-sm font-medium text-navy truncate" title={c.client_name}>
+                    {c.client_name}
+                  </div>
+                  <input
+                    type="email"
+                    value={r.email}
+                    onChange={(e) => patch(c.id, { email: e.target.value })}
+                    placeholder="owner@example.com"
+                    disabled={running || r.status === "ok"}
+                    className={`flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border text-sm ${
+                      r.checked && !emailOk ? "border-amber-300 bg-amber-50/40" : "border-slate-200"
+                    }`}
+                  />
+                  <input
+                    type="text"
+                    value={r.fullName}
+                    onChange={(e) => patch(c.id, { fullName: e.target.value })}
+                    placeholder="Full name"
+                    disabled={running || r.status === "ok"}
+                    className="w-44 flex-shrink-0 px-2.5 py-1.5 rounded-lg border border-slate-200 text-sm"
+                  />
+                  <div className="w-40 flex-shrink-0 text-xs">
+                    {r.status === "working" && (
+                      <span className="text-ink-slate inline-flex items-center gap-1">
+                        <Loader2 size={11} className="animate-spin" /> Creating…
+                      </span>
+                    )}
+                    {r.status === "ok" && (
+                      <span className="text-emerald-700 inline-flex items-center gap-1">
+                        <CheckCircle2 size={11} /> {sendEmails ? "Invited" : "Created"}
+                      </span>
+                    )}
+                    {r.status === "error" && (
+                      <span className="text-red-700 inline-flex items-start gap-1" title={r.message}>
+                        <AlertCircle size={11} className="mt-0.5 flex-shrink-0" />
+                        <span className="truncate">{r.message}</span>
+                      </span>
+                    )}
+                    {r.status === "idle" && r.checked && !emailOk && (
+                      <span className="text-amber-700">needs email</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
