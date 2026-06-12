@@ -20,7 +20,7 @@ export default async function BankRulesFromReclassPage({
 
   const { data: job } = await service
     .from("reclass_jobs")
-    .select("id, client_link_id, workflow, status, date_range_start, date_range_end")
+    .select("id, client_link_id, workflow, status, date_range_start, date_range_end, jurisdiction")
     .eq("id", id)
     .single();
 
@@ -37,17 +37,43 @@ export default async function BankRulesFromReclassPage({
 
   const { data: clientLink } = await service
     .from("client_links")
-    .select("client_name, qbo_realm_id")
+    .select("client_name, qbo_realm_id, industry")
     .eq("id", job.client_link_id)
     .single();
 
   const clientName = (clientLink as any)?.client_name || "Client";
   const qboRealmId = (clientLink as any)?.qbo_realm_id;
 
-  // Fetch every active account in the COA so the bookkeeper can map a
-  // vendor to anything they want. Previously we filtered to P&L + Equity
-  // only, which dropped Asset / Liability targets (deposit clearing, A/R
-  // adjustments, contractor advances, etc.). Bookkeeper now picks freely.
+  // The dropdown universe is the MASTER COA — the account set we set up
+  // for this industry/jurisdiction — not the client's raw QBO list (which
+  // is full of one-off Depreciation lines, old loans, etc.). The master
+  // names are resolved against live QBO accounts so each option still
+  // carries a real QBO account id. Same source + fallback chain as the
+  // reclass review dropdown.
+  const jurisdiction = ((job as any).jurisdiction as string) || "US";
+  const industry = ((clientLink as any)?.industry as string) || "painters";
+  let masterNames = new Set<string>();
+  {
+    let res = await service
+      .from("master_coa")
+      .select("account_name")
+      .eq("jurisdiction", jurisdiction)
+      .eq("industry", industry)
+      .eq("is_parent", false);
+    if (!res.data || res.data.length === 0) {
+      res = await service
+        .from("master_coa")
+        .select("account_name")
+        .eq("jurisdiction", jurisdiction)
+        .eq("industry", "painters")
+        .eq("is_parent", false);
+    }
+    masterNames = new Set(
+      ((res.data as any[]) || []).map((r) => String(r.account_name).toLowerCase())
+    );
+  }
+
+  // Resolve master names → live QBO accounts (rules need a QBO account id).
   // Fail-soft: if QBO is unreachable, dropdowns get an empty list and the
   // row shows the proposed account as a read-only label.
   let availablePnLAccounts: Array<{ id: string; name: string; type: string }> = [];
@@ -58,10 +84,16 @@ export default async function BankRulesFromReclassPage({
       const active = allAccounts
         .filter((a) => a.Active !== false)
         .map((a) => ({ id: a.Id, name: a.Name, type: a.AccountType || "" }));
-      console.log(
-        `[bank-rules ${id}] QBO returned ${allAccounts.length} accounts total, ${active.length} active. Account types: ${[...new Set(allAccounts.map((a) => a.AccountType))].join(", ")}`
+      // Master filter — but never filter down to nothing: an empty master
+      // table (or zero name overlap) falls back to the full active list so
+      // the bookkeeper is never stuck with an unusable dropdown.
+      const masterMatched = active.filter((a) => masterNames.has(a.name.toLowerCase()));
+      availablePnLAccounts = (masterMatched.length > 0 ? masterMatched : active).sort((a, b) =>
+        a.name.localeCompare(b.name)
       );
-      availablePnLAccounts = active.sort((a, b) => a.name.localeCompare(b.name));
+      console.log(
+        `[bank-rules ${id}] QBO ${active.length} active accounts; master COA matched ${masterMatched.length} (${masterNames.size} master names, industry=${industry}/${jurisdiction})`
+      );
     } catch (err: any) {
       if (err instanceof QBOReauthRequiredError) redirect(err.reconnectUrl);
       console.warn(`[bank-rules ${id}] Could not fetch accounts:`, err.message);

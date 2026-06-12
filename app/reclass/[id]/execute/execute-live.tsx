@@ -245,79 +245,69 @@ export function ExecuteLive({
         )}
       </div>
 
-      {/* Next-step handoff — sequential.
-          • If client has Stripe deposits → Stripe Recon is the next required step,
-            and a small Bank Rules link is shown as the eventual next next step.
-          • If no Stripe deposits → skip directly to Bank Rules. */}
+      {/* Next-step handoff — matches the stepper order: Bank Rules is
+          ALWAYS the primary Step 3 card; Stripe Recon (when deposits are
+          detected) follows as the Step 4 card, not in front of it. */}
       {job.status === "complete" &&
         job.workflow === "full_categorization" &&
         !job.is_rollback &&
-        job.client_link_id &&
-        (hasStripeDeposits ? (
-          <div className="rounded-2xl p-5 bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-200">
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex items-start gap-3 flex-1 min-w-0">
-                <div className="rounded-full flex items-center justify-center w-10 h-10 bg-white flex-shrink-0">
-                  <CreditCard className="text-purple-600" size={20} />
+        job.client_link_id && (
+          <>
+            <div className="rounded-2xl p-5 bg-gradient-to-br from-teal-lighter to-blue-50 border-2 border-teal/30">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div className="rounded-full flex items-center justify-center w-10 h-10 bg-white flex-shrink-0">
+                    <Receipt className="text-teal" size={20} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-teal">Step 3 · Recommended</span>
+                    <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
+                      Generate Bank Rules
+                    </h3>
+                    <p className="text-sm text-ink-slate">
+                      {job.transactions_moved > 0
+                        ? `Turn the ${job.transactions_moved} approved categorizations into bank rules so future transactions auto-categorize.`
+                        : "All transactions were already correctly categorized — nothing to move. Create bank rules to lock in vendor→account mappings going forward."}
+                    </p>
+                  </div>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-purple-700">Step 3 of 4 · Recommended</span>
-                  <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
-                    Stripe AR Reconciliation
-                  </h3>
-                  <p className="text-sm text-ink-slate">
-                    Stripe deposits detected. Match them to customer invoices, split out processing fees,
-                    and apply sales tax (Canada).
-                  </p>
+                <Link
+                  href={`/reclass/${job.id}/bank-rules`}
+                  className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-5 py-2.5 rounded-lg flex-shrink-0 shadow-md"
+                >
+                  Generate Bank Rules <ArrowRight size={16} />
+                </Link>
+              </div>
+            </div>
+            {hasStripeDeposits && (
+              <div className="rounded-2xl p-5 bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-200">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-start gap-3 flex-1 min-w-0">
+                    <div className="rounded-full flex items-center justify-center w-10 h-10 bg-white flex-shrink-0">
+                      <CreditCard className="text-purple-600" size={20} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-purple-700">Step 4 · Recommended</span>
+                      <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
+                        Stripe AR Reconciliation
+                      </h3>
+                      <p className="text-sm text-ink-slate">
+                        Stripe deposits detected. Match them to customer invoices, split out processing fees,
+                        and apply sales tax (Canada). Skip if this client doesn&apos;t use Stripe.
+                      </p>
+                    </div>
+                  </div>
+                  <Link
+                    href={`/stripe-recon/new?client=${job.client_link_id}&reclass_job_id=${job.id}`}
+                    className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg flex-shrink-0 shadow-md"
+                  >
+                    Start Stripe Recon <ArrowRight size={16} />
+                  </Link>
                 </div>
               </div>
-              <Link
-                href={`/stripe-recon/new?client=${job.client_link_id}&reclass_job_id=${job.id}`}
-                className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg flex-shrink-0 shadow-md"
-              >
-                Start Stripe Recon <ArrowRight size={16} />
-              </Link>
-            </div>
-            <div className="mt-3 pt-3 border-t border-purple-200 flex items-center justify-between text-xs">
-              <span className="text-ink-slate">
-                Skip if this client doesn't use Stripe →
-              </span>
-              <Link
-                href={`/reclass/${job.id}/bank-rules`}
-                className="font-semibold text-purple-700 hover:text-purple-900"
-              >
-                Skip to Bank Rules
-              </Link>
-            </div>
-          </div>
-        ) : (
-          <div className="rounded-2xl p-5 bg-gradient-to-br from-teal-lighter to-blue-50 border-2 border-teal/30">
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex items-start gap-3 flex-1 min-w-0">
-                <div className="rounded-full flex items-center justify-center w-10 h-10 bg-white flex-shrink-0">
-                  <Receipt className="text-teal" size={20} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-teal">Step 3 of 4 · Recommended</span>
-                  <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
-                    Generate Bank Rules
-                  </h3>
-                  <p className="text-sm text-ink-slate">
-                    {job.transactions_moved > 0
-                      ? `No Stripe deposits detected — skipping Step 3. Turn the ${job.transactions_moved} approved categorizations into QBO Bank Rules so future transactions auto-categorize.`
-                      : "All transactions were already correctly categorized — nothing to move. Create bank rules to lock in vendor→account mappings going forward."}
-                  </p>
-                </div>
-              </div>
-              <Link
-                href={`/reclass/${job.id}/bank-rules`}
-                className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-5 py-2.5 rounded-lg flex-shrink-0 shadow-md"
-              >
-                Generate Bank Rules <ArrowRight size={16} />
-              </Link>
-            </div>
-          </div>
-        ))}
+            )}
+          </>
+        )}
 
       {/* Year cascade — "Continue with Previous Year"
           Computes a FULL 12-month prior window based on source start date, so
