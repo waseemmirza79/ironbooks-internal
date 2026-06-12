@@ -768,6 +768,7 @@ export function CleanupWizardClient({
 
             <NeedFromClientPanel
               clientLinkId={clientLinkId}
+              clientName={clientName}
               accountGrades={(hs?.account_grades as any[]) || []}
               periodStart={status?.run?.period_lock_date || null}
             />
@@ -1422,10 +1423,12 @@ function buildClientRequests(
 
 function NeedFromClientPanel({
   clientLinkId,
+  clientName,
   accountGrades,
   periodStart,
 }: {
   clientLinkId: string;
+  clientName: string;
   accountGrades: any[];
   periodStart: string | null;
 }) {
@@ -1441,6 +1444,7 @@ function NeedFromClientPanel({
   const [promoting, setPromoting] = useState(false);
   const [promoted, setPromoted] = useState(false);
   const [promoteError, setPromoteError] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const isChecked = (id: string) => checked[id] !== false; // default checked
   const selected = suggested.filter((i) => isChecked(i.id));
@@ -1448,6 +1452,81 @@ function NeedFromClientPanel({
   const totalCount = selected.length + (extraTrimmed ? 1 : 0);
 
   if (suggested.length === 0) return null;
+
+  /** Copy a paste-ready email — HTML table variant for Gmail/Double rich
+   *  fields, plain-text numbered list as the fallback. For clients with
+   *  no portal login (or when you'd rather send from your own inbox). */
+  async function copyEmail() {
+    const items = selected.map((i) => i.text);
+    if (extraTrimmed) items.push(extraTrimmed);
+    if (items.length === 0) return;
+
+    const esc = (s: string) =>
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const rows = items
+      .map(
+        (t, i) => `
+      <tr>
+        <td style="border:1px solid #E5E7EB;padding:8px 10px;text-align:center;color:#0F1F2E;font-weight:700;width:36px;">${i + 1}</td>
+        <td style="border:1px solid #E5E7EB;padding:8px 12px;color:#33414E;">${esc(t)}</td>
+      </tr>`
+      )
+      .join("");
+    const html = `
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#33414E;font-size:14px;line-height:1.5;">
+  <p>Hi!</p>
+  <p>We're deep-cleaning the books for <strong>${esc(clientName)}</strong> right now, and we need a few things from you to finish the job:</p>
+  <table style="border-collapse:collapse;margin:14px 0;width:100%;max-width:640px;">
+    <tr>
+      <th style="border:1px solid #E5E7EB;background:#F8FAFA;padding:8px 10px;text-align:center;color:#0F1F2E;width:36px;">#</th>
+      <th style="border:1px solid #E5E7EB;background:#F8FAFA;padding:8px 12px;text-align:left;color:#0F1F2E;">What we need</th>
+    </tr>${rows}
+  </table>
+  <p>The easiest way to get these to us: <strong>just reply to this email with the files attached</strong> (PDF, CSV, Excel, or photos all work). For the questions, type your answer right in the reply.</p>
+  <p>Thanks!<br/>Your Ironbooks bookkeeping team</p>
+</div>`;
+    const text = [
+      `Hi!`,
+      ``,
+      `We're deep-cleaning the books for ${clientName} right now, and we need a few things from you to finish the job:`,
+      ``,
+      ...items.map((t, i) => `${i + 1}. ${t}`),
+      ``,
+      `The easiest way to get these to us: just reply to this email with the files attached (PDF, CSV, Excel, or photos all work). For the questions, type your answer right in the reply.`,
+      ``,
+      `Thanks!`,
+      `Your Ironbooks bookkeeping team`,
+    ].join("\n");
+
+    try {
+      if (typeof ClipboardItem !== "undefined") {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/html": new Blob([html], { type: "text/html" }),
+            "text/plain": new Blob([text], { type: "text/plain" }),
+          }),
+        ]);
+      } else {
+        await navigator.clipboard.writeText(text);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      setError("Couldn't access the clipboard — copy manually from a draft instead.");
+    }
+  }
+
+  const copyButton = (
+    <button
+      type="button"
+      onClick={copyEmail}
+      disabled={totalCount === 0}
+      className="inline-flex items-center gap-2 bg-white hover:bg-gray-50 border border-gray-200 text-navy text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-40"
+    >
+      {copied ? <CheckCircle2 size={14} className="text-emerald-600" /> : <FileText size={14} />}
+      {copied ? "Copied — paste into Gmail/Double" : "Copy as email (with table)"}
+    </button>
+  );
 
   async function send() {
     if (totalCount === 0 || sending) return;
@@ -1513,6 +1592,9 @@ function NeedFromClientPanel({
               <AlertCircle size={13} className="flex-shrink-0 mt-0.5" /> {sentInfo.emailWarning}
             </div>
           )}
+          {/* Manual fallback: paste-ready email with the same items as a
+              table — the path when the client has no portal login. */}
+          <div className="flex items-center gap-2">{copyButton}</div>
 
           {/* P&L-only promote — don't make the client wait on their own
               paperwork for monthly service. BS stays visibly unfinished:
@@ -1598,15 +1680,18 @@ function NeedFromClientPanel({
               {error}
             </div>
           )}
-          <button
-            type="button"
-            onClick={send}
-            disabled={totalCount === 0 || sending}
-            className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-40"
-          >
-            {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-            Send request to client ({totalCount})
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={send}
+              disabled={totalCount === 0 || sending}
+              className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-40"
+            >
+              {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+              Send request to client ({totalCount})
+            </button>
+            {copyButton}
+          </div>
         </>
       )}
     </div>
