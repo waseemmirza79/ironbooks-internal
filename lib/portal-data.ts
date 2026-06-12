@@ -182,6 +182,19 @@ export async function resolveClosedPeriod(
     closedThrough = endOfLast.toISOString().slice(0, 10);
   }
 
+  // CLAMP: the "closed" month must never be the CURRENT month. A cleanup
+  // range or close stamp dated mid-month (cleanups finish whenever they
+  // finish) would otherwise default the portal P&L to partial
+  // current-month numbers — exactly the "this month so far" garbage this
+  // resolver exists to avoid. Pull it back to the last completed month.
+  {
+    const now = new Date();
+    const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0)
+      .toISOString()
+      .slice(0, 10);
+    if (closedThrough > endOfLastMonth) closedThrough = endOfLastMonth;
+  }
+
   // Build the month range containing closedThrough
   const closedDate = new Date(closedThrough + "T00:00:00");
   const closedMonthStart = new Date(closedDate.getFullYear(), closedDate.getMonth(), 1);
