@@ -301,7 +301,11 @@ export async function GET(request: Request) {
     };
   }
 
-  return NextResponse.json({ columns: paginated });
+  return NextResponse.json({
+    columns: paginated,
+    // Active bookkeepers — powers the assign dropdown on the Cleanup board.
+    bookkeepers: (bookkeepers || []).map((b) => ({ id: b.id, full_name: b.full_name })),
+  });
 }
 
 function emptyColumns() {

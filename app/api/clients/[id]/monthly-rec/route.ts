@@ -46,10 +46,14 @@ export async function POST(
   const service = createServiceSupabase();
   const { data: client } = await service
     .from("client_links")
-    .select("id, client_name, qbo_realm_id, assigned_bookkeeper_id, daily_recon_enabled")
+    .select("*")
     .eq("id", clientLinkId)
     .single();
   if (!client) return NextResponse.json({ error: "Client not found" }, { status: 404 });
+
+  // Balance Sheet toggle: false = P&L-only monthly service while the BS
+  // cleanup finishes. Missing column (pre-migration 66) reads as enabled.
+  const includeBS = (client as any).bs_enabled !== false;
 
   const { data: actor } = await service
     .from("users")
@@ -100,7 +104,8 @@ export async function POST(
         (client as any).qbo_realm_id,
         accessToken,
         periodStart,
-        periodEnd
+        periodEnd,
+        { includeBS }
       );
       const { data: run, error } = await (service as any)
         .from("monthly_rec_runs")
@@ -132,7 +137,8 @@ export async function POST(
         (client as any).qbo_realm_id,
         accessToken,
         periodStart,
-        periodEnd
+        periodEnd,
+        { includeBS }
       );
       const { data: run, error } = await (service as any)
         .from("monthly_rec_runs")
@@ -373,6 +379,11 @@ export async function POST(
     let packageError: string | null = null;
     let emailDelivery: any = null;
     try {
+      if (!includeBS) {
+        // P&L-only client: the month-end package archives a BS snapshot,
+        // so skip it and use the plain statements email below.
+        throw new Error("P&L-only close (Balance Sheet toggle off) — plain email sent");
+      }
       const built = await buildPackagesBulk(service as any, [clientLinkId], periodRef, user.id);
       if (!built[0]?.ok || !built[0].packageId) {
         throw new Error(built[0]?.error || "package build failed");

@@ -32,6 +32,7 @@ interface KanbanCard {
   bs_recon_started: boolean;
   bs_recon_in_progress: boolean;
   cleanup_pdf_href: string | null;
+  due_date: string | null;
   note_count: number;
   bookkeeper: { id: string; full_name: string; avatar_url: string | null } | null;
   latest_coa_job: { id: string; status: string } | null;
@@ -129,6 +130,7 @@ function StepIcon({ state }: { state: StepState }) {
 
 export function CleanupBoard() {
   const [columns, setColumns] = useState<Record<string, { cards: KanbanCard[]; total: number }> | null>(null);
+  const [bookkeepers, setBookkeepers] = useState<{ id: string; full_name: string }[]>([]);
   const [signoffs, setSignoffs] = useState<ProdClient[]>([]);
   const [isSenior, setIsSenior] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -146,6 +148,7 @@ export function CleanupBoard() {
       const kanban = await kanbanRes.json();
       if (!kanbanRes.ok) throw new Error(kanban.error || `HTTP ${kanbanRes.status}`);
       setColumns(kanban.columns || null);
+      setBookkeepers(kanban.bookkeepers || []);
       if (recRes.ok) {
         const rec = await recRes.json();
         setSignoffs(rec.cleanup_signoffs || []);
@@ -244,6 +247,9 @@ export function CleanupBoard() {
                       card={card}
                       inReview={col.id === "review"}
                       hasSignoff={signoffByClient.has(card.id)}
+                      isSenior={isSenior}
+                      bookkeepers={bookkeepers}
+                      onChanged={load}
                       onOpenSignoff={() =>
                         setSelectedSignoff(selectedSignoff === card.id ? null : card.id)
                       }
@@ -287,14 +293,48 @@ function CleanupCard({
   card,
   inReview,
   hasSignoff,
+  isSenior,
+  bookkeepers,
+  onChanged,
   onOpenSignoff,
 }: {
   card: KanbanCard;
   inReview: boolean;
   hasSignoff: boolean;
+  isSenior: boolean;
+  bookkeepers: { id: string; full_name: string }[];
+  onChanged: () => void;
   onOpenSignoff: () => void;
 }) {
   const steps = buildSteps(card, inReview);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [bkId, setBkId] = useState(card.bookkeeper?.id || "");
+  const [due, setDue] = useState(card.due_date ? card.due_date.slice(0, 10) : "");
+
+  const overdue =
+    !inReview && card.due_date && new Date(card.due_date) < new Date(new Date().toISOString().slice(0, 10));
+
+  async function saveAssignment() {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/clients/${card.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assigned_bookkeeper_id: bkId || null,
+          due_date: due || null,
+        }),
+      });
+      if (res.ok) {
+        setEditing(false);
+        onChanged();
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
       <div className="flex items-start justify-between gap-2">
@@ -305,9 +345,24 @@ function CleanupCard({
           >
             {card.client_name}
           </Link>
-          <div className="text-[10px] text-ink-light">
-            {card.bookkeeper?.full_name || "Unassigned"}
-            {card.jurisdiction ? ` · ${card.jurisdiction}` : ""}
+          <div className="text-[10px] text-ink-light flex items-center gap-1.5 flex-wrap">
+            <button
+              onClick={() => isSenior && setEditing(!editing)}
+              className={isSenior ? "hover:text-navy hover:underline" : "cursor-default"}
+              title={isSenior ? "Assign bookkeeper / set deadline" : undefined}
+            >
+              {card.bookkeeper?.full_name || (isSenior ? "Unassigned — click to assign" : "Unassigned")}
+            </button>
+            {card.due_date && (
+              <span
+                className={`font-bold px-1.5 py-0.5 rounded ${
+                  overdue ? "bg-red-100 text-red-700" : "bg-gray-100 text-ink-slate"
+                }`}
+                title={overdue ? "Past deadline" : "Deadline"}
+              >
+                due {card.due_date.slice(0, 10)}{overdue ? " ⚠" : ""}
+              </span>
+            )}
           </div>
         </div>
         {card.cleanup_pdf_href && (
@@ -321,6 +376,42 @@ function CleanupCard({
           </a>
         )}
       </div>
+
+      {editing && (
+        <div className="mt-2 p-2 rounded-lg bg-slate-50 border border-slate-200 space-y-1.5">
+          <select
+            value={bkId}
+            onChange={(e) => setBkId(e.target.value)}
+            className="w-full text-[11px] px-2 py-1 rounded border border-slate-200 bg-white"
+          >
+            <option value="">— unassigned —</option>
+            {bookkeepers.map((b) => (
+              <option key={b.id} value={b.id}>{b.full_name}</option>
+            ))}
+          </select>
+          <input
+            type="date"
+            value={due}
+            onChange={(e) => setDue(e.target.value)}
+            className="w-full text-[11px] px-2 py-1 rounded border border-slate-200 bg-white"
+          />
+          <div className="flex gap-1.5">
+            <button
+              onClick={saveAssignment}
+              disabled={saving}
+              className="text-[11px] font-bold px-2.5 py-1 rounded bg-navy text-white hover:bg-ink-light disabled:opacity-50"
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+            <button
+              onClick={() => setEditing(false)}
+              className="text-[11px] font-semibold px-2 py-1 rounded text-ink-slate hover:text-navy"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Step checklist */}
       <ul className="mt-2 space-y-1">

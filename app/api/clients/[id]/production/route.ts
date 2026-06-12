@@ -51,7 +51,7 @@ export async function POST(
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
   const action = body.action;
-  if (!["enable", "pause", "unpause", "disable"].includes(action || "")) {
+  if (!["enable", "pause", "unpause", "disable", "bs_on", "bs_off"].includes(action || "")) {
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   }
 
@@ -104,6 +104,15 @@ export async function POST(
       updates.daily_recon_enabled = false;
       updates.daily_recon_paused = false;
       updates.daily_recon_paused_reason = null;
+      break;
+    // Balance Sheet toggle — bs_off puts the client on P&L-only monthly
+    // service (BS checks + BS/CFS statements skipped) while their balance
+    // sheet cleanup finishes; bs_on restores full service.
+    case "bs_off":
+      updates.bs_enabled = false;
+      break;
+    case "bs_on":
+      updates.bs_enabled = true;
       break;
   }
 

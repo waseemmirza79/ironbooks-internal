@@ -37,9 +37,7 @@ export async function GET(request: Request) {
 
   let clientsQ = service
     .from("client_links")
-    .select(
-      "id, client_name, jurisdiction, state_province, assigned_bookkeeper_id, daily_recon_enabled, daily_recon_paused, cleanup_completed_at, last_synced_at"
-    )
+    .select("*")
     .eq("is_active", true);
   if (!isSenior) clientsQ = clientsQ.eq("assigned_bookkeeper_id", user.id);
   const { data: clients } = await clientsQ.order("client_name");
@@ -107,6 +105,7 @@ export async function GET(request: Request) {
       state_province: c.state_province,
       paused: !!c.daily_recon_paused,
       last_synced_at: c.last_synced_at,
+      bs_enabled: c.bs_enabled !== false,
       run: runsByClient.get(c.id) || null,
     })),
     eligible: eligible.map((c) => ({

@@ -49,7 +49,7 @@ export interface Statements {
     totalAssets: number;
     totalLiabilities: number;
     totalEquity: number;
-  };
+  } | null;
   cfs?: {
     operating: CashFlowSection;
     investing: CashFlowSection;
@@ -95,6 +95,7 @@ export interface ProdClient {
   state_province: string | null;
   paused: boolean;
   last_synced_at: string | null;
+  bs_enabled?: boolean;
   run: Run | null;
 }
 
@@ -500,9 +501,11 @@ export function ClientRecCard({
                 />
                 <span className="text-xs text-navy leading-relaxed">
                   I have reviewed {client.client_name}&apos;s {periodLabel(period)}{" "}
-                  Profit &amp; Loss, Balance Sheet, and Cash Flow Statement above
-                  (including the AI spot check), and they are accurate and ready
-                  to share with the client.
+                  {run?.statements?.bs
+                    ? "Profit & Loss, Balance Sheet, and Cash Flow Statement"
+                    : "Profit & Loss (P&L-only service)"}{" "}
+                  above (including the AI spot check), and they are accurate and
+                  ready to share with the client.
                 </span>
               </label>
 
@@ -638,7 +641,16 @@ function StatementsReview({
         </div>
       </div>
 
+      {!bs && (
+        <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-ink-slate">
+          <strong className="text-navy">P&L-only service</strong> — this client's
+          Balance Sheet toggle is off while their BS cleanup finishes. Only the
+          Profit &amp; Loss is reviewed and sent.
+        </div>
+      )}
+
       {/* Balance Sheet */}
+      {bs && (
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
         <div className="px-4 py-2.5 bg-navy text-white text-sm font-bold">
           Balance Sheet — as of end of {monthLabel}
@@ -675,6 +687,7 @@ function StatementsReview({
           </table>
         </div>
       </div>
+      )}
 
       {/* Cash Flow Statement */}
       {cfs && (

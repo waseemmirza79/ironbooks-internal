@@ -47,8 +47,10 @@ export async function runMonthlyRecChecks(
   realmId: string,
   accessToken: string,
   periodStart: string, // YYYY-MM-DD
-  periodEnd: string // YYYY-MM-DD
+  periodEnd: string, // YYYY-MM-DD
+  opts?: { includeBS?: boolean } // false = P&L-only client (BS toggle off)
 ): Promise<MonthlyRecResult> {
+  const includeBS = opts?.includeBS !== false;
   const checks: MonthlyRecCheck[] = [];
 
   const [accounts, openInvoices] = await Promise.all([
@@ -89,28 +91,30 @@ export async function runMonthlyRecChecks(
     fix: uncatCount > 0 ? "reclass" : undefined,
   });
 
-  // ── 2. Undeposited Funds balance ─────────────────────────────────────
-  const ufAccounts = accounts.filter(
-    (a) =>
-      a.Active &&
-      (a.AccountSubType === "UndepositedFunds" || /undeposited/i.test(a.Name))
-  );
-  const ufBalance = ufAccounts.reduce(
-    (s, a) => s + Number(a.CurrentBalance || 0),
-    0
-  );
-  checks.push({
-    key: "undeposited_funds",
-    label: "Undeposited Funds",
-    status:
-      Math.abs(ufBalance) < 1 ? "pass" : Math.abs(ufBalance) < 5000 ? "warn" : "fail",
-    detail:
-      Math.abs(ufBalance) < 1
-        ? "UF is clear"
-        : `${fmt(ufBalance)} sitting in Undeposited Funds`,
-    amount: ufBalance,
-    fix: Math.abs(ufBalance) >= 1 ? "uf_audit" : undefined,
-  });
+  // ── 2. Undeposited Funds balance (BS check — skipped for P&L-only) ──
+  if (includeBS) {
+    const ufAccounts = accounts.filter(
+      (a) =>
+        a.Active &&
+        (a.AccountSubType === "UndepositedFunds" || /undeposited/i.test(a.Name))
+    );
+    const ufBalance = ufAccounts.reduce(
+      (s, a) => s + Number(a.CurrentBalance || 0),
+      0
+    );
+    checks.push({
+      key: "undeposited_funds",
+      label: "Undeposited Funds",
+      status:
+        Math.abs(ufBalance) < 1 ? "pass" : Math.abs(ufBalance) < 5000 ? "warn" : "fail",
+      detail:
+        Math.abs(ufBalance) < 1
+          ? "UF is clear"
+          : `${fmt(ufBalance)} sitting in Undeposited Funds`,
+      amount: ufBalance,
+      fix: Math.abs(ufBalance) >= 1 ? "uf_audit" : undefined,
+    });
+  }
 
   // ── 3. Overdue A/R (60+ days) ────────────────────────────────────────
   const now = Date.now();
@@ -133,44 +137,44 @@ export async function runMonthlyRecChecks(
     fix: overdue.length > 0 ? "ar" : undefined,
   });
 
-  // ── 4. Negative bank balances ────────────────────────────────────────
-  // A bank account below zero usually means missed transactions or a feed
-  // problem — worth eyes either way.
-  const negativeBanks = accounts.filter(
-    (a) => a.Active && a.AccountType === "Bank" && Number(a.CurrentBalance) < -1
-  );
-  checks.push({
-    key: "negative_banks",
-    label: "Bank account balances",
-    status: negativeBanks.length === 0 ? "pass" : "fail",
-    detail:
-      negativeBanks.length === 0
-        ? "No negative bank balances"
-        : negativeBanks
-            .map((a) => `${a.Name}: ${fmt(Number(a.CurrentBalance))} negative`)
-            .join("; "),
-    count: negativeBanks.length,
-    fix: negativeBanks.length > 0 ? "profile" : undefined,
-  });
+  // ── 4 + 5. Balance-sheet hygiene (skipped for P&L-only clients) ──────
+  if (includeBS) {
+    // Negative bank balances — a bank account below zero usually means
+    // missed transactions or a feed problem.
+    const negativeBanks = accounts.filter(
+      (a) => a.Active && a.AccountType === "Bank" && Number(a.CurrentBalance) < -1
+    );
+    checks.push({
+      key: "negative_banks",
+      label: "Bank account balances",
+      status: negativeBanks.length === 0 ? "pass" : "fail",
+      detail:
+        negativeBanks.length === 0
+          ? "No negative bank balances"
+          : negativeBanks
+              .map((a) => `${a.Name}: ${fmt(Number(a.CurrentBalance))} negative`)
+              .join("; "),
+      count: negativeBanks.length,
+      fix: negativeBanks.length > 0 ? "profile" : undefined,
+    });
 
-  // ── 5. Opening Balance Equity movement ───────────────────────────────
-  // OBE should be $0 and stay $0 after cleanup. Any balance means
-  // something got posted to the dumping ground.
-  const obe = accounts.filter(
-    (a) => a.Active && a.AccountSubType === "OpeningBalanceEquity"
-  );
-  const obeBalance = obe.reduce((s, a) => s + Number(a.CurrentBalance || 0), 0);
-  checks.push({
-    key: "obe",
-    label: "Opening Balance Equity",
-    status: Math.abs(obeBalance) < 1 ? "pass" : "warn",
-    detail:
-      Math.abs(obeBalance) < 1
-        ? "OBE is zero"
-        : `${fmt(obeBalance)} sitting in OBE — something was posted there`,
-    amount: obeBalance,
-    fix: Math.abs(obeBalance) >= 1 ? "profile" : undefined,
-  });
+    // Opening Balance Equity — should be $0 and stay $0 after cleanup.
+    const obe = accounts.filter(
+      (a) => a.Active && a.AccountSubType === "OpeningBalanceEquity"
+    );
+    const obeBalance = obe.reduce((s, a) => s + Number(a.CurrentBalance || 0), 0);
+    checks.push({
+      key: "obe",
+      label: "Opening Balance Equity",
+      status: Math.abs(obeBalance) < 1 ? "pass" : "warn",
+      detail:
+        Math.abs(obeBalance) < 1
+          ? "OBE is zero"
+          : `${fmt(obeBalance)} sitting in OBE — something was posted there`,
+      amount: obeBalance,
+      fix: Math.abs(obeBalance) >= 1 ? "profile" : undefined,
+    });
+  }
 
   const overall: CheckStatus = checks.some((c) => c.status === "fail")
     ? "fail"
@@ -201,12 +205,13 @@ export interface StatementsPreview {
     netIncome: number;
     lineItems: { label: string; amount: number; group: string }[];
   };
+  /** null when the client's Balance Sheet toggle is off (P&L-only). */
   bs: {
     lines: StatementLine[];
     totalAssets: number;
     totalLiabilities: number;
     totalEquity: number;
-  };
+  } | null;
   cfs: CashFlowData | null;
 }
 
@@ -235,16 +240,22 @@ export async function fetchStatementsPreview(
   realmId: string,
   accessToken: string,
   periodStart: string,
-  periodEnd: string
+  periodEnd: string,
+  opts?: { includeBS?: boolean } // false = P&L-only client (BS toggle off)
 ): Promise<StatementsPreview> {
+  const includeBS = opts?.includeBS !== false;
   const [pl, bsReport, cfs] = await Promise.all([
     fetchProfitAndLoss(realmId, accessToken, periodStart, periodEnd),
-    qboRequest<any>(
-      realmId,
-      accessToken,
-      `/reports/BalanceSheet?end_date=${encodeURIComponent(periodEnd)}&accounting_method=Accrual&minorversion=70`
-    ),
-    fetchCashFlow(realmId, accessToken, periodStart, periodEnd).catch(() => null),
+    includeBS
+      ? qboRequest<any>(
+          realmId,
+          accessToken,
+          `/reports/BalanceSheet?end_date=${encodeURIComponent(periodEnd)}&accounting_method=Accrual&minorversion=70`
+        )
+      : Promise.resolve(null),
+    includeBS
+      ? fetchCashFlow(realmId, accessToken, periodStart, periodEnd).catch(() => null)
+      : Promise.resolve(null),
   ]);
 
   const lines = flattenBalanceSheet(bsReport?.Rows?.Row || []);
@@ -262,12 +273,14 @@ export async function fetchStatementsPreview(
         group: i.group,
       })),
     },
-    bs: {
-      lines,
-      totalAssets: find(/^total assets$/i),
-      totalLiabilities: find(/^total liabilities$/i),
-      totalEquity: find(/^total equity$/i),
-    },
+    bs: includeBS
+      ? {
+          lines,
+          totalAssets: find(/^total assets$/i),
+          totalLiabilities: find(/^total liabilities$/i),
+          totalEquity: find(/^total equity$/i),
+        }
+      : null,
     cfs,
   };
 }
@@ -309,12 +322,14 @@ export async function aiSpotCheckStatements(params: {
       net_income: pl.netIncome,
       lines: pl.lineItems.slice(0, 120),
     },
-    balance_sheet: {
-      total_assets: bs.totalAssets,
-      total_liabilities: bs.totalLiabilities,
-      total_equity: bs.totalEquity,
-      lines: bs.lines.slice(0, 120).map((l) => ({ label: l.label, amount: l.amount, group: l.group })),
-    },
+    balance_sheet: bs
+      ? {
+          total_assets: bs.totalAssets,
+          total_liabilities: bs.totalLiabilities,
+          total_equity: bs.totalEquity,
+          lines: bs.lines.slice(0, 120).map((l) => ({ label: l.label, amount: l.amount, group: l.group })),
+        }
+      : null,
     cash_flow: cfs
       ? {
           operating: cfs.operating?.total,
@@ -332,6 +347,7 @@ Spot-check against painting-industry standards and general bookkeeping hygiene:
 - Gross margin typically 40–60% for residential painting; materials usually 10–20% of revenue; subcontractors/labor are the biggest cost.
 - Red flags: negative income accounts, Uncategorized/Ask My Accountant/Suspense balances, nonzero Opening Balance Equity, Undeposited Funds balances, negative bank balances, A/R or A/P wildly out of proportion to monthly revenue, payroll with no payroll-tax expense, equity going negative, balance sheet not balancing, sales tax payable that never changes, owner draws coded as expenses.
 - Note month-over-month sanity only from what's visible (one month of data) — don't invent trends.
+- If balance_sheet is null, this client is on P&L-only service while their balance sheet cleanup finishes — review the P&L only and don't flag the missing BS.
 
 Statements (JSON):
 ${JSON.stringify(compact)}

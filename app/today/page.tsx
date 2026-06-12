@@ -8,6 +8,8 @@ import { ClientFlagsWidget } from "./client-flags-widget";
 import { ReclassRequestsWidget, type PendingReclassRequest } from "./reclass-requests-widget";
 import { ClientInboxWidget, type InboundCommRow } from "./client-inbox-widget";
 import { StatementApprovalsWidget, type StatementApprovalRow } from "./statement-approvals-widget";
+import { CleanupDeadlinesWidget, type CleanupDeadlineRow } from "./cleanup-deadlines-widget";
+import { ViewAsSelector } from "./view-as-selector";
 import { QboHealthAlert } from "@/components/QboHealthAlert";
 import { MonthlyBsCheckButton } from "./monthly-bs-check";
 
@@ -24,7 +26,12 @@ export const dynamic = "force-dynamic";
  *
  * The drill-down lives at /today/[clientId].
  */
-export default async function TodayPage() {
+export default async function TodayPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ viewas?: string }>;
+}) {
+  const params = await searchParams;
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/auth/login");
@@ -39,6 +46,13 @@ export default async function TodayPage() {
     .single();
   const isSenior = ["admin", "lead"].includes((actor as any)?.role || "");
 
+  // Seniors can view /today AS any bookkeeper (?viewas=<user_id>) — every
+  // client-scoped widget below narrows to that bookkeeper's clients.
+  const viewAs = isSenior && params?.viewas ? String(params.viewas) : null;
+  // The user whose client list scopes the page: bookkeepers always
+  // themselves; seniors default to everyone unless viewing-as.
+  const scopeUserId = !isSenior ? user.id : viewAs;
+
   // Pull every enabled client + (for non-admins) only ones they own
   let clientsQuery = service
     .from("client_links")
@@ -47,8 +61,8 @@ export default async function TodayPage() {
     )
     .eq("is_active", true)
     .eq("daily_recon_enabled" as any, true);
-  if (!isSenior) {
-    clientsQuery = clientsQuery.eq("assigned_bookkeeper_id", user.id);
+  if (scopeUserId) {
+    clientsQuery = clientsQuery.eq("assigned_bookkeeper_id", scopeUserId);
   }
   const { data: clients } = await clientsQuery.order("client_name");
   const eligibleClients = (clients || []) as any[];
@@ -69,15 +83,14 @@ export default async function TodayPage() {
     const { data: flags } = await flagsQuery;
     pendingFlagsRaw = (flags as any[]) || [];
 
-    // Filter to assigned clients only when the actor isn't a senior
-    if (!isSenior && pendingFlagsRaw.length > 0) {
+    // Filter to the scoped bookkeeper's clients (self for bookkeepers,
+    // the viewed-as bookkeeper for seniors using the selector)
+    if (scopeUserId && pendingFlagsRaw.length > 0) {
       const assigned = new Set(eligibleClients.map((c) => c.id));
-      // Also pull THIS bookkeeper's other assigned clients (not just daily-recon ones)
-      // so flags from non-daily-recon clients also show up.
       const { data: ownedClients } = await service
         .from("client_links")
         .select("id")
-        .eq("assigned_bookkeeper_id", user.id);
+        .eq("assigned_bookkeeper_id", scopeUserId);
       for (const c of (ownedClients as any[] | null) || []) assigned.add(c.id);
       pendingFlagsRaw = pendingFlagsRaw.filter((f) => assigned.has(f.client_link_id));
     }
@@ -130,11 +143,11 @@ export default async function TodayPage() {
 
     let raw = (rrRows as any[]) || [];
 
-    if (!isSenior && raw.length > 0) {
+    if (scopeUserId && raw.length > 0) {
       const { data: ownedClients } = await service
         .from("client_links")
         .select("id")
-        .eq("assigned_bookkeeper_id", user.id);
+        .eq("assigned_bookkeeper_id", scopeUserId);
       const ownedIds = new Set(((ownedClients as any[]) || []).map((c) => c.id));
       raw = raw.filter((r) => ownedIds.has(r.client_link_id));
     }
@@ -181,11 +194,11 @@ export default async function TodayPage() {
       .limit(50);
     let raw = (commRows as any[]) || [];
 
-    if (!isSenior && raw.length > 0) {
+    if (scopeUserId && raw.length > 0) {
       const { data: ownedClients } = await service
         .from("client_links")
         .select("id")
-        .eq("assigned_bookkeeper_id", user.id);
+        .eq("assigned_bookkeeper_id", scopeUserId);
       const ownedIds = new Set(((ownedClients as any[]) || []).map((c) => c.id));
       raw = raw.filter((r) => ownedIds.has(r.client_link_id));
     }
@@ -215,6 +228,43 @@ export default async function TodayPage() {
     }
   } catch {
     inboundComms = [];
+  }
+
+  // ─── Cleanup assignments + deadlines ───
+  // Active clients still in cleanup, scoped to the viewed bookkeeper.
+  // Past-deadline rows render red. Seniors with no view-as see everyone's.
+  let cleanupDeadlines: CleanupDeadlineRow[] = [];
+  let allBookkeepers: { id: string; full_name: string }[] = [];
+  try {
+    let cq = service
+      .from("client_links")
+      .select("id, client_name, due_date, assigned_bookkeeper_id")
+      .eq("is_active", true)
+      .is("cleanup_completed_at", null)
+      .not("assigned_bookkeeper_id", "is", null);
+    if (scopeUserId) cq = cq.eq("assigned_bookkeeper_id", scopeUserId);
+    const { data: cleanupClients } = await cq.order("due_date", { ascending: true, nullsFirst: false });
+    const raw = (cleanupClients as any[]) || [];
+    const bkIds = [...new Set(raw.map((c) => c.assigned_bookkeeper_id).filter(Boolean))];
+    const { data: bks } = await service
+      .from("users")
+      .select("id, full_name")
+      .eq("is_active", true);
+    const bkById = new Map(((bks as any[]) || []).map((b) => [b.id, b.full_name]));
+    allBookkeepers = ((bks as any[]) || [])
+      .filter((b) => b.full_name)
+      .map((b) => ({ id: b.id, full_name: b.full_name }));
+    const todayStr = new Date().toISOString().slice(0, 10);
+    cleanupDeadlines = raw.map((c) => ({
+      client_link_id: c.id,
+      client_name: c.client_name,
+      due_date: c.due_date ? String(c.due_date).slice(0, 10) : null,
+      overdue: !!c.due_date && String(c.due_date).slice(0, 10) < todayStr,
+      bookkeeper_name: bkById.get(c.assigned_bookkeeper_id) || null,
+    }));
+    void bkIds;
+  } catch {
+    cleanupDeadlines = [];
   }
 
   // ─── Statements awaiting senior approval ───
@@ -405,6 +455,16 @@ export default async function TodayPage() {
 
         {/* Inbound client messages + statement uploads — top slot: a
             client sending files is usually waiting on us to act on them */}
+        {isSenior && (
+          <div className="flex justify-end">
+            <ViewAsSelector bookkeepers={allBookkeepers} current={viewAs} />
+          </div>
+        )}
+
+        {cleanupDeadlines.length > 0 && (
+          <CleanupDeadlinesWidget rows={cleanupDeadlines} showBookkeeper={isSenior && !viewAs} />
+        )}
+
         {statementApprovals.length > 0 && <StatementApprovalsWidget rows={statementApprovals} />}
 
         {inboundComms.length > 0 && <ClientInboxWidget rows={inboundComms} />}

@@ -173,6 +173,7 @@ export function ProductionBoard() {
                         key={c.id}
                         client={c}
                         period={period}
+                        isSenior={isSenior}
                         selected={selectedId === c.id}
                         onSelect={() => setSelectedId(selectedId === c.id ? null : c.id)}
                         onChanged={() => load(period)}
@@ -257,16 +258,42 @@ export function ProductionBoard() {
 function BoardCard({
   client,
   period,
+  isSenior,
   selected,
   onSelect,
   onChanged,
 }: {
   client: ProdClient;
   period: string;
+  isSenior: boolean;
   selected: boolean;
   onSelect: () => void;
   onChanged: () => void;
 }) {
+  const [togglingBs, setTogglingBs] = useState(false);
+  const bsOff = client.bs_enabled === false;
+
+  async function toggleBs() {
+    if (
+      !confirm(
+        bsOff
+          ? `Turn the Balance Sheet back ON for ${client.client_name}? Full monthly service resumes (BS checks + BS/CFS statements).`
+          : `Switch ${client.client_name} to P&L-ONLY service? BS checks and the BS/CFS statements are skipped until you turn it back on — use this when the client is in production but their balance sheet cleanup isn't finished.`
+      )
+    )
+      return;
+    setTogglingBs(true);
+    try {
+      const res = await fetch(`/api/clients/${client.id}/production`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: bsOff ? "bs_on" : "bs_off" }),
+      });
+      if (res.ok) onChanged();
+    } finally {
+      setTogglingBs(false);
+    }
+  }
   const run = client.run;
   const isPending = run?.status === "pending_review";
   const [editing, setEditing] = useState(false);
@@ -316,6 +343,9 @@ function BoardCard({
           <span className="text-sm font-semibold text-navy">{client.client_name}</span>
           {client.paused && (
             <span className="text-[9px] font-bold bg-gray-100 text-ink-slate px-1 py-0.5 rounded">PAUSED</span>
+          )}
+          {bsOff && (
+            <span className="text-[9px] font-bold bg-sky-100 text-sky-800 px-1 py-0.5 rounded">P&L ONLY</span>
           )}
         </div>
         <div className="flex items-center gap-1.5 mt-1 flex-wrap">
@@ -373,6 +403,20 @@ function BoardCard({
           <option value="stuck">Stuck</option>
           <option value="waiting_client">Waiting on client</option>
         </select>
+        {isSenior && (
+          <button
+            onClick={toggleBs}
+            disabled={togglingBs}
+            title={bsOff ? "P&L-only — click to turn the Balance Sheet back on" : "Full service — click to switch to P&L-only (BS cleanup still in progress)"}
+            className={`text-[10px] font-bold px-1.5 py-1 rounded border flex-shrink-0 disabled:opacity-50 ${
+              bsOff
+                ? "border-sky-300 bg-sky-50 text-sky-800 hover:bg-sky-100"
+                : "border-gray-200 text-ink-light hover:text-navy hover:bg-gray-50"
+            }`}
+          >
+            {togglingBs ? "…" : "BS"}
+          </button>
+        )}
         {saving && <Loader2 size={12} className="animate-spin text-ink-light flex-shrink-0" />}
       </div>
 
