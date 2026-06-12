@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { MODULE_LABELS, MODULE_ORDER, type CleanupModule } from "@/lib/cleanup-system/types";
 import { ProposedEntryRow } from "./proposed-entry-row";
+import { StatementsReview, periodLabel, type Statements } from "@/app/production/rec-card";
 
 type WizardStep = "diagnose" | "modules" | "review" | "qa" | "deliver";
 
@@ -1445,6 +1446,13 @@ function NeedFromClientPanel({
   const [promoted, setPromoted] = useState(false);
   const [promoteError, setPromoteError] = useState("");
   const [copied, setCopied] = useState(false);
+  // Statements review gate — promote is locked until the bookkeeper has
+  // actually looked at the statements and attested the P&L is right.
+  const [stmts, setStmts] = useState<Statements | null>(null);
+  const [stmtsPeriod, setStmtsPeriod] = useState<string>("");
+  const [loadingStmts, setLoadingStmts] = useState(false);
+  const [stmtsError, setStmtsError] = useState("");
+  const [attested, setAttested] = useState(false);
 
   const isChecked = (id: string) => checked[id] !== false; // default checked
   const selected = suggested.filter((i) => isChecked(i.id));
@@ -1596,6 +1604,80 @@ function NeedFromClientPanel({
               table — the path when the client has no portal login. */}
           <div className="flex items-center gap-2">{copyButton}</div>
 
+          {/* Statements review — pull last month's statements live from QBO
+              and put eyes on them BEFORE the P&L-only promote. Same preview
+              + period the Production rec flow uses, so what you attest here
+              is exactly what monthly service will start from. */}
+          {!promoted && (
+            <div className="pt-3 border-t border-gray-100">
+              <div className="text-sm font-bold text-navy mb-1">
+                Review financial statements
+              </div>
+              <p className="text-xs text-ink-light mb-2">
+                Before moving them to production, look at last month&apos;s statements and confirm
+                the P&amp;L is ready for the client. The balance sheet is shown for context — it
+                stays hidden from their portal until the cleanup finishes.
+              </p>
+              {stmtsError && (
+                <div className="p-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800 mb-2">
+                  {stmtsError}
+                </div>
+              )}
+              {stmts ? (
+                <div className="space-y-3">
+                  <StatementsReview
+                    statements={stmts}
+                    monthLabel={stmtsPeriod ? periodLabel(stmtsPeriod) : "Last month"}
+                  />
+                  <label className="flex items-start gap-2 text-sm cursor-pointer p-3 rounded-lg border border-teal/30 bg-teal/5">
+                    <input
+                      type="checkbox"
+                      checked={attested}
+                      onChange={(e) => setAttested(e.target.checked)}
+                      className="mt-0.5 accent-teal"
+                    />
+                    <span className="text-navy">
+                      I reviewed these statements. The <strong>P&amp;L is accurate and ready</strong>{" "}
+                      for the client; the balance sheet is still in cleanup and stays off their
+                      portal.
+                    </span>
+                  </label>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setLoadingStmts(true);
+                    setStmtsError("");
+                    try {
+                      const res = await fetch(`/api/clients/${clientLinkId}/monthly-rec`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "statements" }),
+                      });
+                      const data = await res.json();
+                      if (!res.ok) throw new Error(data.error || "Couldn't load statements");
+                      setStmts(data.run?.statements || null);
+                      setStmtsPeriod(data.run?.period || "");
+                      if (!data.run?.statements) {
+                        setStmtsError("QBO returned no statements for last month.");
+                      }
+                    } catch (err: any) {
+                      setStmtsError(err.message);
+                    } finally {
+                      setLoadingStmts(false);
+                    }
+                  }}
+                  disabled={loadingStmts}
+                  className="inline-flex items-center gap-2 bg-white hover:bg-gray-50 border border-gray-200 text-navy text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-40"
+                >
+                  {loadingStmts ? <Loader2 size={14} className="animate-spin" /> : <FileSearch size={14} />}
+                  {loadingStmts ? "Pulling from QuickBooks…" : "Load last month's statements"}
+                </button>
+              )}
+            </div>
+          )}
+
           {/* P&L-only promote — don't make the client wait on their own
               paperwork for monthly service. BS stays visibly unfinished:
               Production board shows Waiting on Client, portal greys out
@@ -1614,6 +1696,11 @@ function NeedFromClientPanel({
                   Don&apos;t want monthly service blocked while you wait? Promote them now on P&L
                   only — the Production board tracks them as Waiting on Client, and their portal
                   balance sheet is greyed out until you turn it back on.
+                  {!attested && (
+                    <span className="text-amber-700 font-semibold">
+                      {" "}Review the statements above and attest first.
+                    </span>
+                  )}
                 </p>
                 {promoteError && (
                   <div className="p-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800 mb-2">
@@ -1622,7 +1709,7 @@ function NeedFromClientPanel({
                 )}
                 <button
                   type="button"
-                  disabled={promoting}
+                  disabled={promoting || !attested}
                   onClick={async () => {
                     setPromoting(true);
                     setPromoteError("");

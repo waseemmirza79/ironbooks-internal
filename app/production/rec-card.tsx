@@ -591,7 +591,7 @@ const money = (n: number) => {
   return v < 0 ? `(${s})` : s;
 };
 
-function StatementsReview({
+export function StatementsReview({
   statements,
   monthLabel,
 }: {
