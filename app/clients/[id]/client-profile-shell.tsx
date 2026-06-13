@@ -74,6 +74,9 @@ interface FinancialsBundle {
   comparisonRangeLabel: string;
   /** Which range preset is active. Drives the date-range picker on P&L. */
   activeRangeKey: string;
+  /** Current primary window bounds (YYYY-MM-DD) — prefill the custom pickers. */
+  rangeStart: string;
+  rangeEnd: string;
   /** False when the client hasn't connected QBO yet — financial tabs
    *  render an empty-state instead of pretending zeros. */
   hasQbo: boolean;
@@ -391,6 +394,7 @@ function ProductionStatusCard({
   pausedReason,
   enabledAt,
   cleanupCompletedAt,
+  reachedBsStage,
 }: {
   clientLinkId: string;
   clientName: string;
@@ -399,6 +403,11 @@ function ProductionStatusCard({
   pausedReason: string | null;
   enabledAt: string | null;
   cleanupCompletedAt: string | null;
+  /** True once COA cleanup + reclass + bank rules are all done — i.e. the
+   *  client has progressed to the balance-sheet stage. The "Ready for
+   *  production?" CTA only appears at this point; before it, promoting is
+   *  premature so we hide the card entirely. */
+  reachedBsStage: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
@@ -431,6 +440,10 @@ function ProductionStatusCard({
   // marked complete, but still allow override (some clients come in
   // already clean and don't need a cleanup run).
   if (!dailyReconEnabled) {
+    // Only surface the promote CTA once the client has worked through COA
+    // cleanup + reclass + bank rules (reached the BS stage). Before that,
+    // promoting is premature — hide the card entirely.
+    if (!reachedBsStage) return null;
     return (
       <section className="rounded-2xl border-2 border-teal/20 bg-gradient-to-br from-teal/5 to-white p-5">
         <div className="flex items-start gap-3">
@@ -619,6 +632,14 @@ function OverviewTab({
 }) {
   const { outstanding, summary, activity, progress } = overview;
 
+  // "Reached the BS stage" = COA cleanup, reclass, and bank rules are all
+  // complete. The Move-to-production CTA only appears at this point.
+  const stageDone = (key: string) =>
+    progress?.stages?.find((s) => s.key === key)?.status === "complete";
+  const reachedBsStage =
+    !!clientLink.daily_recon_enabled ||
+    (stageDone("coa") && stageDone("reclass") && stageDone("rules"));
+
   return (
     <div className="space-y-6">
       {/* QBO connection status — always visible, above everything else.
@@ -646,6 +667,7 @@ function OverviewTab({
           pausedReason={clientLink.daily_recon_paused_reason || null}
           enabledAt={clientLink.daily_recon_enabled_at || null}
           cleanupCompletedAt={clientLink.cleanup_completed_at || null}
+          reachedBsStage={reachedBsStage}
         />
       )}
 
@@ -1029,31 +1051,78 @@ function NoQboState({ clientLinkId }: { clientLinkId: string }) {
 function RangePicker({
   clientLinkId,
   activeKey,
+  rangeStart,
+  rangeEnd,
 }: {
   clientLinkId: string;
   activeKey: string;
+  rangeStart: string;
+  rangeEnd: string;
 }) {
-  // URL-driven picker — each option is a Link that navigates to the same
-  // page with ?range=<key>. Bookmarkable, refresh-safe, and the server
-  // re-fetches the right window when the user clicks. No client state.
+  const router = useRouter();
+  const [customOpen, setCustomOpen] = useState(activeKey === "custom");
+  const [start, setStart] = useState(rangeStart);
+  const [end, setEnd] = useState(rangeEnd);
+  const customActive = activeKey === "custom";
+  const valid = start && end && start <= end;
+
+  // URL-driven picker — presets navigate to ?range=<key>; Custom reveals
+  // two date inputs that navigate to ?range=custom&start&end. Bookmarkable
+  // and refresh-safe; the server re-fetches the right window.
   return (
-    <div className="flex items-center gap-1 flex-wrap">
-      {RANGE_PRESETS.map((p) => {
-        const active = p.key === activeKey;
-        return (
-          <Link
-            key={p.key}
-            href={`/clients/${clientLinkId}?range=${p.key}`}
-            className={`text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors ${
-              active
-                ? "bg-navy text-white"
-                : "text-ink-slate hover:text-navy bg-white border border-gray-200 hover:border-gray-300"
-            }`}
+    <div className="space-y-2">
+      <div className="flex items-center gap-1 flex-wrap">
+        {RANGE_PRESETS.map((p) => {
+          const active = p.key === activeKey;
+          return (
+            <Link
+              key={p.key}
+              href={`/clients/${clientLinkId}?range=${p.key}`}
+              className={`text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors ${
+                active
+                  ? "bg-navy text-white"
+                  : "text-ink-slate hover:text-navy bg-white border border-gray-200 hover:border-gray-300"
+              }`}
+            >
+              {p.label}
+            </Link>
+          );
+        })}
+        <button
+          onClick={() => setCustomOpen((o) => !o)}
+          className={`text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors ${
+            customActive
+              ? "bg-navy text-white"
+              : "text-ink-slate hover:text-navy bg-white border border-gray-200 hover:border-gray-300"
+          }`}
+        >
+          Custom
+        </button>
+      </div>
+      {customOpen && (
+        <div className="flex items-center gap-2 flex-wrap bg-white border border-gray-200 rounded-lg px-3 py-2 w-fit">
+          <input
+            type="date"
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+            className="text-xs border border-gray-200 rounded px-2 py-1"
+          />
+          <span className="text-xs text-ink-light">→</span>
+          <input
+            type="date"
+            value={end}
+            onChange={(e) => setEnd(e.target.value)}
+            className="text-xs border border-gray-200 rounded px-2 py-1"
+          />
+          <button
+            onClick={() => valid && router.push(`/clients/${clientLinkId}?range=custom&start=${start}&end=${end}`)}
+            disabled={!valid}
+            className="text-[11px] font-semibold px-2.5 py-1 rounded-md bg-teal text-white hover:bg-teal-dark disabled:opacity-40"
           >
-            {p.label}
-          </Link>
-        );
-      })}
+            Apply
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1172,6 +1241,8 @@ function PLTab({
         <RangePicker
           clientLinkId={clientLinkId}
           activeKey={financials.activeRangeKey}
+          rangeStart={financials.rangeStart}
+          rangeEnd={financials.rangeEnd}
         />
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="text-xs text-ink-slate">

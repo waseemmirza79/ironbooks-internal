@@ -33,7 +33,9 @@ import {
  * one period back, never two.
  */
 function resolveDateRanges(
-  rangeParam: string | undefined
+  rangeParam: string | undefined,
+  customStart?: string,
+  customEnd?: string
 ): { primary: DateRange; comparison: DateRange; activeKey: string } {
   const now = new Date();
 
@@ -42,6 +44,27 @@ function resolveDateRanges(
   // numbers" to anyone reviewing statements; This Month stays one click
   // away for in-progress checks.
   const key = rangeParam || "last-month";
+
+  // Custom range from the date pickers. Comparison = the same-length
+  // window immediately before. Falls through to the default if the dates
+  // are missing/invalid.
+  const ISO = /^\d{4}-\d{2}-\d{2}$/;
+  if (key === "custom" && customStart && customEnd && ISO.test(customStart) && ISO.test(customEnd) && customStart <= customEnd) {
+    const s = new Date(customStart + "T00:00:00");
+    const e = new Date(customEnd + "T00:00:00");
+    const days = Math.round((e.getTime() - s.getTime()) / 86400000) + 1;
+    const priorEnd = new Date(s.getTime() - 86400000);
+    const priorStart = new Date(priorEnd.getTime() - (days - 1) * 86400000);
+    return {
+      primary: { start: customStart, end: customEnd, label: "Custom range" },
+      comparison: {
+        start: priorStart.toISOString().slice(0, 10),
+        end: priorEnd.toISOString().slice(0, 10),
+        label: "Prior period",
+      },
+      activeKey: "custom",
+    };
+  }
 
   switch (key) {
     case "this-month": {
@@ -163,11 +186,11 @@ export default async function ClientProfilePage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams?: Promise<{ range?: string }>;
+  searchParams?: Promise<{ range?: string; start?: string; end?: string }>;
 }) {
   const { id } = await params;
   const sp = (await searchParams) || {};
-  const ranges = resolveDateRanges(sp.range);
+  const ranges = resolveDateRanges(sp.range, sp.start, sp.end);
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/auth/login");
@@ -302,6 +325,8 @@ export default async function ClientProfilePage({
           primaryRangeLabel: `${primaryRange.start} → ${primaryRange.end}`,
           comparisonRangeLabel: `${comparisonRange.start} → ${comparisonRange.end}`,
           activeRangeKey: ranges.activeKey,
+          rangeStart: primaryRange.start,
+          rangeEnd: primaryRange.end,
           hasQbo,
           // Three-state QBO health for the connection banner:
           //   - never_connected: client has no qbo_realm_id at all
