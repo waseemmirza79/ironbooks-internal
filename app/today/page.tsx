@@ -322,13 +322,39 @@ export default async function TodayPage({
         .gte("occurred_at", cutoff)
         .order("occurred_at", { ascending: false })
         .limit(50);
-      statementEscalations = ((esc as any[]) || []).map((r) => ({
+      const mapped = ((esc as any[]) || []).map((r) => ({
+        item_key: `escalation:${r.request_payload?.client_link_id || ""}:${r.occurred_at}`,
         client_link_id: r.request_payload?.client_link_id || "",
         client_name: r.request_payload?.client_name || "(unknown client)",
         note: r.request_payload?.note || "",
         escalated_by_name: r.request_payload?.escalated_by_name || "",
         at: r.occurred_at,
+        due_date: null as string | null,
       })).filter((r) => r.client_link_id);
+
+      // Apply manager overrides: drop resolved/hidden, attach due dates,
+      // then sort by urgency (soonest due first, dateless after, newest first).
+      const keys = mapped.map((m) => m.item_key);
+      let overrides = new Map<string, any>();
+      if (keys.length > 0) {
+        const { data: ov } = await (service as any)
+          .from("today_item_overrides")
+          .select("item_key, resolved_at, hidden_at, due_date")
+          .in("item_key", keys);
+        overrides = new Map(((ov as any[]) || []).map((o) => [o.item_key, o]));
+      }
+      statementEscalations = mapped
+        .filter((m) => {
+          const o = overrides.get(m.item_key);
+          return !o?.resolved_at && !o?.hidden_at;
+        })
+        .map((m) => ({ ...m, due_date: overrides.get(m.item_key)?.due_date || null }))
+        .sort((a, b) => {
+          if (a.due_date && b.due_date) return a.due_date < b.due_date ? -1 : 1;
+          if (a.due_date) return -1;
+          if (b.due_date) return 1;
+          return a.at < b.at ? 1 : -1; // newest first when neither has a due date
+        });
     } catch {
       statementEscalations = [];
     }

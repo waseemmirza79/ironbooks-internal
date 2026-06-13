@@ -1,12 +1,15 @@
 import Link from "next/link";
 import { AlertTriangle } from "lucide-react";
+import { TodayItemControls } from "./item-controls";
 
 export interface StatementEscalationRow {
+  item_key: string;
   client_link_id: string;
   client_name: string;
   note: string;
   escalated_by_name: string;
   at: string;
+  due_date: string | null;
 }
 
 /**
@@ -39,6 +42,9 @@ export function StatementEscalationsWidget({ rows }: { rows: StatementEscalation
             <p className="text-xs text-ink-slate mt-1 leading-relaxed whitespace-pre-wrap">
               {r.note}
             </p>
+            <div className="mt-2">
+              <TodayItemControls itemKey={r.item_key} dueDate={r.due_date} />
+            </div>
           </li>
         ))}
       </ul>
