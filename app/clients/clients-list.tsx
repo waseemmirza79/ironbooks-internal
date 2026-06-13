@@ -34,6 +34,12 @@ import {
   RotateCcw,
   Eye,
   Flame,
+  Mail,
+  Link2,
+  Send,
+  Copy,
+  Check,
+  X,
 } from "lucide-react";
 import { CleanupReportModal } from "@/components/CleanupReportModal";
 
@@ -505,6 +511,7 @@ function ClientRow({
   const [stripeCopied, setStripeCopied] = useState(false);
   const [stripeError, setStripeError] = useState("");
   const [reportOpen, setReportOpen] = useState(false);
+  const [emailOpen, setEmailOpen] = useState(false);
 
   async function handleGenerateLink() {
     setStripeLoading(true);
@@ -750,6 +757,21 @@ function ClientRow({
                 </>
               )}
             </div>
+            {/* Stale-login flag: active client who hasn't logged in for 30+ days. */}
+            {(() => {
+              const ll = client.portal_account.last_login_at;
+              if (!client.portal_account.logged_in || !ll) return null;
+              const days = Math.floor((Date.now() - new Date(ll).getTime()) / 86400000);
+              if (days < 30) return null;
+              return (
+                <span
+                  className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded-full"
+                  title={`No login in ${days} days — last on ${new Date(ll).toLocaleDateString()}. Consider a portal reminder.`}
+                >
+                  <Clock size={9} /> Idle {days}d
+                </span>
+              );
+            })()}
             {(client.unread_from_client ?? 0) > 0 && (
               <Link
                 href={`/clients/${client.id}/messages`}
@@ -849,6 +871,7 @@ function ClientRow({
               jurisdiction={client.jurisdiction}
               isSenior={canEdit}
               onReport={() => setReportOpen(true)}
+              onEmail={() => setEmailOpen(true)}
             />
           </>
         )}
@@ -901,6 +924,14 @@ function ClientRow({
           onClose={() => setReportOpen(false)}
         />
       )}
+      {emailOpen && (
+        <EmailClientModal
+          clientId={client.id}
+          clientName={client.client_name}
+          isSenior={canEdit}
+          onClose={() => setEmailOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -920,6 +951,7 @@ function ClientCard({
 }) {
   const statusCfg = STATUS_CONFIG[client.status];
   const StatusIcon = statusCfg.icon;
+  const [emailOpen, setEmailOpen] = useState(false);
 
   return (
     <div className="rounded-xl bg-white border border-gray-200 p-4 hover:shadow-md transition-shadow">
@@ -962,6 +994,7 @@ function ClientCard({
             clientId={client.id}
             jurisdiction={client.jurisdiction}
             isSenior={canEdit}
+            onEmail={() => setEmailOpen(true)}
             compact
           />
           {!client.is_active && (
@@ -1076,6 +1109,14 @@ function ClientCard({
           </Link>
         )}
       </div>
+      {emailOpen && (
+        <EmailClientModal
+          clientId={client.id}
+          clientName={client.client_name}
+          isSenior={canEdit}
+          onClose={() => setEmailOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1095,12 +1136,14 @@ function ActionsDropdown({
   jurisdiction,
   isSenior = false,
   onReport,
+  onEmail,
   compact,
 }: {
   clientId: string;
   jurisdiction: string;
   isSenior?: boolean;
   onReport?: () => void;
+  onEmail?: () => void;
   compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -1237,6 +1280,12 @@ function ActionsDropdown({
     },
     {
       section: "Portal",
+      label: "Email client",
+      onClick: onEmail,
+      icon: Mail,
+      hidden: !onEmail,
+    },
+    {
       label: "View as client",
       onClick: async () => {
         try {
@@ -1501,4 +1550,653 @@ function formatRelativeDate(iso: string): string {
   if (days < 30) return `${Math.floor(days / 7)}w ago`;
   if (days < 365) return `${Math.floor(days / 30)}mo ago`;
   return `${Math.floor(days / 365)}y ago`;
+}
+
+// ───────────────────────── Email client modal ─────────────────────────
+//
+// One hub for every client-facing email a bookkeeper might want to
+// (re)send: the "ask the client" transaction questions, a document /
+// statement request, a fresh portal sign-in link, and the Stripe connect
+// link. Each option expands in place; composed emails go out through the
+// branded Resend sender at /api/clients/[id]/request-docs-email, and the
+// portal link re-fires the Supabase magic-link invite.
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function parseEmails(s: string): string[] {
+  return s
+    .split(/[,;\s]+/)
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => EMAIL_RE.test(e));
+}
+
+/** Wrap plain body HTML in the Ironbooks branded email shell. */
+function brandEmailHtml(title: string, bodyHtml: string): string {
+  const navy = "#0F1F2E";
+  const border = "#CBD5E1";
+  const white = "#FFFFFF";
+  return `<div style="font-family:'Figtree','Helvetica Neue',Helvetica,Arial,sans-serif;color:${navy};max-width:640px;margin:0 auto;background:${white};">
+  <div style="background:${navy};color:${white};padding:18px 22px;border-radius:10px 10px 0 0;">
+    <div style="font-size:20px;font-weight:700;letter-spacing:-0.01em;color:${white};">Ironbooks</div>
+    <div style="font-size:11px;color:rgba(255,255,255,0.65);margin-top:3px;letter-spacing:0.06em;text-transform:uppercase;">${title}</div>
+  </div>
+  <div style="border:1px solid ${border};border-top:none;padding:24px 22px;border-radius:0 0 10px 10px;background:${white};line-height:1.55;">
+    ${bodyHtml}
+  </div>
+</div>`;
+}
+
+function EmailClientModal({
+  clientId,
+  clientName,
+  isSenior = false,
+  onClose,
+}: {
+  clientId: string;
+  clientName: string;
+  isSenior?: boolean;
+  onClose: () => void;
+}) {
+  const [emailsLoading, setEmailsLoading] = useState(true);
+  const [recipients, setRecipients] = useState("");
+  const [hadPortalEmail, setHadPortalEmail] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  // Pull the client's active portal-user emails to prefill recipients.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/clients/${clientId}/request-docs-email`);
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled) {
+          const list: string[] = Array.isArray(data.emails) ? data.emails : [];
+          setRecipients(list.join(", "));
+          setHadPortalEmail(list.length > 0);
+        }
+      } catch {
+        /* leave recipients empty — bookkeeper can type one */
+      } finally {
+        if (!cancelled) setEmailsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId]);
+
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  const to = parseEmails(recipients);
+
+  const options: Array<{
+    key: string;
+    title: string;
+    desc: string;
+    icon: any;
+  }> = [
+    {
+      key: "ask_client",
+      title: "Ask the client about transactions",
+      desc: "Draft questions about the flagged / uncategorized transactions from the latest reclass, then send.",
+      icon: MessageCircle,
+    },
+    {
+      key: "doc_request",
+      title: "Request documents / statements",
+      desc: "Compose a request for bank statements or anything else you need to finish the books.",
+      icon: FileText,
+    },
+    {
+      key: "portal_link",
+      title: "Re-send portal sign-in link",
+      desc: "Email the client a fresh magic link to log in to their portal.",
+      icon: Mail,
+    },
+    {
+      key: "stripe_link",
+      title: "Stripe connection link",
+      desc: "Generate a secure link for the client to connect their Stripe account.",
+      icon: Link2,
+    },
+  ];
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4"
+      style={{ backgroundColor: "rgba(15, 31, 46, 0.6)", backdropFilter: "blur(4px)" }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="bg-white rounded-2xl shadow-2xl max-w-lg w-full flex flex-col relative max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between flex-shrink-0">
+          <div>
+            <h3 className="text-lg font-bold text-navy flex items-center gap-2">
+              <Mail size={18} className="text-teal" />
+              Email {clientName}
+            </h3>
+            <p className="text-xs text-ink-slate mt-1">
+              Re-send any of the client-facing emails below. Each goes out with Ironbooks branding via Resend.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-ink-slate hover:text-navy">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="px-6 py-4 overflow-y-auto">
+          {/* Recipients */}
+          <div className="mb-4">
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-ink-slate mb-1">
+              Recipients
+            </label>
+            <input
+              type="text"
+              value={recipients}
+              onChange={(e) => setRecipients(e.target.value)}
+              placeholder={emailsLoading ? "Loading portal email…" : "client@example.com"}
+              className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-teal outline-none text-sm text-navy"
+            />
+            <p className="text-[11px] text-ink-light mt-1">
+              {emailsLoading
+                ? "Looking up the client's portal email…"
+                : hadPortalEmail
+                ? "Prefilled from the client's portal account — edit or add more, comma-separated."
+                : "No portal account on file yet — type an address, or invite them to the portal first."}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            {options.map((opt) => {
+              const Icon = opt.icon;
+              const isOpen = expanded === opt.key;
+              return (
+                <div
+                  key={opt.key}
+                  className={`rounded-xl border transition-colors ${
+                    isOpen ? "border-teal/50 bg-teal-lighter" : "border-gray-200 bg-white hover:border-gray-300"
+                  }`}
+                >
+                  <button
+                    onClick={() => setExpanded(isOpen ? null : opt.key)}
+                    className="w-full flex items-start gap-3 px-4 py-3 text-left"
+                  >
+                    <div className="p-2 rounded-lg bg-teal-light flex-shrink-0">
+                      <Icon size={15} className="text-teal" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold text-navy">{opt.title}</div>
+                      <div className="text-xs text-ink-slate mt-0.5">{opt.desc}</div>
+                    </div>
+                    <ChevronDown
+                      size={16}
+                      className={`text-ink-light flex-shrink-0 mt-1 transition-transform ${isOpen ? "rotate-180" : ""}`}
+                    />
+                  </button>
+                  {isOpen && (
+                    <div className="px-4 pb-4 pt-1 border-t border-teal/20">
+                      {opt.key === "ask_client" && (
+                        <AskClientEmailPanel clientId={clientId} recipients={to} />
+                      )}
+                      {opt.key === "doc_request" && (
+                        <DocRequestEmailPanel clientId={clientId} clientName={clientName} recipients={to} />
+                      )}
+                      {opt.key === "portal_link" && (
+                        <PortalLinkEmailPanel
+                          clientId={clientId}
+                          clientName={clientName}
+                          recipients={to}
+                          isSenior={isSenior}
+                        />
+                      )}
+                      {opt.key === "stripe_link" && (
+                        <StripeLinkEmailPanel clientId={clientId} recipients={to} />
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Shared little "Send" footer button + status line for composed emails. */
+function SendBar({
+  onSend,
+  sending,
+  sent,
+  error,
+  recipientCount,
+  label = "Send email",
+}: {
+  onSend: () => void;
+  sending: boolean;
+  sent: boolean;
+  error: string;
+  recipientCount: number;
+  label?: string;
+}) {
+  return (
+    <div className="mt-3">
+      {error && (
+        <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800">{error}</div>
+      )}
+      {sent ? (
+        <div className="inline-flex items-center gap-1.5 text-sm font-semibold text-green-700">
+          <Check size={15} /> Sent to {recipientCount} recipient{recipientCount === 1 ? "" : "s"}
+        </div>
+      ) : (
+        <button
+          onClick={onSend}
+          disabled={sending || recipientCount === 0}
+          className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+          title={recipientCount === 0 ? "Add a recipient first" : undefined}
+        >
+          {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+          {sending ? "Sending…" : label}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AskClientEmailPanel({ clientId, recipients }: { clientId: string; recipients: string[] }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [subject, setSubject] = useState("A few questions about your transactions");
+  const [preview, setPreview] = useState<{ html: string; text: string; count: number; vendors: number } | null>(null);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  async function generate() {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/clients/${clientId}/ask-client-email`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to generate the email");
+      setPreview({
+        html: data.email_html,
+        text: data.email_text,
+        count: data.transaction_count || 0,
+        vendors: data.vendor_count || 0,
+      });
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function send() {
+    if (!preview) return;
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/clients/${clientId}/request-docs-email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: recipients, subject, html: preview.html, text: preview.text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Send failed");
+      setSent(true);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  if (!preview) {
+    return (
+      <div>
+        <p className="text-xs text-ink-slate mb-3">
+          Pulls the flagged / low-confidence transactions from the most recent reclass and drafts a vendor-grouped
+          question email you can review before sending.
+        </p>
+        {error && (
+          <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800">{error}</div>
+        )}
+        <button
+          onClick={generate}
+          disabled={loading}
+          className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+        >
+          {loading ? <Loader2 size={14} className="animate-spin" /> : <Sparkle size={14} />}
+          {loading ? "Drafting…" : "Draft email"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <p className="text-xs text-ink-slate mb-2">
+        Draft covers <strong className="text-navy">{preview.count}</strong> transaction
+        {preview.count === 1 ? "" : "s"} across <strong className="text-navy">{preview.vendors}</strong> vendor
+        {preview.vendors === 1 ? "" : "s"}.
+      </p>
+      <label className="block text-[10px] font-bold uppercase tracking-wider text-ink-slate mb-1">Subject</label>
+      <input
+        type="text"
+        value={subject}
+        onChange={(e) => setSubject(e.target.value)}
+        className="w-full px-3 py-2 mb-2 rounded-lg border border-gray-200 focus:border-teal outline-none text-sm text-navy"
+      />
+      <label className="block text-[10px] font-bold uppercase tracking-wider text-ink-slate mb-1">Preview</label>
+      <div
+        className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-white p-2"
+        dangerouslySetInnerHTML={{ __html: preview.html }}
+      />
+      <SendBar
+        onSend={send}
+        sending={sending}
+        sent={sent}
+        error={error}
+        recipientCount={recipients.length}
+      />
+    </div>
+  );
+}
+
+function DocRequestEmailPanel({
+  clientId,
+  clientName,
+  recipients,
+}: {
+  clientId: string;
+  clientName: string;
+  recipients: string[];
+}) {
+  const firstName = (clientName || "there").split(/[ ,]/)[0] || "there";
+  const [subject, setSubject] = useState("Documents we need to finish your books");
+  const [body, setBody] = useState(
+    `Hi ${firstName},\n\nTo finish cleaning up your books, we need a few documents from you:\n\n• Bank statements for the period we're cleaning up\n• Credit card statements (if applicable)\n• Any loan or merchant-account statements\n\nReply to this email with the files attached, or upload them in your portal. Let us know if anything is hard to track down — happy to help.\n\nThanks,\nIronbooks`
+  );
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState("");
+
+  async function send() {
+    setSending(true);
+    setError("");
+    try {
+      const bodyHtml = body
+        .split("\n")
+        .map((line) => (line.trim() === "" ? "<br>" : escapeHtmlClient(line)))
+        .join("<br>");
+      const res = await fetch(`/api/clients/${clientId}/request-docs-email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: recipients,
+          subject,
+          html: brandEmailHtml("Documents we need", bodyHtml),
+          text: body,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Send failed");
+      setSent(true);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div>
+      <label className="block text-[10px] font-bold uppercase tracking-wider text-ink-slate mb-1">Subject</label>
+      <input
+        type="text"
+        value={subject}
+        onChange={(e) => setSubject(e.target.value)}
+        className="w-full px-3 py-2 mb-2 rounded-lg border border-gray-200 focus:border-teal outline-none text-sm text-navy"
+      />
+      <label className="block text-[10px] font-bold uppercase tracking-wider text-ink-slate mb-1">Message</label>
+      <textarea
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        rows={9}
+        className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-teal outline-none text-sm text-navy resize-y"
+      />
+      <SendBar onSend={send} sending={sending} sent={sent} error={error} recipientCount={recipients.length} />
+    </div>
+  );
+}
+
+function PortalLinkEmailPanel({
+  clientId,
+  clientName,
+  recipients,
+  isSenior,
+}: {
+  clientId: string;
+  clientName: string;
+  recipients: string[];
+  isSenior: boolean;
+}) {
+  const [sending, setSending] = useState(false);
+  const [results, setResults] = useState<string[]>([]);
+  const [error, setError] = useState("");
+
+  async function resend() {
+    if (recipients.length === 0) {
+      setError("Add a recipient email first.");
+      return;
+    }
+    setSending(true);
+    setError("");
+    setResults([]);
+    const msgs: string[] = [];
+    for (const email of recipients) {
+      try {
+        const res = await fetch("/api/admin/invite-client", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, full_name: clientName, client_link_id: clientId }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Failed");
+        msgs.push(`✓ ${email} — ${data.message || "link sent"}`);
+      } catch (e: any) {
+        msgs.push(`✕ ${email} — ${e.message}`);
+      }
+    }
+    setResults(msgs);
+    setSending(false);
+  }
+
+  if (!isSenior) {
+    return (
+      <p className="text-xs text-ink-slate">
+        Re-sending the portal sign-in link requires an admin or lead. Ask a senior teammate, or send the client a
+        document request above in the meantime.
+      </p>
+    );
+  }
+
+  return (
+    <div>
+      <p className="text-xs text-ink-slate mb-3">
+        Sends a fresh Supabase magic sign-in link to the recipient{recipients.length === 1 ? "" : "s"} above. Use this
+        when a client says they can&apos;t find their original invite or it expired.
+      </p>
+      {error && (
+        <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800">{error}</div>
+      )}
+      {results.length > 0 && (
+        <div className="mb-2 space-y-1">
+          {results.map((r, i) => (
+            <div key={i} className="text-xs text-navy">
+              {r}
+            </div>
+          ))}
+        </div>
+      )}
+      <button
+        onClick={resend}
+        disabled={sending || recipients.length === 0}
+        className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+      >
+        {sending ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
+        {sending ? "Sending…" : "Re-send sign-in link"}
+      </button>
+    </div>
+  );
+}
+
+function StripeLinkEmailPanel({ clientId, recipients }: { clientId: string; recipients: string[] }) {
+  const [loading, setLoading] = useState(false);
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [emailing, setEmailing] = useState(false);
+  const [emailed, setEmailed] = useState(false);
+
+  async function generate() {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/stripe-connect/generate-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_link_id: clientId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to generate link");
+      setUrl(data.url);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard blocked — the URL is visible to select manually */
+    }
+  }
+
+  async function emailLink() {
+    setEmailing(true);
+    setError("");
+    try {
+      const subject = "Connect your Stripe account";
+      const text = `Hi,\n\nPlease connect your Stripe account so we can automatically reconcile your payments. Use this secure link (valid for 7 days):\n\n${url}\n\nThanks,\nIronbooks`;
+      const html = brandEmailHtml(
+        "Connect your Stripe account",
+        `Please connect your Stripe account so we can automatically reconcile your payments. Use this secure link (valid for 7 days):<br><br><a href="${url}" style="color:#2D7A75;font-weight:600;">Connect Stripe →</a>`
+      );
+      const res = await fetch(`/api/clients/${clientId}/request-docs-email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: recipients, subject, html, text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Send failed");
+      setEmailed(true);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setEmailing(false);
+    }
+  }
+
+  if (!url) {
+    return (
+      <div>
+        <p className="text-xs text-ink-slate mb-3">
+          Generates a one-time, 7-day Stripe Connect link. Already-connected clients can&apos;t be re-linked without
+          disconnecting first.
+        </p>
+        {error && (
+          <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800">{error}</div>
+        )}
+        <button
+          onClick={generate}
+          disabled={loading}
+          className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+        >
+          {loading ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />}
+          {loading ? "Generating…" : "Generate link"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <label className="block text-[10px] font-bold uppercase tracking-wider text-ink-slate mb-1">
+        Stripe connect link (valid 7 days)
+      </label>
+      <div className="flex items-center gap-2 mb-3">
+        <input
+          readOnly
+          value={url}
+          onFocus={(e) => e.currentTarget.select()}
+          className="flex-1 px-3 py-2 rounded-lg border border-gray-200 bg-gray-50 text-xs text-navy font-mono"
+        />
+        <button
+          onClick={copy}
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-200 text-xs font-semibold text-navy hover:bg-gray-50"
+        >
+          {copied ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      {error && (
+        <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800">{error}</div>
+      )}
+      {emailed ? (
+        <div className="inline-flex items-center gap-1.5 text-sm font-semibold text-green-700">
+          <Check size={15} /> Link emailed to {recipients.length} recipient{recipients.length === 1 ? "" : "s"}
+        </div>
+      ) : (
+        <button
+          onClick={emailLink}
+          disabled={emailing || recipients.length === 0}
+          className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+          title={recipients.length === 0 ? "Add a recipient to email the link" : undefined}
+        >
+          {emailing ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+          {emailing ? "Sending…" : "Email this link"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function escapeHtmlClient(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
