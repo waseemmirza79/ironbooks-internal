@@ -806,6 +806,8 @@ export function CleanupWizardClient({
                 Import CSV
               </button>
             </div>
+
+            <StatementAnalysisPanel runId={runId} onApplied={refresh} />
           </div>
         </div>
       )}
@@ -2011,6 +2013,195 @@ function RequestDocsEmailModal({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ── Statement analysis (multi-PDF) ───────────────────────────────────
+   Upload every account's statement PDF at once. Claude reads each one,
+   matches it to a QBO balance-sheet account, and the QBO-vs-statement
+   gap becomes a proposed reconciling entry on the review screen — so the
+   bookkeeper approves recommendations instead of hand-keying balances. */
+
+interface StmtResult {
+  filename: string;
+  matched_account_name: string | null;
+  qbo_account_id: string | null;
+  qbo_balance: number | null;
+  statement_balance: number | null;
+  gap: number | null;
+  statement_end_date: string | null;
+  confidence: "high" | "medium" | "low" | "none";
+  status: "reconciled" | "gap_found" | "unmatched" | "no_balance";
+  note: string | null;
+}
+
+function fmtAmt(n: number | null): string {
+  if (n === null || !Number.isFinite(n)) return "—";
+  const v = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n < 0 ? `($${v})` : `$${v}`;
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  let binary = "";
+  const bytes = new Uint8Array(buf);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function StatementAnalysisPanel({ runId, onApplied }: { runId: string; onApplied: () => void }) {
+  const [files, setFiles] = useState<File[]>([]);
+  const [hover, setHover] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [results, setResults] = useState<StmtResult[] | null>(null);
+  const [error, setError] = useState("");
+
+  function addFiles(list: FileList | File[] | null) {
+    const pdfs = Array.from(list || []).filter((f) => /\.pdf$/i.test(f.name) || f.type === "application/pdf");
+    if (pdfs.length === 0) return;
+    setFiles((prev) => {
+      const names = new Set(prev.map((f) => f.name));
+      return [...prev, ...pdfs.filter((f) => !names.has(f.name))];
+    });
+  }
+
+  async function analyze() {
+    if (files.length === 0 || analyzing) return;
+    setAnalyzing(true);
+    setError("");
+    setResults(null);
+    try {
+      const statements = await Promise.all(
+        files.map(async (f) => ({ filename: f.name, base64: await fileToBase64(f) }))
+      );
+      const res = await fetch(`/api/cleanup/${runId}/analyze-statements`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ statements }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Analysis failed");
+      setResults(data.results || []);
+      if (data.recon_rows_written > 0) onApplied(); // refresh proposed entries
+    } catch (e: any) {
+      setError(e?.message || "Analysis failed");
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  const gapsFound = (results || []).filter((r) => r.status === "gap_found").length;
+  const reconciled = (results || []).filter((r) => r.status === "reconciled").length;
+  const unresolved = (results || []).filter((r) => r.status === "unmatched" || r.status === "no_balance").length;
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 p-5">
+      <h3 className="font-bold text-navy mb-1 flex items-center gap-2">
+        <FileText size={14} /> Analyze statement PDFs (recommended)
+      </h3>
+      <p className="text-xs text-ink-light mb-3">
+        Drop in the bank, credit-card, and loan statement PDFs — multiple at once. SNAP reads each
+        one, matches it to the right QuickBooks account, and turns any difference vs the QBO balance
+        into a proposed reconciling entry you just review and approve.
+      </p>
+
+      <div
+        onDragOver={(e) => { e.preventDefault(); setHover(true); }}
+        onDragLeave={() => setHover(false)}
+        onDrop={(e) => { e.preventDefault(); setHover(false); addFiles(e.dataTransfer.files); }}
+        className={`rounded-xl border-2 border-dashed p-4 text-center transition-colors ${
+          hover ? "border-teal bg-teal/5" : "border-gray-200"
+        }`}
+      >
+        <input
+          id={`stmt-input-${runId}`}
+          type="file"
+          accept="application/pdf,.pdf"
+          multiple
+          className="hidden"
+          onChange={(e) => addFiles(e.target.files)}
+        />
+        <label htmlFor={`stmt-input-${runId}`} className="cursor-pointer text-sm text-ink-slate">
+          <Upload size={16} className="inline mr-1 text-teal" />
+          Drop statement PDFs here or <span className="text-teal font-semibold underline">browse</span> (multiple OK)
+        </label>
+      </div>
+
+      {files.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {files.map((f, i) => (
+            <span key={f.name} className="inline-flex items-center gap-1 text-[11px] bg-slate-100 text-navy px-2 py-1 rounded-full">
+              <FileText size={10} /> {f.name}
+              {!analyzing && (
+                <button
+                  onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
+                  className="text-ink-light hover:text-red-600"
+                  aria-label="Remove"
+                >
+                  <X size={10} />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-2 p-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800">{error}</div>
+      )}
+
+      <button
+        onClick={analyze}
+        disabled={files.length === 0 || analyzing}
+        className="mt-3 text-xs font-bold px-3 py-1.5 rounded-lg bg-teal text-white disabled:opacity-50 inline-flex items-center gap-1.5"
+      >
+        {analyzing ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+        {analyzing ? "Reading statements…" : `Analyze ${files.length || ""} statement${files.length === 1 ? "" : "s"}`}
+      </button>
+
+      {results && (
+        <div className="mt-4 space-y-2">
+          <div className="text-xs text-ink-slate">
+            {reconciled > 0 && <span className="text-emerald-700 font-semibold">{reconciled} already match</span>}
+            {reconciled > 0 && (gapsFound > 0 || unresolved > 0) && " · "}
+            {gapsFound > 0 && <span className="text-amber-700 font-semibold">{gapsFound} gap{gapsFound === 1 ? "" : "s"} → proposed entries</span>}
+            {gapsFound > 0 && unresolved > 0 && " · "}
+            {unresolved > 0 && <span className="text-red-700 font-semibold">{unresolved} need attention</span>}
+          </div>
+          <div className="border border-gray-100 rounded-xl overflow-hidden divide-y divide-gray-50">
+            {results.map((r, i) => (
+              <div key={i} className="px-3 py-2 flex items-center gap-3 text-xs">
+                <span className="flex-shrink-0">
+                  {r.status === "reconciled" && <CheckCircle2 size={13} className="text-emerald-600" />}
+                  {r.status === "gap_found" && <AlertCircle size={13} className="text-amber-600" />}
+                  {(r.status === "unmatched" || r.status === "no_balance") && <XCircle size={13} className="text-red-500" />}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-navy truncate">
+                    {r.matched_account_name || r.filename}
+                    {r.confidence === "low" && <span className="ml-1 text-amber-600 font-normal">(low-confidence match — verify)</span>}
+                  </div>
+                  <div className="text-ink-light truncate">
+                    {r.status === "reconciled" && `Matches QBO at ${fmtAmt(r.statement_balance)}${r.statement_end_date ? ` as of ${r.statement_end_date}` : ""}`}
+                    {r.status === "gap_found" && `QBO ${fmtAmt(r.qbo_balance)} vs statement ${fmtAmt(r.statement_balance)} → entry for ${fmtAmt(r.gap)}`}
+                    {r.status === "unmatched" && (r.note || "Couldn't match to a QBO account")}
+                    {r.status === "no_balance" && (r.note || "Couldn't read an ending balance")}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          {gapsFound > 0 && (
+            <p className="text-[11px] text-ink-light">
+              Reconciling entries are now in the bank-recon module — run/open it on the Modules step to review &amp; approve.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
