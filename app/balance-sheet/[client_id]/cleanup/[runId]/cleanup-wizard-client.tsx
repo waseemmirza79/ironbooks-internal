@@ -719,6 +719,13 @@ export function CleanupWizardClient({
         </div>
       )}
 
+      {/* P&L-only promote — always available while the run is active, so a
+          bookkeeper can ship the client to production on P&L while the BS
+          waits on client docs without hunting through the diagnose panels. */}
+      {status?.run?.status !== "complete" && (
+        <PLOnlyPromoteCard clientLinkId={clientLinkId} clientName={clientName} />
+      )}
+
       {/* DIAGNOSE */}
       {step === "diagnose" && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -2199,6 +2206,145 @@ function StatementAnalysisPanel({ runId, onApplied }: { runId: string; onApplied
             <p className="text-[11px] text-ink-light">
               Reconciling entries are now in the bank-recon module — run/open it on the Modules step to review &amp; approve.
             </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── P&L-only promote card (always-on) ────────────────────────────────
+   Standalone version of the Need-from-client promote: review last
+   month's statements, attest the P&L is ready, then move the client to
+   production on P&L-only service (portal BS stays hidden, Production
+   board tracks them as Waiting on Client) — without first sending a doc
+   request. Collapsed by default so it doesn't crowd the run page. */
+
+function PLOnlyPromoteCard({
+  clientLinkId,
+  clientName,
+}: {
+  clientLinkId: string;
+  clientName: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [stmts, setStmts] = useState<Statements | null>(null);
+  const [stmtsPeriod, setStmtsPeriod] = useState("");
+  const [loadingStmts, setLoadingStmts] = useState(false);
+  const [attested, setAttested] = useState(false);
+  const [promoting, setPromoting] = useState(false);
+  const [promoted, setPromoted] = useState(false);
+  const [error, setError] = useState("");
+
+  async function loadStatements() {
+    setLoadingStmts(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/clients/${clientLinkId}/monthly-rec`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "statements" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Couldn't load statements");
+      setStmts(data.run?.statements || null);
+      setStmtsPeriod(data.run?.period || "");
+      if (!data.run?.statements) setError("QBO returned no statements for last month.");
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoadingStmts(false);
+    }
+  }
+
+  async function promote() {
+    setPromoting(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/clients/${clientLinkId}/production`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "promote_pl_only" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to promote");
+      setPromoted(true);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setPromoting(false);
+    }
+  }
+
+  if (promoted) {
+    return (
+      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800 flex items-center gap-2">
+        <CheckCircle2 size={16} />
+        {clientName} moved to Production on P&amp;L-only service. Their portal balance sheet stays
+        hidden until you finish the cleanup and flip BS back on from the Production board.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-sky-200 bg-sky-50/60 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full px-4 py-3 flex items-center justify-between gap-3 text-left"
+      >
+        <div className="flex items-center gap-2">
+          <ArrowRight size={15} className="text-sky-700" />
+          <span className="text-sm font-bold text-navy">
+            P&amp;L ready? Send to Production while the BS waits on statements
+          </span>
+        </div>
+        <span className="text-xs font-semibold text-sky-700 flex-shrink-0">{open ? "Hide" : "Open"}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 space-y-3 border-t border-sky-200 pt-3">
+          <p className="text-xs text-ink-slate">
+            Review last month&apos;s statements, attest the P&amp;L is right, and move {clientName} to
+            production on P&amp;L-only service. Their portal balance sheet is greyed out and the
+            Production board tracks them as &quot;Waiting on Client&quot; until you finish the cleanup
+            and turn BS back on.
+          </p>
+
+          {error && (
+            <div className="p-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800">{error}</div>
+          )}
+
+          {stmts ? (
+            <>
+              <StatementsReview statements={stmts} monthLabel={stmtsPeriod ? periodLabel(stmtsPeriod) : "Last month"} />
+              <label className="flex items-start gap-2 text-sm cursor-pointer p-3 rounded-lg border border-teal/30 bg-white">
+                <input type="checkbox" checked={attested} onChange={(e) => setAttested(e.target.checked)} className="mt-0.5 accent-teal" />
+                <span className="text-navy">
+                  I reviewed these statements. The <strong>P&amp;L is accurate and ready</strong> for the
+                  client; the balance sheet is still in cleanup and stays off their portal.
+                </span>
+              </label>
+              <button
+                type="button"
+                disabled={!attested || promoting}
+                onClick={promote}
+                className="inline-flex items-center gap-2 bg-navy hover:bg-navy/90 text-white text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-40"
+              >
+                {promoting ? <Loader2 size={14} className="animate-spin" /> : <ArrowRight size={14} />}
+                Mark P&amp;L complete &amp; send to Production
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={loadStatements}
+              disabled={loadingStmts}
+              className="inline-flex items-center gap-2 bg-white hover:bg-gray-50 border border-gray-200 text-navy text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-40"
+            >
+              {loadingStmts ? <Loader2 size={14} className="animate-spin" /> : <FileSearch size={14} />}
+              {loadingStmts ? "Pulling from QuickBooks…" : "Load last month's statements to review"}
+            </button>
           )}
         </div>
       )}
