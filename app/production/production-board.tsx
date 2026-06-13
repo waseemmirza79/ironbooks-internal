@@ -264,16 +264,16 @@ export function ProductionBoard() {
 
       {/* Ready to promote */}
       {!loading && eligible.length > 0 && (
-        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4">
+        <div className="bg-teal-light border border-teal/40 rounded-2xl p-4">
           <h3 className="text-sm font-bold text-navy mb-1">
-            Ready for production ({eligible.length})
+            Next: promote to monthly production ({eligible.length})
           </h3>
           <p className="text-xs text-ink-slate mb-3">
-            Cleanup complete, not yet promoted. {isSenior
+            These clients finished cleanup and are ready to start the monthly routine. {isSenior
               ? "Promote them and they join the monthly routine."
               : "Ask an admin or lead to promote them."}
           </p>
-          <ul className="divide-y divide-slate-200/70">
+          <ul className="divide-y divide-teal/20">
             {eligible.map((c) => (
               <EligibleRow key={c.id} client={c} isSenior={isSenior} onPromoted={() => load(period)} />
             ))}

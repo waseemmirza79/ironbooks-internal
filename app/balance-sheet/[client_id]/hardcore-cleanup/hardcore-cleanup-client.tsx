@@ -699,9 +699,9 @@ function UploadCard({
       <div>
         <h2 className="text-lg font-bold text-navy">Start a Hardcore BS Cleanup</h2>
         <p className="text-sm text-ink-slate mt-1">
-          Upload the client&apos;s job report(s) from their CRM. Add one file per
-          source — Jobber, DripJobs, or a generic export — and SNAP runs a single
-          reconciliation pass across all of them against QBO open invoices.
+          Upload the client&apos;s CRM job report. Most clients use one source —
+          if yours uses more than one (e.g. Jobber + DripJobs), add each below
+          and SNAP runs one combined detection pass against QBO open invoices.
           You review and pick resolutions before anything touches QBO.
         </p>
       </div>
@@ -780,7 +780,7 @@ function UploadCard({
           disabled={uploading}
           className="text-xs font-semibold text-teal hover:text-teal-dark border border-dashed border-teal/40 hover:border-teal rounded-md px-3 py-2 inline-flex items-center gap-1.5 disabled:opacity-50"
         >
-          + Add another CSV (different source)
+          + Add another source (optional)
         </button>
         <div className="text-[11px] text-ink-light leading-snug">
           Column mapping uses each file&apos;s declared source. Combined
@@ -802,8 +802,8 @@ function UploadCard({
         {uploading
           ? "Processing…"
           : ready.length > 1
-          ? `Upload ${ready.length} files + run detection`
-          : "Upload + run detection"}
+          ? `Upload & detect (${ready.length} files)`
+          : "Upload & detect"}
       </button>
     </div>
   );

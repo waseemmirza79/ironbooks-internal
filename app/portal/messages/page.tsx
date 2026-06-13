@@ -68,8 +68,8 @@ export default async function PortalMessagesPage() {
           </div>
           <h1 className="text-3xl font-bold mt-1">Messages</h1>
           <div className="text-sm text-white/70 mt-1">
-            Send us statements, ask questions, and see updates from your bookkeeper —
-            all in one place.
+            Ask your bookkeeper questions, send documents like bank statements, and get
+            updates on your cleanup progress — all in one place.
           </div>
         </div>
       </div>

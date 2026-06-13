@@ -216,21 +216,10 @@ function FlagRow({ flag, onResolved }: { flag: PendingFlag; onResolved: () => vo
           {/* Action row */}
           {!showReply && (
             <div className="mt-3 flex items-center gap-2 flex-wrap">
-              {flag.status === "pending" && (
-                <button
-                  onClick={() => resolve("in_review")}
-                  disabled={acting}
-                  className="px-2 py-1 text-xs font-semibold bg-blue-100 text-blue-800 rounded hover:bg-blue-200 inline-flex items-center gap-1"
-                  title="Mark you're looking into it; client sees IN REVIEW status"
-                >
-                  <MessageSquare size={11} />
-                  Mark in review
-                </button>
-              )}
               <button
                 onClick={() => { setShowReply("applied"); setReplyNote(""); }}
                 disabled={acting}
-                className="px-2 py-1 text-xs font-semibold bg-emerald-100 text-emerald-800 rounded hover:bg-emerald-200 inline-flex items-center gap-1"
+                className="px-2 py-1 text-xs font-semibold bg-emerald-600 text-white rounded hover:bg-emerald-700 inline-flex items-center gap-1"
                 title="Mark resolved — you fixed the issue (do the actual reclass via your normal flow)"
               >
                 <CheckCircle2 size={11} />
@@ -239,7 +228,7 @@ function FlagRow({ flag, onResolved }: { flag: PendingFlag; onResolved: () => vo
               <button
                 onClick={() => { setShowReply("declined"); setReplyNote(""); }}
                 disabled={acting}
-                className="px-2 py-1 text-xs font-semibold bg-red-50 text-red-800 rounded hover:bg-red-100 inline-flex items-center gap-1"
+                className="px-2 py-1 text-xs font-semibold border border-red-300 text-red-800 rounded hover:bg-red-50 inline-flex items-center gap-1"
                 title="Decline with explanation back to the client"
               >
                 <ThumbsDown size={11} />
@@ -248,12 +237,23 @@ function FlagRow({ flag, onResolved }: { flag: PendingFlag; onResolved: () => vo
               <button
                 onClick={() => { setShowReply("dismissed"); setReplyNote(""); }}
                 disabled={acting}
-                className="px-2 py-1 text-xs font-semibold text-ink-slate hover:text-navy inline-flex items-center gap-1"
+                className="px-2 py-1 text-xs font-semibold border border-slate-300 text-ink-slate hover:bg-slate-50 inline-flex items-center gap-1"
                 title="Dismiss without action (already handled, duplicate, etc.)"
               >
                 <X size={11} />
                 Dismiss
               </button>
+              {flag.status === "pending" && (
+                <button
+                  onClick={() => resolve("in_review")}
+                  disabled={acting}
+                  className="px-2 py-1 text-xs font-semibold border border-blue-300 text-blue-800 rounded hover:bg-blue-50 inline-flex items-center gap-1"
+                  title="Mark you're looking into it; client sees IN REVIEW status"
+                >
+                  <MessageSquare size={11} />
+                  Mark in review
+                </button>
+              )}
             </div>
           )}
         </div>

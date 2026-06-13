@@ -263,7 +263,7 @@ export function UnmatchedPanel({
             )}
             {acknowledging
               ? "Marking finished..."
-              : `Acknowledge & finish (${reclassJobId ? "continue cleanup" : "back to clients"})`}
+              : `Mark as reviewed — no matching (${reclassJobId ? "continue cleanup" : "back to clients"})`}
             <ArrowRight size={14} />
           </button>
         </div>

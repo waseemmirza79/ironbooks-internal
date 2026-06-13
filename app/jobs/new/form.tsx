@@ -316,9 +316,10 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
 
           {/* Industry picker */}
           <div>
-            <label className="flex items-center gap-1.5 text-sm font-semibold text-navy mb-2">
-              <Briefcase size={14} /> Trades Industry
+            <label className="flex items-center gap-1.5 text-sm font-semibold text-navy mb-1">
+              <Briefcase size={14} /> Industry (for COA template)
             </label>
+            <p className="text-xs text-ink-slate mb-2">Selects the master chart of accounts template.</p>
             {aiSuggestedIndustry && (
               <div className="text-xs text-ink-slate mb-2 flex items-center gap-1.5">
                 <Sparkles size={11} className="text-teal" />
@@ -433,10 +434,7 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
             Cleanup Scope
           </h3>
           <p className="text-xs text-ink-slate mt-1">
-            Pick the period this cleanup covers. <strong>Renames and new-account creation
-            happen regardless</strong> — but <strong>merges</strong> only move transactions
-            inside this range. Anything older stays put on the source account, and the source
-            stays active until you handle older years manually.
+            Merges and deletions only affect this date range. Renames apply everywhere.
           </p>
         </div>
         <div className="px-5 py-4 space-y-3">
@@ -479,10 +477,10 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
         <button
           onClick={() => router.push(`/reclass/new?client=${selected!.id}`)}
           className="inline-flex items-center gap-2 text-sm font-semibold text-ink-slate hover:text-navy border border-gray-200 hover:border-gray-300 bg-white px-4 py-2.5 rounded-lg transition-colors"
-          title="COA is already done — jump straight to the reclassification step"
+          title="Use this only if the chart of accounts is already cleaned up. Skips COA review and jumps straight to mapping transactions."
         >
           <ArrowRight size={15} />
-          COA already done — Skip to Reclass
+          Skip to Reclassification
         </button>
         <button
           onClick={startJob}

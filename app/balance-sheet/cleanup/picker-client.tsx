@@ -197,7 +197,7 @@ export function BsCleanupPicker({
             }`}
           >
             <span className="w-2 h-2 rounded-full bg-red-500" />
-            Reconnect needed {counts.dead}
+            Token expired — reconnect {counts.dead}
           </button>
           <button
             onClick={() => setFilter("not_connected")}

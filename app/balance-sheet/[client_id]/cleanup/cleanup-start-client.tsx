@@ -166,7 +166,7 @@ export function CleanupStartClient({
           <Loader2 size={16} className="animate-spin" />
         ) : (
           <>
-            Connect &amp; Diagnose
+            {needsQbo ? "Connect QuickBooks first" : "Connect & Diagnose"}
             <ArrowRight size={16} />
           </>
         )}

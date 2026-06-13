@@ -388,7 +388,7 @@ export function NewStripeReconForm({
                   type="button"
                   onClick={recheckHealth}
                   disabled={rechecking}
-                  className="ml-auto inline-flex items-center gap-1 text-[10px] font-semibold text-red-800 hover:text-red-950 underline disabled:opacity-60"
+                  className="ml-auto inline-flex items-center gap-1 text-xs font-semibold text-white bg-red-700 hover:bg-red-800 px-3 py-1.5 rounded-md disabled:opacity-60"
                 >
                   {rechecking ? "Re-checking…" : "Re-check now"}
                 </button>

@@ -90,10 +90,10 @@ export default async function CategorizePage() {
           </div>
           <h1 className="text-3xl font-bold mt-1">Help us label these</h1>
           <p className="text-sm text-white/70 mt-1 max-w-xl">
-            Your bookkeeping team found {open.length === 0 ? "no" : open.length} transaction
-            {open.length === 1 ? "" : "s"} they couldn&apos;t identify with certainty. Pick what each
-            one was and we&apos;ll take it from there — your books aren&apos;t changed until your
-            bookkeeper confirms.
+            Your bookkeeper found {open.length === 0 ? "no" : open.length} transaction
+            {open.length === 1 ? "" : "s"} they need your help identifying. Pick a category or add a
+            note for each one — your books won&apos;t change until your bookkeeper reviews and
+            confirms your answers.
           </p>
         </div>
       </div>

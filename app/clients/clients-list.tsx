@@ -356,7 +356,7 @@ export function ClientsList({
             <div>Assigned</div>
             <div>Last Cleanup</div>
             <div>Stats</div>
-            <div>Quick Actions</div>
+            <div>Actions</div>
             <div>Stripe</div>
             <div></div>
           </div>
@@ -685,7 +685,7 @@ function ClientRow({
                 // Step 2: set due date
                 <div className="p-3">
                   <div className="text-xs font-semibold text-navy mb-1">
-                    Assign to {pendingAssignee.name}
+                    Set due date for {pendingAssignee.name}
                   </div>
                   <div className="text-[10px] text-ink-slate mb-1.5">
                     Due date <span className="text-red-500">*</span>

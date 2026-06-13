@@ -253,6 +253,7 @@ export function ExecuteLive({
         !job.is_rollback &&
         job.client_link_id && (
           <>
+            <h2 className="text-sm font-semibold text-ink-slate">Next steps based on your workflow</h2>
             <div className="rounded-2xl p-5 bg-gradient-to-br from-teal-lighter to-blue-50 border-2 border-teal/30">
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-start gap-3 flex-1 min-w-0">
@@ -260,7 +261,7 @@ export function ExecuteLive({
                     <Receipt className="text-teal" size={20} />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-teal">Step 3 · Recommended</span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-teal">Step 3 · Always next</span>
                     <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
                       Generate Bank Rules
                     </h3>
@@ -287,7 +288,7 @@ export function ExecuteLive({
                       <CreditCard className="text-purple-600" size={20} />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-purple-700">Step 4 · Recommended</span>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-purple-700">Step 4 · Optional</span>
                       <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
                         Stripe AR Reconciliation
                       </h3>

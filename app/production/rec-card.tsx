@@ -384,7 +384,7 @@ export function ClientRecCard({
             title={isSenior ? "Send back to the bookkeeper" : "Withdraw and keep working"}
           >
             <RotateCcw size={11} />
-            {isSenior ? "Send back" : "Withdraw"}
+            {isSenior ? "Send back to bookkeeper" : "Withdraw"}
           </button>
         )}
         {isComplete && (

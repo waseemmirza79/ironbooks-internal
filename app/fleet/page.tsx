@@ -68,7 +68,7 @@ export default async function FleetHealthPage({
     <AppShell>
       <TopBar
         title="Fleet Health"
-        subtitle="Every failing / stuck / drifting client across the fleet — triage in one screen"
+        subtitle="Every client with issues — sorted by severity (critical, warning, healthy)"
       />
       <div className="px-6 py-5 max-w-[1400px] mx-auto">
         <FleetDashboardClient

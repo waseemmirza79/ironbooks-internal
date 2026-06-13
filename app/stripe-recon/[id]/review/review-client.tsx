@@ -220,7 +220,7 @@ export function StripeReconReview({
             className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
           >
             {executing ? <Loader2 className="animate-spin" size={16} /> : <ArrowRight size={16} />}
-            {executing ? "Starting..." : `Execute ${counts.auto} Reconciliation${counts.auto === 1 ? "" : "s"}`}
+            {executing ? "Starting..." : `Apply ${counts.auto} match${counts.auto === 1 ? "" : "es"} to QuickBooks`}
           </button>
         </div>
       </div>

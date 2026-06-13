@@ -41,16 +41,22 @@ export default async function BalanceSheetPage() {
             <Sparkles size={24} className="text-teal" />
           </div>
           <h2 className="text-lg font-bold text-navy">
-            We&apos;re still working on your balance sheet
+            We&apos;re still cleaning up your balance sheet
           </h2>
           <p className="text-sm text-ink-slate max-w-md mx-auto leading-relaxed">
-            Your Profit &amp; Loss is live and up to date, but your balance
-            sheet cleanup is still in progress — we&apos;d rather show you
-            nothing than numbers that aren&apos;t right yet. It&apos;ll appear
-            here automatically the moment it&apos;s ready.
+            Your Profit &amp; Loss is live and up to date. &ldquo;Cleanup in
+            progress&rdquo; means your bookkeeper is still verifying your
+            account balances — bank accounts, loans, and equity — so the numbers
+            are right before you see them. We&apos;d rather show you nothing than
+            numbers that aren&apos;t right yet. We&apos;ll email you the moment
+            it&apos;s ready.
           </p>
           <p className="text-xs text-ink-light">
-            Questions in the meantime? Send us a note from the Messages page.
+            Want a status update?{" "}
+            <a href="/portal/messages" className="font-semibold text-teal-dark hover:underline">
+              Ask your bookkeeper on the Messages page
+            </a>
+            .
           </p>
         </div>
       </div>

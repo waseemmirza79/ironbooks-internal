@@ -395,12 +395,12 @@ export function LiveExecution({
             <AlertTriangle size={20} className="text-orange-500 mt-0.5 flex-shrink-0" />
             <div>
               <h3 className="font-bold text-sm text-navy">
-                Manual Cleanup Report ({status.manual_cleanup_items.length} {status.manual_cleanup_items.length === 1 ? "item" : "items"})
+                Flagged for Manual Review — QBO Platform Limits ({status.manual_cleanup_items.length} {status.manual_cleanup_items.length === 1 ? "item" : "items"})
               </h3>
               <p className="text-xs text-ink-slate mt-1">
-                These accounts could not be auto-cleaned because of QBO platform limits
-                (typically: account has transactions, balance, or naming conflicts).
-                Please handle each one manually in QBO using the steps below.
+                These accounts hit QuickBooks limits (typically: account has transactions,
+                balance, or naming conflicts), so they could not be auto-cleaned. You must
+                handle each one manually in QBO using the steps below.
               </p>
             </div>
           </div>

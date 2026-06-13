@@ -499,7 +499,7 @@ export function UncatIncomeRecoveryClient({
               {autoEligible} deposit{autoEligible === 1 ? "" : "s"} have exactly one match (under $10k each)
             </div>
             <div className="text-xs text-emerald-700 mt-0.5">
-              One click to apply each to its matching invoice. You can still review or reject afterward.
+              One click approves all of them at once, applying each to its matched invoice. You can still review or reject any of them afterward.
             </div>
           </div>
           <button

@@ -587,10 +587,10 @@ export default async function DashboardPage() {
                   </div>
                   <div>
                     <h2 className="text-base font-bold text-navy">
-                      New Stripe Account Connection — Ready For Cleanup
+                      New Stripe Clients Ready to Start
                     </h2>
                     <p className="text-xs text-ink-slate mt-0.5">
-                      {readyForCleanup.length} client{readyForCleanup.length !== 1 ? "s" : ""} ready for a Stripe-powered cleanup. Start these to unlock deterministic AR matching.
+                      {readyForCleanup.length} client{readyForCleanup.length !== 1 ? "s" : ""} connected Stripe and are ready for their first cleanup.
                     </p>
                   </div>
                 </div>
@@ -679,7 +679,7 @@ export default async function DashboardPage() {
             {myAssignedClients.length === 0 ? (
               <div className="px-5 py-8 text-center">
                 <CheckCircle2 size={22} className="text-teal mx-auto mb-2" />
-                <p className="text-sm text-ink-slate">A manager will assign clients to you here.</p>
+                <p className="text-sm text-ink-slate">Check back soon — your manager will assign clients here.</p>
               </div>
             ) : (
               <div>
@@ -757,7 +757,7 @@ export default async function DashboardPage() {
               <h2 className="text-base font-bold text-navy">My Work Queue</h2>
               <p className="text-xs text-ink-slate mt-0.5">
                 {myJobs.length === 0
-                  ? "Nothing in progress — queue is clear"
+                  ? "Nothing in progress — start a new cleanup or resume a stalled job below"
                   : `${myJobs.length} job${myJobs.length !== 1 ? "s" : ""} in progress`}
               </p>
             </div>
@@ -813,7 +813,7 @@ export default async function DashboardPage() {
           <div className="rounded-xl bg-white border border-gray-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-200">
               <h2 className="text-base font-bold text-navy">Needs Attention</h2>
-              <p className="text-xs text-ink-slate mt-0.5">Items that may require action</p>
+              <p className="text-xs text-ink-slate mt-0.5">Expiring QBO tokens, stalled jobs, and clients overdue for cleanup</p>
             </div>
 
             {/* QBO token expiry */}

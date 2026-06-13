@@ -650,7 +650,7 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
           <>
             <div>
               <label className="block text-sm font-semibold text-navy mb-2">
-                Source account {workflow === "scrub" ? "(the dumping ground to scrub)" : "(the account to move FROM)"}
+                Source account — Categorize FROM {workflow === "scrub" ? "(all uncategorized expenses)" : ""}
               </label>
               <select
                 value={sourceAccountId}
@@ -666,7 +666,7 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
 
             {workflow === "consolidation" && (
               <div>
-                <label className="block text-sm font-semibold text-navy mb-2">Target account (the account to move TO)</label>
+                <label className="block text-sm font-semibold text-navy mb-2">Target account — Categorize TO</label>
                 <select
                   value={targetAccountId}
                   onChange={(e) => setTargetAccountId(e.target.value)}

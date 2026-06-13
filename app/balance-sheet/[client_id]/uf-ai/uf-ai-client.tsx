@@ -283,22 +283,18 @@ export function UfAiClient({
   if (phase === "upload") {
     return (
       <div className="space-y-6">
-        <div className="rounded-2xl border border-teal/20 bg-gradient-to-br from-teal/5 to-white p-5">
-          <div className="flex items-start gap-3">
-            <div className="p-2 rounded-lg bg-teal/10">
-              <Sparkles size={20} className="text-teal" />
-            </div>
-            <div className="flex-1">
-              <h2 className="font-bold text-navy">AI Undeposited Funds Reconciliation</h2>
-              <p className="text-sm text-ink-slate mt-1 leading-relaxed">
-                Claude reads the Accounts Receivable + Undeposited Funds transaction
-                reports, matches payments to deposits, finds what&apos;s still stuck in
-                UF, verifies the math, and writes step-by-step QuickBooks instructions
-                to clear it.
-              </p>
-            </div>
-          </div>
-        </div>
+        <details className="rounded-2xl border border-teal/20 bg-gradient-to-br from-teal/5 to-white p-4">
+          <summary className="flex items-center gap-2 cursor-pointer font-bold text-navy text-sm">
+            <Sparkles size={16} className="text-teal" />
+            What is UF Reconcile?
+          </summary>
+          <p className="text-sm text-ink-slate mt-2 leading-relaxed">
+            Claude reads the Accounts Receivable + Undeposited Funds transaction
+            reports, matches payments to deposits, finds what&apos;s still stuck in
+            UF, verifies the math, and writes step-by-step QuickBooks instructions
+            to clear it.
+          </p>
+        </details>
 
         {/* Error from a failed prior attempt — surfaced here so it sits
             right above the source toggle when we auto-switched to CSV */}

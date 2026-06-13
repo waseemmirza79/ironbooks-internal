@@ -20,7 +20,7 @@ export default async function AuditPage() {
     <AppShell>
       <TopBar
         title="Audit Log"
-        subtitle="Immutable record of every action across the org"
+        subtitle="Search all actions by user, client, date, or event type — for compliance review"
       />
       <div className="px-8 py-6">
         <AuditLogViewer

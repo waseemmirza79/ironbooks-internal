@@ -76,7 +76,7 @@ export default async function WhatsDuePage() {
         <div className="relative flex flex-col md:flex-row md:items-end md:justify-between gap-4">
           <div>
             <div className="text-xs text-white/60 uppercase tracking-wider font-semibold">Bills & obligations</div>
-            <h1 className="text-3xl font-bold mt-1">What you owe</h1>
+            <h1 className="text-3xl font-bold mt-1">What you owe vendors</h1>
             <div className="text-sm text-white/70 mt-1">
               {fmtMoney(dueSoonTotal)} due in the next 30 days
             </div>

@@ -102,13 +102,16 @@ export default async function ArRecoveryLanding({
           {/* UF Audit */}
           <Link
             href={`/balance-sheet/${client_id}/uf-audit`}
-            className="block p-5 bg-white border-2 border-slate-200 rounded-lg hover:border-amber-500 hover:shadow-md transition group"
+            className="block p-5 bg-white border-2 border-slate-200 rounded-lg hover:border-slate-400 hover:shadow-md transition group"
           >
             <div className="flex items-center gap-2 mb-2">
               <div className="w-8 h-8 bg-amber-100 text-amber-700 rounded flex items-center justify-center">
                 <Search size={16} />
               </div>
               <div className="font-bold text-navy">Undeposited Funds Audit</div>
+              <span className="text-[10px] px-1.5 py-0.5 bg-slate-100 text-ink-slate rounded font-semibold">
+                LEGACY
+              </span>
             </div>
             <p className="text-xs text-ink-slate mb-3">
               Find Receive-Payment entries in Undeposited Funds that have no
@@ -133,13 +136,16 @@ export default async function ArRecoveryLanding({
           {/* UF → A/R matcher */}
           <Link
             href={`/balance-sheet/${client_id}`}
-            className="block p-5 bg-white border-2 border-slate-200 rounded-lg hover:border-teal hover:shadow-md transition group"
+            className="block p-5 bg-white border-2 border-slate-200 rounded-lg hover:border-slate-400 hover:shadow-md transition group"
           >
             <div className="flex items-center gap-2 mb-2">
               <div className="w-8 h-8 bg-teal-light text-teal-dark rounded flex items-center justify-center">
                 <Wallet size={16} />
               </div>
               <div className="font-bold text-navy">Match UF → Open A/R</div>
+              <span className="text-[10px] px-1.5 py-0.5 bg-slate-100 text-ink-slate rounded font-semibold">
+                LEGACY
+              </span>
             </div>
             <p className="text-xs text-ink-slate mb-3">
               Take Receive-Payments stuck in UF with a known customer + amount,
@@ -191,7 +197,7 @@ export default async function ArRecoveryLanding({
           {/* Hardcore BS Cleanup — Phase 1 (duplicate invoices from CRM migration) */}
           <Link
             href={`/balance-sheet/${client_id}/hardcore-cleanup`}
-            className="block p-5 bg-white border-2 border-slate-200 rounded-lg hover:border-red-500 hover:shadow-md transition group"
+            className="block p-5 bg-white border-2 border-red-300 rounded-lg hover:border-red-500 hover:shadow-md transition group"
           >
             <div className="flex items-center gap-2 mb-2">
               <div className="w-8 h-8 bg-red-100 text-red-700 rounded flex items-center justify-center">

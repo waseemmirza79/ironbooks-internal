@@ -484,8 +484,8 @@ export function DailyReviewTable({
                               )
                             }
                             disabled={isBusy}
-                            className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-100 text-emerald-700 text-xs rounded hover:bg-emerald-200 disabled:opacity-50"
-                            title="Approve and push to QBO"
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-600 text-white font-semibold text-xs rounded hover:bg-emerald-700 disabled:opacity-50"
+                            title="Approve: post to QuickBooks"
                           >
                             {isBusy ? (
                               <Loader2 size={11} className="animate-spin" />
@@ -497,8 +497,8 @@ export function DailyReviewTable({
                           <button
                             onClick={() => act(r, "reject")}
                             disabled={isBusy}
-                            className="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-700 text-xs rounded hover:bg-red-200 disabled:opacity-50"
-                            title="Reject — leaves QBO untouched"
+                            className="inline-flex items-center gap-1 px-2 py-1 border border-red-300 text-red-700 text-xs rounded hover:bg-red-50 disabled:opacity-50"
+                            title="Reject: skip, leaves QuickBooks untouched"
                           >
                             <X size={11} />
                             Reject
@@ -506,8 +506,8 @@ export function DailyReviewTable({
                           <button
                             onClick={() => act(r, "ask_client")}
                             disabled={isBusy}
-                            className="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded hover:bg-purple-200 disabled:opacity-50"
-                            title="Defer — surface in next client email"
+                            className="inline-flex items-center gap-1 px-2 py-1 border border-purple-300 text-purple-700 text-xs rounded hover:bg-purple-50 disabled:opacity-50"
+                            title="Ask: hold for client input, surfaces in next client email"
                           >
                             <HelpCircle size={11} />
                             Ask

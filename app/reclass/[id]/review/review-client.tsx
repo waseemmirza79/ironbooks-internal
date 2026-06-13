@@ -590,35 +590,35 @@ export function ReclassReview({
         <TabButton
           active={activeTab === "auto"}
           onClick={() => setActiveTab("auto")}
-          icon={<CheckCircle2 size={16} className="text-emerald-600" />}
+          icon={<span className="w-2 h-2 rounded-full bg-emerald-600" />}
           label="Auto-approve"
           count={partitioned.auto.length}
         />
         <TabButton
           active={activeTab === "review"}
           onClick={() => setActiveTab("review")}
-          icon={<AlertTriangle size={16} className="text-amber-600" />}
+          icon={<span className="w-2 h-2 rounded-full bg-amber-600" />}
           label="Needs review"
           count={partitioned.review.length}
         />
         <TabButton
           active={activeTab === "flagged"}
           onClick={() => setActiveTab("flagged")}
-          icon={<XCircle size={16} className="text-red-600" />}
+          icon={<span className="w-2 h-2 rounded-full bg-red-600" />}
           label="Flagged"
           count={partitioned.flagged.length}
         />
         <TabButton
           active={activeTab === "ask_client"}
           onClick={() => setActiveTab("ask_client")}
-          icon={<HelpCircle size={16} className="text-purple-600" />}
+          icon={<span className="w-2 h-2 rounded-full bg-purple-600" />}
           label="Ask Client"
           count={partitioned.ask.length}
         />
         <TabButton
           active={activeTab === "skipped"}
           onClick={() => setActiveTab("skipped")}
-          icon={<Lock size={16} className="text-ink-slate" />}
+          icon={<span className="w-2 h-2 rounded-full bg-ink-slate" />}
           label="Skipped"
           count={partitioned.skipped.length}
         />
@@ -715,11 +715,10 @@ export function ReclassReview({
               <div className="p-3 bg-purple-50 border-b border-purple-100 flex items-center justify-between gap-3">
                 <span className="text-sm text-purple-800">
                   <HelpCircle size={14} className="inline mr-1" />
-                  When you approve &amp; execute this reclass, everything still on this tab is sent
-                  to the client automatically — one portal message + one email listing all{" "}
-                  {partitioned.ask.length} transaction{partitioned.ask.length === 1 ? "" : "s"}. If
-                  you already know what something was, pick its account from the dropdown to pull it
-                  out of the batch.
+                  Rows here will be sent to the client for clarification when you execute — one portal
+                  message + one email listing all {partitioned.ask.length} transaction
+                  {partitioned.ask.length === 1 ? "" : "s"}. If you know the category for any row, pick
+                  it from the dropdown to remove it from the email batch.
                 </span>
                 <button
                   onClick={() => setEmailModalOpen(true)}
@@ -766,7 +765,7 @@ export function ReclassReview({
 
       {/* Attestation + Execute */}
       <div className="bg-white rounded-2xl border-2 border-teal/20 p-6">
-        <h3 className="font-bold text-navy mb-3">Attestation</h3>
+        <h3 className="font-bold text-navy mb-3">Review &amp; Execute</h3>
         <label className="flex items-start gap-3 cursor-pointer mb-4">
           <input
             type="checkbox"

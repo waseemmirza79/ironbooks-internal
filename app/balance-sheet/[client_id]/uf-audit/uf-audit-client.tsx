@@ -66,7 +66,7 @@ interface QboAccount {
 }
 
 const RESOLUTION_LABELS: Record<string, { label: string; color: string; description: string }> = {
-  pending: { label: "Pending", color: "bg-amber-100 text-amber-800", description: "Decide what to do with this orphan" },
+  pending: { label: "Needs decision", color: "bg-amber-100 text-amber-800", description: "Decide what to do with this orphan" },
   owner_draw: { label: "Owner Draw", color: "bg-purple-100 text-purple-800", description: "Cash kept by owner — JE: Dr Owner Draw, Cr UF" },
   write_off: { label: "Write-off", color: "bg-red-100 text-red-800", description: "Not a real payment — JE: Dr Bad Debt (or similar), Cr UF" },
   duplicate_recategorize: { label: "Duplicate", color: "bg-blue-100 text-blue-800", description: "Real deposit exists elsewhere — bookkeeper finds + re-categorizes in QBO" },
@@ -74,7 +74,7 @@ const RESOLUTION_LABELS: Record<string, { label: string; color: string; descript
   void_pair: { label: "Void pair", color: "bg-rose-100 text-rose-900", description: "CRM duplicate pair — VOIDS the payment AND the invoice it was applied to. UF down, A/R down by any open invoice balance, income backed out. No bank involved." },
   create_deposit: { label: "Create deposit", color: "bg-teal-100 text-teal-800", description: "Real money still in UF — posts a Bank Deposit to sweep UF → the chosen bank account" },
   clear_duplicate: { label: "Clear duplicate", color: "bg-indigo-100 text-indigo-800", description: "Cash already in bank via a separate bank-feed deposit — posts a $0 deposit that clears UF and reverses the double-counted income. Bank + A/R untouched." },
-  ask_client: { label: "Ask Client", color: "bg-orange-100 text-orange-800", description: "Queue for confirmation email — no auto-write" },
+  ask_client: { label: "Queued for client", color: "bg-orange-100 text-orange-800", description: "Added to the confirmation email — awaiting client reply, no auto-write" },
   manual_investigation: { label: "Investigate", color: "bg-gray-100 text-gray-700", description: "Flag, do nothing automated" },
   executed: { label: "Done ✓", color: "bg-emerald-100 text-emerald-700", description: "Posted to QBO" },
   failed: { label: "Failed", color: "bg-red-200 text-red-900", description: "QBO rejected this — see error" },

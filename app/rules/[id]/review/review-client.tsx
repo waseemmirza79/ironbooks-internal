@@ -79,7 +79,7 @@ export function RulesReviewClient({
       alert("No high-confidence non-flagged rules to bulk-approve.");
       return;
     }
-    if (!confirm(`Approve ${highConfidence.length} high-confidence rules (skipping flagged ones)?`)) {
+    if (!confirm(`Auto-approve the ${highConfidence.length} highest-confidence rules? You can still edit any of them after. (Skipping rules that need review.)`)) {
       return;
     }
 
@@ -231,12 +231,7 @@ export function RulesReviewClient({
                   : "bg-white text-ink-slate border border-gray-200 hover:border-gray-300"
               }`}
             >
-              {f}{" "}
-              {f !== "all" && (
-                <span className="opacity-70">
-                  ({f === "flagged" ? counts.flagged : counts[f as keyof typeof counts]})
-                </span>
-              )}
+              {f === "flagged" ? "Need Review" : f}
             </button>
           ))}
         </div>
@@ -245,7 +240,7 @@ export function RulesReviewClient({
             onClick={bulkApprove}
             className="text-xs font-semibold bg-teal-light text-teal px-3 py-1.5 rounded-md hover:bg-teal/20"
           >
-            ⚡ Bulk approve high-confidence
+            Auto-Approve Top Rules
           </button>
         )}
       </div>
@@ -285,14 +280,22 @@ export function RulesReviewClient({
           >
             ← Back
           </button>
-          <button
-            onClick={executeApproved}
-            disabled={executing || counts.approved === 0}
-            className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
-          >
-            {executing ? <Loader2 className="animate-spin" size={16} /> : <ArrowRight size={16} />}
-            {executing ? "Activating..." : `Activate ${counts.approved} Rules in SNAP`}
-          </button>
+          <div className="flex items-center gap-4">
+            {counts.approved > 0 && (
+              <p className="text-xs text-ink-slate max-w-xs text-right">
+                Once activated, these {counts.approved} rules will automatically categorize new bank
+                transactions in QuickBooks.
+              </p>
+            )}
+            <button
+              onClick={executeApproved}
+              disabled={executing || counts.approved === 0}
+              className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
+            >
+              {executing ? <Loader2 className="animate-spin" size={16} /> : <ArrowRight size={16} />}
+              {executing ? "Activating..." : "Activate Approved Rules"}
+            </button>
+          </div>
         </div>
       )}
     </div>

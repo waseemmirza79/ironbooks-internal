@@ -274,7 +274,7 @@ function ReclassRow({
                       className="mt-0.5"
                     />
                     <span className="text-ink-slate">
-                      Also reclassify all matching transactions in the current fiscal year
+                      Bulk-apply to past matching transactions this fiscal year (optional)
                       {preview.data && (
                         <span className="text-navy font-semibold">
                           {" "}({preview.data.counts.matched_transactions} txns)
@@ -340,6 +340,7 @@ function ReclassRow({
                       onClick={approve}
                       disabled={acting || (preview.data == null && !preview.error)}
                       className="px-4 py-1.5 bg-emerald-600 text-white rounded text-xs font-bold hover:bg-emerald-700 disabled:opacity-50 inline-flex items-center gap-1.5"
+                      title="Applies the reclass + creates a bank rule if the vendor is known"
                     >
                       {acting ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
                       {acting ? "Applying…" : "Approve & apply"}

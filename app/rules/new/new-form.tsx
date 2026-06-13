@@ -70,9 +70,9 @@ export function NewRulesForm({
                 Continuing from Transaction Reclassification
               </div>
               <p className="text-xs text-ink-slate">
-                Client is pre-selected. Discovery will use your reclass categorizations as priors —
-                vendors that consistently mapped to the same account during reclass will surface as
-                high-confidence rule candidates.
+                Transactions you just categorized will help us create smarter rules. Vendors that
+                consistently matched the same account will show as high-confidence suggestions,
+                saving you review time.
               </p>
             </div>
           </div>
@@ -80,10 +80,12 @@ export function NewRulesForm({
       )}
 
       {recentJobs.length > 0 && (
-        <div className="rounded-xl bg-white border border-gray-200 mb-6">
-          <div className="px-5 py-3 border-b border-gray-200">
-            <h3 className="font-bold text-sm text-navy">Recent Rule Discoveries</h3>
-          </div>
+        <details className="rounded-xl bg-white border border-gray-200 mb-6 group">
+          <summary className="px-5 py-3 border-b border-gray-200 cursor-pointer list-none flex items-center justify-between">
+            <h3 className="font-bold text-sm text-navy">View past discoveries</h3>
+            <span className="text-xs text-ink-slate group-open:hidden">Show</span>
+            <span className="text-xs text-ink-slate hidden group-open:inline">Hide</span>
+          </summary>
           <div className="divide-y divide-gray-100">
             {recentJobs.map((job) => (
               <Link
@@ -108,7 +110,7 @@ export function NewRulesForm({
               </Link>
             ))}
           </div>
-        </div>
+        </details>
       )}
 
       <div className="rounded-xl bg-white border border-gray-200 mb-6">
@@ -160,8 +162,11 @@ export function NewRulesForm({
 
       <div className="rounded-xl bg-white border border-gray-200 mb-6">
         <div className="px-5 py-4 border-b border-gray-200">
-          <h3 className="font-bold text-base text-navy">Lookback Period</h3>
-          <p className="text-xs text-ink-slate">How many months of transactions to analyze</p>
+          <h3 className="font-bold text-base text-navy">How Many Months to Analyze?</h3>
+          <p className="text-xs text-ink-slate">
+            More history = smarter rules. 6 months is standard. Use 3 for fast results, 12 for very
+            mature accounts.
+          </p>
         </div>
         <div className="p-5 grid grid-cols-3 gap-3">
           {[3, 6, 12].map((m) => (

@@ -233,7 +233,7 @@ export default async function PortalOverview() {
         <KpiCard
           icon={Wallet}
           accent={c.netProfit >= 0 ? "emerald" : "red"}
-          label={`What's left (profit)`}
+          label={`Net profit (what's left)`}
           value={fmtMoney(c.netProfit)}
           sub={`${Math.round(c.netMarginPct)}% net margin`}
           delta={signedMoney(netDelta, prevShort)}

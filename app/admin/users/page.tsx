@@ -15,7 +15,7 @@ export default async function AdminUsersPage() {
     <AppShell>
       <TopBar
         title="Team Management"
-        subtitle={`${users?.length || 0} team members • Invite, change roles, deactivate`}
+        subtitle={`${users?.length || 0} team members — manage access + roles`}
       />
       <div className="px-8 py-6">
         <UsersManagement initialUsers={users || []} />

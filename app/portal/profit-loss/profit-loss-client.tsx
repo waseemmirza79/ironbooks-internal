@@ -256,11 +256,9 @@ export function ProfitLossClient({
 
       <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs text-ink-slate">
         <strong className="text-navy">Tip:</strong> Click any line to see the underlying transactions —
-        vendor, date, amount, memo. Use the{" "}
-        <span className="inline-flex items-center"><Sparkles size={11} className="text-teal-dark" /></span>{" "}
-        question icon on any line to ask your Ironbooks team about how it's categorized, or{" "}
-        <a href="/portal/ask-ai" className="text-teal-dark font-semibold underline">ask the AI</a>{" "}
-        for an instant explanation.
+        vendor, date, amount, memo. Each line also has buttons to ask your Ironbooks team a question
+        about it or suggest it should be in a different category. For an instant explanation,{" "}
+        <a href="/portal/ask-ai" className="text-teal-dark font-semibold underline">ask the AI</a>.
       </div>
 
       {drillLine && range && (

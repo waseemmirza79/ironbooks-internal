@@ -326,14 +326,14 @@ export function ReviewClient({
           onClick={handleReanalyze}
           disabled={reanalyzing || executing}
           className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-semibold bg-white text-ink-slate border border-gray-200 hover:border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
-          title="Re-run AI analysis against the current QBO COA. Unconfirmed suggestions get replaced; executed actions are preserved."
+          title="Runs analysis again. Executed actions stay, others get replaced."
         >
           {reanalyzing ? (
             <Loader2 size={13} className="animate-spin" />
           ) : (
             <RefreshCcw size={13} />
           )}
-          {reanalyzing ? "Re-analyzing…" : "Re-analyze"}
+          {reanalyzing ? "Refreshing…" : "Refresh AI Suggestions"}
         </button>
       </div>
 
@@ -344,7 +344,7 @@ export function ReviewClient({
       >
         <div>Current Account</div>
         <div>AI Suggestion</div>
-        <div>Map to Master</div>
+        <div>Align to Template</div>
         <div>Confidence</div>
         <div>Action</div>
       </div>
@@ -422,9 +422,6 @@ export function ReviewClient({
           ← Back to Dashboard
         </button>
         <div className="flex gap-3">
-          <button className="text-sm font-semibold bg-white text-navy border border-gray-200 px-4 py-2 rounded-lg hover:bg-gray-50">
-            Send to Lisa for Approval
-          </button>
           <button
             onClick={approveAndExecute}
             disabled={executing}

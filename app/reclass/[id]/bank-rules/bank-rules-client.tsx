@@ -485,8 +485,9 @@ export function BankRulesFromReclassClient({
             {totalVendors} vendor{totalVendors === 1 ? "" : "s"} from this reclass
           </h2>
           <p className="text-sm text-ink-slate mt-1 leading-relaxed">
-            Every vendor that appeared in this job is listed below — err on the side of
-            more rules. Vendors with a confident AI target are pre-ticked.
+            Select vendors from this reclass and save their categorizations as rules —
+            future transactions will auto-categorize using these patterns. Vendors with
+            a confident AI target are pre-ticked.
             {needsTargetTotal > 0 && (
               <>
                 {" "}

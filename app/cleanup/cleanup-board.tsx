@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowUpRight, CheckCircle2, Circle, CircleDashed, ClipboardList,
+  ArrowUpRight, CheckCircle2, Circle, ClipboardList,
   Loader2, MinusCircle, PlayCircle, Plus, Sparkles, X, XCircle,
 } from "lucide-react";
 import { ClientRecCard, type ProdClient } from "../production/rec-card";
@@ -271,8 +271,9 @@ export function CleanupBoard() {
 
       <div className="flex items-center justify-between flex-wrap gap-2">
         <p className="text-xs text-ink-slate">
-          Clients move left → right. Manager approval on the sign-off sends
-          statements to the client and graduates them to <strong>Production</strong>.
+          Clients progress through cleanup steps. When the manager approves the sign-off,
+          statements are sent to the client and the account moves to{" "}
+          <strong>Production</strong> (ongoing management).
         </p>
         <Link
           href="/jobs/new"
@@ -462,7 +463,7 @@ function CleanupCard({
               className={isSenior ? "hover:text-navy hover:underline" : "cursor-default"}
               title={isSenior ? "Assign bookkeeper / set deadline" : undefined}
             >
-              {card.bookkeeper?.full_name || (isSenior ? "Unassigned — click to assign" : "Unassigned")}
+              {card.bookkeeper?.full_name || "Unassigned"}
             </button>
             {card.due_date && (
               <span
@@ -559,21 +560,12 @@ function CleanupCard({
                 onClick={onOpenSignoff}
                 className="inline-flex items-center gap-0.5 text-[10px] font-bold text-purple-700 hover:underline"
               >
-                Open <ArrowUpRight size={9} />
+                Review sign-off <ArrowUpRight size={9} />
               </button>
             )}
           </li>
         ))}
       </ul>
-
-      {inReview && (
-        <div className="mt-2 pt-2 border-t border-gray-100">
-          <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded">
-            <CircleDashed size={9} />
-            Manager review pending
-          </span>
-        </div>
-      )}
     </div>
   );
 }

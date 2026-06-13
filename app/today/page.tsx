@@ -563,19 +563,19 @@ export default async function TodayPage({
         {/* Top-line summary */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <SummaryCard
-            label="Auto-categorized in last 24h"
+            label="Already in QuickBooks (auto, last 24h)"
             value={totalAutoExecuted}
             icon={<CheckCircle2 className="text-emerald-600" size={20} />}
             tone="success"
           />
           <SummaryCard
-            label="Pending your review"
+            label="Need your decision"
             value={totalPending}
             icon={<Clock className="text-amber-600" size={20} />}
             tone={totalPending > 0 ? "amber" : "muted"}
           />
           <SummaryCard
-            label="Anomalies flagged"
+            label="High-risk — review first"
             value={totalAnomalies}
             icon={<AlertTriangle className="text-red-600" size={20} />}
             tone={totalAnomalies > 0 ? "red" : "muted"}
@@ -641,9 +641,9 @@ export default async function TodayPage({
                         existingRunId={monthlyByClient.get(c.id)?.runId || null}
                         periodLabel={closingPeriodLabel}
                       />
-                      <Pill count={autoToday} label="auto" tone="emerald" />
-                      <Pill count={pending} label="review" tone={pending > 0 ? "amber" : "gray"} />
                       <Pill count={anomalies} label="anomaly" tone={anomalies > 0 ? "red" : "gray"} />
+                      <Pill count={pending} label="review" tone={pending > 0 ? "amber" : "gray"} />
+                      <Pill count={autoToday} label="auto" tone="emerald" />
                     </div>
                     <ArrowRight size={16} className="text-ink-light" />
                   </Link>
@@ -654,8 +654,7 @@ export default async function TodayPage({
         </div>
 
         <p className="text-xs text-ink-light text-center max-w-md mx-auto leading-relaxed">
-          Auto-categorized items have already shipped to QBO at ≥95% confidence. Items in the
-          review queue need your sign-off before they touch the books.
+          Auto items are already in QuickBooks; review items need your sign-off first.
         </p>
       </div>
     </AppShell>

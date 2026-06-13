@@ -52,16 +52,21 @@ export default async function CashFlowPage({
             <Sparkles size={24} className="text-teal" />
           </div>
           <h2 className="text-lg font-bold text-navy">
-            We&apos;re still working on this one
+            We&apos;re still cleaning up your cash flow
           </h2>
           <p className="text-sm text-ink-slate max-w-md mx-auto leading-relaxed">
-            Your cash flow statement is built from your balance sheet, and that
-            cleanup is still in progress. Your Profit &amp; Loss is live and up
-            to date — the cash flow statement will appear here automatically
-            once your balance sheet is ready.
+            Your cash flow statement is built from your balance sheet — so it
+            depends on that cleanup finishing first. Your bookkeeper is still
+            verifying those balances, and your Profit &amp; Loss is live and up
+            to date in the meantime. We&apos;ll email you the moment your cash
+            flow statement is ready.
           </p>
           <p className="text-xs text-ink-light">
-            Questions in the meantime? Send us a note from the Messages page.
+            Want a status update?{" "}
+            <Link href="/portal/messages" className="font-semibold text-teal-dark hover:underline">
+              Ask your bookkeeper on the Messages page
+            </Link>
+            .
           </p>
         </div>
       </div>

@@ -43,7 +43,7 @@ export default async function BalanceSheetCoaPage({
     <AppShell>
       <TopBar
         title={`Balance Sheet COA — ${c.client_name}`}
-        subtitle="Live tree of every Balance Sheet account in QBO · click any account to inspect/reclass transactions"
+        subtitle="View every Balance Sheet account and quickly reclass or fix transactions. Use this for one-off fixes; use the reconciliation form for a full cleanup."
       />
       <div className="px-8 py-6 max-w-6xl space-y-4">
         <Link

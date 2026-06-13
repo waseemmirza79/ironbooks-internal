@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Loader2, ArrowRight, RefreshCw, AlertCircle, Sparkles, Wallet,
   CheckCircle2, Save, FileText, Landmark, CreditCard, FileSpreadsheet,
-  HomeIcon, Search, Send, X, ExternalLink,
+  HomeIcon, Search, Send, X, ExternalLink, ChevronRight,
 } from "lucide-react";
 import { ExternalInvoiceUpload } from "./external-invoice-upload";
 
@@ -453,6 +453,17 @@ export function BalanceSheetLanding({
           vs real duplicates correctly. */}
       <ExternalInvoiceUpload clientLinkId={clientLinkId} />
 
+      {/* Advanced scans — secondary, power-user tools. Collapsed by default
+          so the Guided Cleanup wizard above stays the primary entry point. */}
+      <details className="group space-y-6">
+        <summary className="cursor-pointer list-none flex items-center gap-2 text-sm font-bold text-navy select-none">
+          <ChevronRight size={16} className="text-ink-slate transition-transform group-open:rotate-90" />
+          Advanced scans &amp; tools
+          <span className="text-xs font-normal text-ink-light">
+            (UF → A/R, payroll double-entries, AI reconcile, full COA)
+          </span>
+        </summary>
+
       {/* UF → A/R direct scan (no CSV required) — runs the same
           matchUFtoAR engine the legacy /balance-sheet/uf-ar tool used,
           but persists into hardcore_cleanup_runs/items so the bookkeeper
@@ -656,6 +667,7 @@ export function BalanceSheetLanding({
           </a>
         </div>
       </div>
+      </details>
 
       {/* Account reconciliation form — the main event */}
       <div className="rounded-2xl bg-white border border-gray-200 overflow-hidden">
@@ -665,9 +677,10 @@ export function BalanceSheetLanding({
               Reconcile accounts for {clientName}
             </h2>
             <p className="text-xs text-ink-slate mt-1 leading-relaxed">
-              For each account: pick the category, enter the statement
-              ending balance + as-of date, and hit Save All. We compute the
-              gap vs QBO and propose adjusting journal entries inline.
+              Step 1 — Enter statement data: pick the category, enter the
+              statement ending balance + as-of date, and hit Save.
+              Step 2 — Review adjustments: we compute the gap vs QBO and
+              propose adjusting journal entries inline for you to post.
               Categories are sticky across cleanup sessions.
             </p>
           </div>
@@ -1011,7 +1024,7 @@ export function BalanceSheetLanding({
                 ) : (
                   <Save size={14} />
                 )}
-                {saving ? "Saving…" : "Save All & Compute Gaps"}
+                {saving ? "Saving…" : "Save & Review Gaps"}
               </button>
             </div>
           </>

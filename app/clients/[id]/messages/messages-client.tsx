@@ -187,7 +187,7 @@ export function BookkeeperMessagesClient({
               className="flex-shrink-0 inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-4 py-2.5 rounded-lg disabled:opacity-50"
             >
               {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-              Send
+              {kind === "notification" ? "Send notification" : "Send message"}
             </button>
           </div>
 
