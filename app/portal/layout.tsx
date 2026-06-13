@@ -118,7 +118,7 @@ export default async function PortalLayout({ children }: { children: React.React
   }
 
   return (
-    <div className="min-h-screen bg-[#FAFAF7]">
+    <div className="min-h-screen bg-[#E9ECF1]">
       {ctx.impersonating && (
         <ImpersonationBanner
           clientName={clientName}
@@ -236,7 +236,7 @@ function QboDisconnectedState({
     : `/connect-quickbooks?reason=token_expired`;
 
   return (
-    <div className="min-h-screen bg-[#FAFAF7]">
+    <div className="min-h-screen bg-[#E9ECF1]">
       {impersonating && (
         <div className="bg-amber-500 text-white text-sm px-4 py-2.5 flex items-center justify-between">
           <div>
@@ -320,7 +320,7 @@ function QboDisconnectedState({
 
 function NoClientMappingState({ fullName }: { fullName: string }) {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#FAFAF7] px-4">
+    <div className="min-h-screen flex items-center justify-center bg-[#E9ECF1] px-4">
       <div className="max-w-md text-center">
         <div className="text-2xl font-bold text-navy">Hi {fullName.split(" ")[0] || "there"} 👋</div>
         <p className="text-sm text-ink-slate mt-3">
