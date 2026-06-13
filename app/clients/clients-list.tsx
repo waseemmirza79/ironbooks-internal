@@ -80,6 +80,22 @@ interface ClientRow {
   // Prior-year taxes filing status (migration 32)
   py_taxes_filed?: boolean;
   py_taxes_filed_through_year?: number | null;
+  // Clients-table revamp columns
+  qbo_connected?: boolean;
+  daily_recon_enabled?: boolean;
+  portal_account?: { has_account: boolean; logged_in: boolean; last_login_at: string | null };
+  unread_from_client?: number;
+}
+
+/** Derived workflow status for the clients table — replaces the old
+ *  editable status menu. Production = on daily recon; Overdue = past its
+ *  cleanup due date and not yet in production; otherwise still in cleanup. */
+function derivedStatus(c: ClientRow): { label: string; color: string; bg: string } {
+  if (c.daily_recon_enabled) return { label: "In production", color: "#047857", bg: "#D1FAE5" };
+  const today = new Date().toISOString().slice(0, 10);
+  if (c.due_date && c.due_date.slice(0, 10) < today)
+    return { label: "Overdue", color: "#B91C1C", bg: "#FEE2E2" };
+  return { label: "Needs cleanup", color: "#B45309", bg: "#FEF3C7" };
 }
 
 interface Bookkeeper {
@@ -348,16 +364,15 @@ export function ClientsList({
         <div className="rounded-xl overflow-hidden bg-white border border-gray-200">
           <div
             className="grid items-center px-5 py-3 text-xs font-bold uppercase tracking-wider bg-gray-50 text-ink-slate border-b border-gray-200"
-            style={{ gridTemplateColumns: "1.4fr 0.8fr 1fr 0.9fr 0.8fr 0.8fr 1fr 0.9fr 0.4fr" }}
+            style={{ gridTemplateColumns: "1.7fr 1fr 0.9fr 1fr 0.9fr 0.9fr 1fr 0.7fr" }}
           >
             <div>Client</div>
             <div>Status</div>
             <div>Double</div>
             <div>Assigned</div>
-            <div>Last Cleanup</div>
-            <div>Stats</div>
-            <div>Actions</div>
+            <div>Portal</div>
             <div>Stripe</div>
+            <div>Actions</div>
             <div></div>
           </div>
 
@@ -537,64 +552,48 @@ function ClientRow({
       className={`grid items-center px-5 py-3 border-b border-gray-100 hover:bg-teal-lighter transition-colors ${
         !client.is_active ? "opacity-50" : ""
       }`}
-      style={{ gridTemplateColumns: "1.4fr 0.8fr 1fr 0.9fr 0.8fr 0.8fr 1fr 0.9fr 0.4fr" }}
+      style={{ gridTemplateColumns: "1.7fr 1fr 0.9fr 1fr 0.9fr 0.9fr 1fr 0.7fr" }}
     >
       <Link
         href={`/clients/${client.id}`}
         className="flex items-center gap-3 min-w-0 group"
         title={`Open ${client.client_name || "client"} profile`}
       >
-        <div className="rounded-lg flex items-center justify-center font-bold text-sm flex-shrink-0 w-9 h-9 bg-teal-light text-teal group-hover:bg-teal group-hover:text-white transition-colors">
-          {(client.client_name || "?").charAt(0)}
-        </div>
         <div className="min-w-0">
           <div className="font-semibold text-sm text-navy truncate group-hover:text-teal transition-colors">
             {client.client_name}
           </div>
-          <div className="text-xs text-ink-slate flex items-center gap-1">
-            <MapPin size={10} />
-            {client.jurisdiction}{client.state_province ? ` · ${client.state_province}` : ""}
+          <div className="text-xs text-ink-slate flex items-center gap-1.5 flex-wrap">
+            <span className="flex items-center gap-1">
+              <MapPin size={10} />
+              {client.jurisdiction}{client.state_province ? ` · ${client.state_province}` : ""}
+            </span>
+            {client.qbo_connected === false && (
+              <span
+                className="inline-flex items-center gap-0.5 text-[10px] font-bold text-red-700 bg-red-50 px-1.5 py-0.5 rounded"
+                title="QuickBooks is disconnected — reconnect before any cleanup or recon can run"
+              >
+                <AlertCircle size={9} /> QBO disconnected
+              </span>
+            )}
           </div>
         </div>
       </Link>
 
-      <div className="relative">
-        <button
-          onClick={() => canEdit && setStatusMenuOpen(!statusMenuOpen)}
-          disabled={!canEdit}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold disabled:cursor-default"
-          style={{ color: statusCfg.color, backgroundColor: statusCfg.bg }}
-        >
-          <StatusIcon size={11} />
-          {statusCfg.label}
-          {canEdit && <ChevronDown size={10} />}
-        </button>
-
-        {statusMenuOpen && (
-          <>
-            <div className="fixed inset-0 z-10" onClick={() => setStatusMenuOpen(false)} />
-            <div className="absolute left-0 top-full mt-1 z-20 rounded-lg shadow-lg overflow-hidden bg-white border border-gray-200 min-w-[140px]">
-              {Object.entries(STATUS_CONFIG).map(([key, cfg]) => {
-                const Icon = cfg.icon;
-                return (
-                  <button
-                    key={key}
-                    onClick={() => {
-                      if (key !== client.status) onUpdate({ status: key as any });
-                      setStatusMenuOpen(false);
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-teal-lighter"
-                    style={{ color: cfg.color }}
-                  >
-                    <Icon size={12} />
-                    {cfg.label}
-                    {key === client.status && <CheckCircle2 size={11} className="ml-auto" />}
-                  </button>
-                );
-              })}
-            </div>
-          </>
-        )}
+      {/* Status — derived from where the client actually is in the
+          workflow (no manual override). */}
+      <div>
+        {(() => {
+          const ds = derivedStatus(client);
+          return (
+            <span
+              className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold"
+              style={{ color: ds.color, backgroundColor: ds.bg }}
+            >
+              {ds.label}
+            </span>
+          );
+        })()}
       </div>
 
       {/* Double column */}
@@ -725,101 +724,45 @@ function ClientRow({
         )}
       </div>
 
-      <div>
-        {client.last_cleanup_at ? (
-          <div>
-            <div className="text-xs font-semibold text-navy">
-              {formatRelativeDate(client.last_cleanup_at)}
+      {/* Portal — account state + unread inbound messages */}
+      <div className="text-xs">
+        {client.portal_account?.has_account ? (
+          <div className="space-y-0.5">
+            <div
+              className="flex items-center gap-1 font-semibold"
+              title={
+                client.portal_account.last_login_at
+                  ? `Last login: ${new Date(client.portal_account.last_login_at).toLocaleString()}`
+                  : client.portal_account.logged_in
+                  ? "Has logged in"
+                  : "Invited — not logged in yet"
+              }
+            >
+              {client.portal_account.logged_in ? (
+                <>
+                  <CheckCircle2 size={11} className="text-emerald-600" />
+                  <span className="text-emerald-700">Active</span>
+                </>
+              ) : (
+                <>
+                  <Clock size={11} className="text-amber-600" />
+                  <span className="text-amber-700">Invited</span>
+                </>
+              )}
             </div>
-            <div className="text-[10px] text-ink-slate">
-              {new Date(client.last_cleanup_at).toLocaleDateString()}
-            </div>
+            {(client.unread_from_client ?? 0) > 0 && (
+              <Link
+                href={`/clients/${client.id}/messages`}
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center gap-1 text-[10px] font-bold text-red-700 bg-red-50 px-1.5 py-0.5 rounded-full hover:bg-red-100"
+                title={`${client.unread_from_client} unread message${client.unread_from_client === 1 ? "" : "s"} from the client`}
+              >
+                <MessageCircle size={9} /> {client.unread_from_client} unread
+              </Link>
+            )}
           </div>
         ) : (
-          <span className="text-xs italic text-ink-light">Never</span>
-        )}
-      </div>
-
-      <div className="text-xs">
-        <div className="flex items-center gap-3 text-ink-slate">
-          <span title="Completed cleanups" className="flex items-center gap-1">
-            <FileCheck size={11} />
-            <span className="font-bold text-navy">{client.completed_cleanups}</span>
-          </span>
-          <span title="Active rules" className="flex items-center gap-1">
-            <Zap size={11} />
-            <span className="font-bold text-navy">{client.active_rules}</span>
-          </span>
-          {client.flagged_cleanups > 0 && (
-            <span title="Flagged for review" className="flex items-center gap-1 text-yellow-600">
-              <Flag size={11} />
-              <span className="font-bold">{client.flagged_cleanups}</span>
-            </span>
-          )}
-        </div>
-      </div>
-
-      <div className="flex items-center gap-1 flex-wrap">
-        {client.double_client_id?.startsWith("pending_") ? (
-          <Link
-            href={`/clients/${client.id}/match-double`}
-            className="px-2 py-1 rounded text-[10px] font-semibold bg-red-600 hover:bg-red-700 text-white"
-            title="Match this client to a Double HQ record"
-          >
-            Match
-          </Link>
-        ) : (
-          <>
-            <Link
-              href={`/clients/${client.id}/match-double`}
-              className="px-2 py-1 rounded text-[10px] font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200"
-              title="Change the Double HQ match for this client"
-            >
-              Rematch
-            </Link>
-            {/* Continue an in-flight / errored cleanup. Shown only when the
-                client has a resumable COA job (executing, in_review, failed,
-                cancelled). The destination page handles whether to show the
-                Execute button or the post-mortem with Revert/Report. */}
-            {/* Defensive — verify shape and id before rendering. A malformed
-                resumable_job (e.g. missing id) would otherwise render a
-                link to /jobs/undefined which is harmless but cluttered. */}
-            {client.resumable_job &&
-              typeof client.resumable_job === "object" &&
-              typeof client.resumable_job.id === "string" &&
-              client.resumable_job.id.length > 0 && (
-                <Link
-                  href={
-                    client.resumable_job.status === "executing"
-                      ? `/jobs/${client.resumable_job.id}/execute`
-                      : `/jobs/${client.resumable_job.id}/review`
-                  }
-                  className={`inline-flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold ${
-                    client.resumable_job.status === "failed"
-                      ? "bg-red-100 text-red-700 hover:bg-red-200"
-                      : client.resumable_job.status === "executing"
-                      ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
-                      : "bg-purple-100 text-purple-700 hover:bg-purple-200"
-                  }`}
-                  title={
-                    client.resumable_job.status === "failed"
-                      ? "Failed cleanup — resume from where it errored (completed actions are skipped)"
-                      : client.resumable_job.status === "executing"
-                      ? "Cleanup is running right now — view live progress"
-                      : "Cleanup in review — finish or execute"
-                  }
-                >
-                  <Play size={10} />
-                  Continue
-                </Link>
-              )}
-            <ActionsDropdown
-              clientId={client.id}
-              jurisdiction={client.jurisdiction}
-              isSenior={canEdit}
-              onReport={() => setReportOpen(true)}
-            />
-          </>
+          <span className="text-[11px] text-ink-light">No portal</span>
         )}
       </div>
 
@@ -859,6 +802,58 @@ function ClientRow({
         )}
       </div>
 
+      <div className="flex items-center gap-1 flex-wrap">
+        {client.double_client_id?.startsWith("pending_") ? (
+          <Link
+            href={`/clients/${client.id}/match-double`}
+            className="px-2 py-1 rounded text-[10px] font-semibold bg-red-600 hover:bg-red-700 text-white"
+            title="Match this client to a Double HQ record"
+          >
+            Match
+          </Link>
+        ) : (
+          <>
+            {/* Continue an in-flight / errored cleanup. Shown only when the
+                client has a resumable COA job (executing, in_review, failed). */}
+            {client.resumable_job &&
+              typeof client.resumable_job === "object" &&
+              typeof client.resumable_job.id === "string" &&
+              client.resumable_job.id.length > 0 && (
+                <Link
+                  href={
+                    client.resumable_job.status === "executing"
+                      ? `/jobs/${client.resumable_job.id}/execute`
+                      : `/jobs/${client.resumable_job.id}/review`
+                  }
+                  className={`inline-flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold ${
+                    client.resumable_job.status === "failed"
+                      ? "bg-red-100 text-red-700 hover:bg-red-200"
+                      : client.resumable_job.status === "executing"
+                      ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
+                      : "bg-purple-100 text-purple-700 hover:bg-purple-200"
+                  }`}
+                  title={
+                    client.resumable_job.status === "failed"
+                      ? "Failed cleanup — resume from where it errored (completed actions are skipped)"
+                      : client.resumable_job.status === "executing"
+                      ? "Cleanup is running right now — view live progress"
+                      : "Cleanup in review — finish or execute"
+                  }
+                >
+                  <Play size={10} />
+                  Continue
+                </Link>
+              )}
+            <ActionsDropdown
+              clientId={client.id}
+              jurisdiction={client.jurisdiction}
+              isSenior={canEdit}
+              onReport={() => setReportOpen(true)}
+            />
+          </>
+        )}
+      </div>
+
       <div className="flex justify-end items-center gap-1">
         <Link
           href={`/clients/${client.id}/messages`}
@@ -892,8 +887,8 @@ function ClientRow({
         {onDelete && (
           <button
             onClick={onDelete}
-            className="p-1.5 rounded hover:bg-red-50 text-ink-light hover:text-red-600 transition-colors"
-            title="Delete client"
+            className="p-1.5 rounded hover:bg-amber-50 text-ink-light hover:text-amber-600 transition-colors"
+            title="Archive client (reversible)"
           >
             <Trash2 size={13} />
           </button>
@@ -982,7 +977,7 @@ function ClientCard({
             <button
               onClick={onDelete}
               className="p-1 rounded hover:bg-red-50 text-ink-light hover:text-red-600 transition-colors"
-              title="Delete client"
+              title="Archive client (reversible)"
             >
               <Trash2 size={13} />
             </button>
@@ -1228,18 +1223,6 @@ function ActionsDropdown({
       hidden: !isSenior,
     },
     {
-      label: "A/R recovery",
-      href: `/balance-sheet/${clientId}/ar-recovery`,
-      icon: Wallet,
-      hidden: !isSenior,
-    },
-    {
-      label: "Legacy balance sheet",
-      href: `/balance-sheet/${clientId}`,
-      icon: FileSpreadsheet,
-      hidden: !isSenior,
-    },
-    {
       label: "Advanced cleanup",
       href: `/balance-sheet/${clientId}/hardcore-cleanup`,
       icon: Flame,
@@ -1419,18 +1402,19 @@ function DeleteConfirmModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-xl shadow-xl border border-gray-200 w-full max-w-md mx-4 p-6">
         <div className="flex items-center gap-3 mb-4">
-          <div className="p-2.5 rounded-lg bg-red-50">
-            <Trash2 size={18} className="text-red-600" />
+          <div className="p-2.5 rounded-lg bg-amber-50">
+            <Trash2 size={18} className="text-amber-600" />
           </div>
           <div>
-            <h2 className="text-base font-bold text-navy">Delete Client</h2>
-            <p className="text-xs text-ink-slate mt-0.5">This action cannot be undone.</p>
+            <h2 className="text-base font-bold text-navy">Archive client</h2>
+            <p className="text-xs text-ink-slate mt-0.5">Removes them from the active list — reversible.</p>
           </div>
         </div>
 
         <p className="text-sm text-ink-slate mb-1">
-          This will permanently delete <span className="font-semibold text-navy">{client.client_name}</span> and all
-          associated jobs, rules, and history.
+          <span className="font-semibold text-navy">{client.client_name}</span> will be moved out of your active
+          clients. Their jobs, rules, history, and portal data are <span className="font-semibold">kept</span>, and you
+          can restore them anytime with the <span className="font-semibold">Reactivate</span> button.
         </p>
 
         <p className="text-sm text-ink-slate mt-4 mb-2">
@@ -1455,9 +1439,9 @@ function DeleteConfirmModal({
           <button
             onClick={handleConfirm}
             disabled={!match || deleting}
-            className="flex-1 px-4 py-2 text-sm font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex-1 px-4 py-2 text-sm font-semibold rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {deleting ? "Deleting..." : "Delete permanently"}
+            {deleting ? "Archiving..." : "Archive client"}
           </button>
         </div>
       </div>

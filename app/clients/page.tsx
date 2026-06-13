@@ -43,7 +43,7 @@ export default async function ClientsPage() {
     supabase
       .from("client_links")
       .select(
-        "id, double_client_name, stripe_connection_status, due_date, cleanup_completed_at, cleanup_completed_by, cleanup_range_start, cleanup_range_end, cleanup_completion_note, cleanup_review_state, cleanup_review_submitted_at, cleanup_review_submitted_by, ask_client_email_created_at, ask_client_email_sent_at, ask_client_email_body, stripe_request_sent_confirmed_at, cleanup_pdf_sent_at, stripe_not_required"
+        "id, double_client_name, stripe_connection_status, due_date, cleanup_completed_at, cleanup_completed_by, cleanup_range_start, cleanup_range_end, cleanup_completion_note, cleanup_review_state, cleanup_review_submitted_at, cleanup_review_submitted_by, ask_client_email_created_at, ask_client_email_sent_at, ask_client_email_body, stripe_request_sent_confirmed_at, cleanup_pdf_sent_at, stripe_not_required, qbo_realm_id, qbo_refresh_token, daily_recon_enabled"
       ),
     // Bookkeepers dropdown — must use service client (RLS on `users` limits
     // self-reads, which would otherwise return only the current user and
@@ -74,8 +74,65 @@ export default async function ClientsPage() {
   ]);
 
   const linksData = linksRes.data || [];
+
+  // ── Portal-account state per client (created? logged in? last login?) and
+  //    unread inbound (from_client) message counts. Both drive new columns
+  //    in the clients table. Fetched with the service client so RLS on the
+  //    portal tables doesn't truncate them. Fail-soft on either query.
+  const portalAcctById = new Map<
+    string,
+    { has_account: boolean; logged_in: boolean; last_login_at: string | null }
+  >();
+  const unreadByClient = new Map<string, number>();
+  try {
+    const { data: cu } = await (service as any)
+      .from("client_users")
+      .select("client_link_id, active, first_login_at, last_login_at")
+      .eq("active", true);
+    for (const m of ((cu as any[]) || [])) {
+      const prev = portalAcctById.get(m.client_link_id);
+      const lastLogin = m.last_login_at || null;
+      const loggedIn = !!(m.first_login_at || m.last_login_at);
+      if (!prev) {
+        portalAcctById.set(m.client_link_id, {
+          has_account: true,
+          logged_in: loggedIn,
+          last_login_at: lastLogin,
+        });
+      } else {
+        // Multiple portal users on one client → account exists, logged-in if
+        // any has, keep the most recent login.
+        prev.logged_in = prev.logged_in || loggedIn;
+        if (lastLogin && (!prev.last_login_at || lastLogin > prev.last_login_at)) {
+          prev.last_login_at = lastLogin;
+        }
+      }
+    }
+  } catch (e: any) {
+    console.warn("[clients] portal-account fetch failed:", e?.message);
+  }
+  try {
+    const { data: unread } = await (service as any)
+      .from("client_communications")
+      .select("client_link_id")
+      .eq("direction", "from_client")
+      .is("read_at", null);
+    for (const r of ((unread as any[]) || [])) {
+      unreadByClient.set(r.client_link_id, (unreadByClient.get(r.client_link_id) || 0) + 1);
+    }
+  } catch (e: any) {
+    console.warn("[clients] unread-messages fetch failed:", e?.message);
+  }
+
   const nameById = new Map<string, string | null>(
     linksData.map((l) => [l.id, l.double_client_name ?? null])
+  );
+  // QBO connection: "connected" needs both a realm and a live refresh token.
+  const qboConnectedById = new Map<string, boolean>(
+    linksData.map((l) => [l.id, !!((l as any).qbo_realm_id && (l as any).qbo_refresh_token)])
+  );
+  const dailyReconById = new Map<string, boolean>(
+    linksData.map((l) => [l.id, !!(l as any).daily_recon_enabled])
   );
   const stripeStatusById = new Map<string, string | null>(
     linksData.map((l) => [l.id, (l as any).stripe_connection_status ?? null])
@@ -222,6 +279,13 @@ export default async function ClientsPage() {
     py_taxes_filed_through_year: c.id
       ? pyTaxesFiledThroughYearById.get(c.id) ?? null
       : null,
+    // Clients-table columns (revamp)
+    qbo_connected: c.id ? qboConnectedById.get(c.id) ?? true : true,
+    daily_recon_enabled: c.id ? dailyReconById.get(c.id) ?? false : false,
+    portal_account: c.id
+      ? portalAcctById.get(c.id) ?? { has_account: false, logged_in: false, last_login_at: null }
+      : { has_account: false, logged_in: false, last_login_at: null },
+    unread_from_client: c.id ? unreadByClient.get(c.id) ?? 0 : 0,
   }));
 
   // Bookkeeper names — needed for the "submitted by" column in the

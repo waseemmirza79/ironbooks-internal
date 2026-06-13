@@ -128,12 +128,19 @@ export async function DELETE(
     .eq("id", id)
     .single();
 
-  const { error } = await service.from("client_links").delete().eq("id", id);
+  // ARCHIVE, don't hard-delete. Setting is_active=false removes the client
+  // from the active list but keeps every row (jobs, history, portal,
+  // messages) intact so it can be restored from the Reactivate control.
+  // A real delete would cascade and be unrecoverable.
+  const { error } = await service
+    .from("client_links")
+    .update({ is_active: false } as any)
+    .eq("id", id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   await service.from("audit_log").insert({
     user_id: user.id,
-    event_type: "client_delete",
+    event_type: "client_archived",
     request_payload: {
       client_link_id: id,
       client_name: (prior as any)?.client_name ?? null,
@@ -142,5 +149,5 @@ export async function DELETE(
     } as any,
   });
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, archived: true });
 }
