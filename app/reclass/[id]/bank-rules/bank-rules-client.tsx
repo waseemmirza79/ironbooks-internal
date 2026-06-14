@@ -32,6 +32,9 @@ interface AvailableAccount {
   id: string;
   name: string;
   type: string;
+  /** "master" = curated master COA account (shown first); "other" = any
+   *  other live QBO account (safety net so nothing is unselectable). */
+  group?: "master" | "other";
 }
 
 interface Props {
@@ -160,6 +163,16 @@ export function BankRulesFromReclassClient({
     setOverrides((prev) => {
       const next = new Map(prev);
       next.set(vendorPattern, { id: account.id, name: account.name });
+      return next;
+    });
+    // Picking a target IS opting the vendor in — auto-select the row so the
+    // bookkeeper doesn't also have to tick it first. (The dropdown used to
+    // be disabled until the row was ticked, which read as "can't select
+    // any account.")
+    setSelected((prev) => {
+      if (prev.has(vendorPattern)) return prev;
+      const next = new Set(prev);
+      next.add(vendorPattern);
       return next;
     });
   }
@@ -588,13 +601,12 @@ export function BankRulesFromReclassClient({
                         value={currentTargetId}
                         onChange={(e) => setOverride(rule.vendorPattern, e.target.value)}
                         onClick={(e) => e.stopPropagation()}
-                        disabled={!isSelected}
-                        className={`text-xs font-semibold rounded-md border px-2 py-1 outline-none focus:ring-2 focus:ring-teal/40 ${
+                        className={`text-xs font-semibold rounded-md border px-2 py-1 outline-none focus:ring-2 focus:ring-teal/40 cursor-pointer ${
                           needsTarget
-                            ? "bg-white text-amber-800 border-amber-300 cursor-pointer"
-                            : isSelected
-                            ? "bg-teal-lighter text-teal border-teal/30 cursor-pointer"
-                            : "bg-gray-100 text-ink-slate border-gray-200 cursor-not-allowed"
+                            ? "bg-white text-amber-800 border-amber-300"
+                            : currentTargetId
+                            ? "bg-teal-lighter text-teal border-teal/30"
+                            : "bg-white text-navy border-gray-300"
                         }`}
                       >
                         {/* Placeholder for no-target rows so the bookkeeper
@@ -602,7 +614,7 @@ export function BankRulesFromReclassClient({
                         {!currentTargetId && (
                           <option value="">— Pick target… —</option>
                         )}
-                        {/* If the AI-picked target isn't in the live P&L list,
+                        {/* If the AI-picked target isn't in the live list,
                             still render it so the row doesn't blank out. */}
                         {rule.targetAccountId &&
                           !availableAccounts.find((a) => a.id === rule.targetAccountId) && (
@@ -610,11 +622,30 @@ export function BankRulesFromReclassClient({
                               {rule.targetAccountName}
                             </option>
                           )}
-                        {availableAccounts.map((a) => (
-                          <option key={a.id} value={a.id}>
-                            {a.name}
-                          </option>
-                        ))}
+                        {/* Curated master COA accounts first… */}
+                        {availableAccounts.some((a) => a.group !== "other") && (
+                          <optgroup label="Master COA">
+                            {availableAccounts
+                              .filter((a) => a.group !== "other")
+                              .map((a) => (
+                                <option key={a.id} value={a.id}>
+                                  {a.name}
+                                </option>
+                              ))}
+                          </optgroup>
+                        )}
+                        {/* …then every other live QBO account as a safety net. */}
+                        {availableAccounts.some((a) => a.group === "other") && (
+                          <optgroup label="Other QBO accounts">
+                            {availableAccounts
+                              .filter((a) => a.group === "other")
+                              .map((a) => (
+                                <option key={a.id} value={a.id}>
+                                  {a.name}
+                                </option>
+                              ))}
+                          </optgroup>
+                        )}
                       </select>
                     ) : rule.targetAccountName ? (
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-teal-lighter text-teal text-xs font-semibold">

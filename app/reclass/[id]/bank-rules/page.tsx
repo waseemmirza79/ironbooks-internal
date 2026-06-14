@@ -76,7 +76,25 @@ export default async function BankRulesFromReclassPage({
   // Resolve master names → live QBO accounts (rules need a QBO account id).
   // Fail-soft: if QBO is unreachable, dropdowns get an empty list and the
   // row shows the proposed account as a read-only label.
+  //
+  // Matching master COA names to live QBO names is brittle under an exact
+  // compare: master names are stylized templates ("Direct Field Labor –
+  // Painting", "Paint & Materials", "Equipment Rental (Job-Specific)")
+  // while live QBO names are plain. Normalize BOTH sides (case, en/em-dash
+  // variants, &→and, punctuation→space) so curated master accounts actually
+  // resolve to the client's QBO account ids instead of silently dropping
+  // out of the dropdown.
+  const normName = (s: string) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/[‒–—―]/g, "-")
+      .replace(/&/g, " and ")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  const masterNorm = new Set([...masterNames].map(normName));
+
   let availablePnLAccounts: Array<{ id: string; name: string; type: string }> = [];
+  let otherActiveAccounts: Array<{ id: string; name: string; type: string }> = [];
   if (qboRealmId) {
     try {
       const accessToken = await getValidToken(job.client_link_id, service as any);
@@ -84,15 +102,18 @@ export default async function BankRulesFromReclassPage({
       const active = allAccounts
         .filter((a) => a.Active !== false)
         .map((a) => ({ id: a.Id, name: a.Name, type: a.AccountType || "" }));
-      // Master filter — but never filter down to nothing: an empty master
-      // table (or zero name overlap) falls back to the full active list so
-      // the bookkeeper is never stuck with an unusable dropdown.
-      const masterMatched = active.filter((a) => masterNames.has(a.name.toLowerCase()));
-      availablePnLAccounts = (masterMatched.length > 0 ? masterMatched : active).sort((a, b) =>
-        a.name.localeCompare(b.name)
-      );
+      // Split into master-matched (curated) vs everything else. We surface
+      // BOTH so the master COA is the default focus but no real account is
+      // ever unselectable (the prior exact-match filter could leave the
+      // bookkeeper unable to pick the account they needed).
+      for (const a of active) {
+        if (masterNorm.has(normName(a.name))) availablePnLAccounts.push(a);
+        else otherActiveAccounts.push(a);
+      }
+      availablePnLAccounts.sort((a, b) => a.name.localeCompare(b.name));
+      otherActiveAccounts.sort((a, b) => a.name.localeCompare(b.name));
       console.log(
-        `[bank-rules ${id}] QBO ${active.length} active accounts; master COA matched ${masterMatched.length} (${masterNames.size} master names, industry=${industry}/${jurisdiction})`
+        `[bank-rules ${id}] QBO ${active.length} active accounts; master-matched ${availablePnLAccounts.length} / other ${otherActiveAccounts.length} (${masterNorm.size} master names, industry=${industry}/${jurisdiction})`
       );
     } catch (err: any) {
       if (err instanceof QBOReauthRequiredError) redirect(err.reconnectUrl);
@@ -240,14 +261,18 @@ export default async function BankRulesFromReclassPage({
     `[bank-rules ${id}] Proposed: ${proposedRules.length} total — ${ready} ready, ${needsTarget} need target, ${inQbo} already in QBO`
   );
 
-  // Build the FINAL dropdown list: live QBO P&L accounts UNION the targets the
-  // AI/bookkeeper picked in this job's rows. Catches accounts the AI chose but
-  // that aren't (or no longer are) in the live QBO P&L list — without this,
-  // those accounts vanish from the dropdown and the bookkeeper sees a smaller
-  // list than what was actually used.
-  const dropdownById = new Map<string, { id: string; name: string; type: string }>();
+  // Build the FINAL dropdown list, grouped so the bookkeeper is never stuck:
+  //   group "master" → curated master COA accounts (shown first) + any
+  //                    target the AI/bookkeeper actually used in this job
+  //   group "other"  → every other live QBO account (safety net — a real
+  //                    account is never unselectable, even when master↔QBO
+  //                    name matching is imperfect)
+  const dropdownById = new Map<
+    string,
+    { id: string; name: string; type: string; group: "master" | "other" }
+  >();
   for (const a of availablePnLAccounts) {
-    dropdownById.set(a.id, a);
+    dropdownById.set(a.id, { ...a, group: "master" });
   }
   for (const rule of proposedRules) {
     if (!rule.targetAccountId) continue;
@@ -255,14 +280,20 @@ export default async function BankRulesFromReclassPage({
     dropdownById.set(rule.targetAccountId, {
       id: rule.targetAccountId,
       name: rule.targetAccountName,
-      type: "(from classification)",
+      type: "(used in this job)",
+      group: "master",
     });
   }
-  const availableAccountsForDropdown = Array.from(dropdownById.values()).sort(
-    (a, b) => a.name.localeCompare(b.name)
-  );
+  for (const a of otherActiveAccounts) {
+    if (dropdownById.has(a.id)) continue;
+    dropdownById.set(a.id, { ...a, group: "other" });
+  }
+  const availableAccountsForDropdown = Array.from(dropdownById.values()).sort((a, b) => {
+    if (a.group !== b.group) return a.group === "master" ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
   console.log(
-    `[bank-rules ${id}] Dropdown final: ${availableAccountsForDropdown.length} accounts (${availablePnLAccounts.length} live QBO P&L + ${availableAccountsForDropdown.length - availablePnLAccounts.length} from classification)`
+    `[bank-rules ${id}] Dropdown final: ${availableAccountsForDropdown.length} accounts (${availablePnLAccounts.length} master + ${otherActiveAccounts.length} other QBO + job targets)`
   );
 
   return (
