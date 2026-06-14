@@ -739,12 +739,19 @@ export async function reclassifyTransactionLines(
     );
   }
 
-  // Hard failure if nothing was applied — caller should not record this
-  // as a successful reclass.
-  if (applied === 0 && params.lineUpdates.length > 0) {
+  // Hard failure if QBO didn't apply EVERY requested line. A partial apply
+  // means money is left on the source account while the caller would
+  // otherwise record the reclass as done (executed=true) — the books then
+  // don't foot and resume logic skips the stragglers. Each not-applied line
+  // is a genuine failure (the sanitizer only drops lines whose AccountRef is
+  // invalid, and we always set a valid target), so throw on ANY shortfall
+  // and let the caller route the transaction to review/failed. The lines
+  // that DID apply are already saved in QBO; a retry re-applies the same
+  // targets (a no-op for the moved lines) and re-attempts the stragglers.
+  if (applied < params.lineUpdates.length && params.lineUpdates.length > 0) {
     throw new Error(
-      `QBO accepted the update but applied 0/${params.lineUpdates.length} lines for ${params.txType}/${params.txId}. ` +
-      `First issue: ${notApplied[0]?.reason || "unknown"}`
+      `QBO accepted the update but applied only ${applied}/${params.lineUpdates.length} lines for ${params.txType}/${params.txId}. ` +
+      `Not applied: ${notApplied.map((n) => `${n.line_id} (${n.reason})`).join("; ")}`
     );
   }
 
