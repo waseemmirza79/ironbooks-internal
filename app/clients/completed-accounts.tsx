@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   CheckCircle2, FileText, RotateCcw, Loader2, ChevronDown, ChevronRight,
+  Factory, AlertTriangle, ArrowRight,
 } from "lucide-react";
 
 interface CompletedClient {
@@ -11,6 +13,7 @@ interface CompletedClient {
   client_name: string;
   jurisdiction: "US" | "CA";
   state_province: string | null;
+  daily_recon_enabled: boolean;
   cleanup_completed_at: string;
   cleanup_range_start: string | null;
   cleanup_range_end: string | null;
@@ -18,9 +21,13 @@ interface CompletedClient {
 }
 
 /**
- * "Completed Accounts" table — the bottom-of-the-clients-page partition
- * that holds clients whose cleanup cycle has been closed out. Each row
- * still supports two actions:
+ * "Cleanup complete" partition at the bottom of the clients page — clients
+ * whose initial cleanup has been signed off. Approving a cleanup graduates
+ * them to Production (daily recon on), so the section is framed around that:
+ * each row shows its production status, and the header links to the
+ * Production board where they're maintained month by month.
+ *
+ * Each row still supports two actions:
  *
  *  • Download PDF — re-pulls the branded cleanup report for the saved
  *    date range. The endpoint requires start/end query params, which we
@@ -82,30 +89,43 @@ export function CompletedAccounts({
     });
   };
 
+  const inProductionCount = clients.filter((c) => c.daily_recon_enabled).length;
+
   return (
     <div className="bg-white rounded-2xl border border-gray-100">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 rounded-t-2xl"
-      >
-        <div className="flex items-center gap-3">
-          <CheckCircle2 className="text-green-600" size={18} />
-          <div className="text-left">
+      <div className="flex items-center justify-between px-6 py-4 gap-3">
+        <button
+          onClick={() => setOpen(!open)}
+          className="flex items-center gap-3 flex-1 min-w-0 text-left -my-4 py-4 hover:opacity-80"
+        >
+          <CheckCircle2 className="text-green-600 flex-shrink-0" size={18} />
+          <div className="min-w-0">
             <div className="text-sm font-bold text-navy">
-              Completed Accounts ({clients.length})
+              Cleanup complete ({clients.length})
             </div>
             <div className="text-xs text-ink-slate">
-              Cleanups closed out for this cycle — PDF report and reopen are
-              still available.
+              Cleanup signed off — {inProductionCount === clients.length
+                ? "all graduated to Production and maintained monthly there."
+                : `${inProductionCount} of ${clients.length} graduated to Production.`}{" "}
+              PDF report and reopen stay available.
             </div>
           </div>
+        </button>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <Link
+            href="/production"
+            className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold text-teal hover:text-teal-dark"
+            title="Open the Production board"
+          >
+            <Factory size={14} />
+            Production board
+            <ArrowRight size={12} />
+          </Link>
+          <button onClick={() => setOpen(!open)} className="text-ink-slate" aria-label={open ? "Collapse" : "Expand"}>
+            {open ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+          </button>
         </div>
-        {open ? (
-          <ChevronDown size={18} className="text-ink-slate" />
-        ) : (
-          <ChevronRight size={18} className="text-ink-slate" />
-        )}
-      </button>
+      </div>
 
       {open && (
         <div className="border-t border-gray-100">
@@ -132,7 +152,26 @@ export function CompletedAccounts({
                     className="border-b border-gray-50 last:border-0 hover:bg-gray-50"
                   >
                     <td className="px-6 py-3">
-                      <div className="font-semibold text-navy">{c.client_name}</div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-navy">{c.client_name}</span>
+                        {c.daily_recon_enabled ? (
+                          <span
+                            className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full"
+                            style={{ color: "#047857", backgroundColor: "#D1FAE5" }}
+                            title="Live in Production — daily recon runs nightly and they're on the monthly close board."
+                          >
+                            <Factory size={9} /> In production
+                          </span>
+                        ) : (
+                          <span
+                            className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full"
+                            style={{ color: "#B45309", backgroundColor: "#FEF3C7" }}
+                            title="Cleanup is signed off but this client hasn't been promoted to Production yet. Promote them from the Production board."
+                          >
+                            <AlertTriangle size={9} /> Not promoted
+                          </span>
+                        )}
+                      </div>
                       <div className="text-xs text-ink-light">
                         {c.jurisdiction}
                         {c.state_province ? ` · ${c.state_province}` : ""}

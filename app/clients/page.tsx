@@ -330,6 +330,10 @@ export default async function ClientsPage() {
       client_name: c.client_name as string,
       jurisdiction: c.jurisdiction as "US" | "CA",
       state_province: (c.state_province as string | null) || null,
+      // Whether they've graduated to Production (daily recon on). Almost
+      // always true here — the cleanup full-close flips it — but the row
+      // surfaces the rare completed-but-not-promoted case honestly.
+      daily_recon_enabled: !!c.daily_recon_enabled,
       ...completionById.get(c.id)!,
     }))
     .sort((a, b) =>
