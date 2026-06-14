@@ -18,7 +18,7 @@
  * bookkeeper to pick from a dropdown.
  */
 
-import { qboRateLimiter } from "./qbo";
+import { qboRateLimiter, findByPrivateNoteToken, jeIdempotencyToken } from "./qbo";
 
 const QBO_BASE = "https://quickbooks.api.intuit.com/v3/company";
 
@@ -224,9 +224,38 @@ export async function createJournalEntry(
     );
   }
 
+  // Idempotency: skip the POST if this exact JE was already created on a
+  // prior attempt (transient-error retry, double-submit) and return it.
+  const idemToken = jeIdempotencyToken({
+    realmId,
+    txnDate,
+    note: privateNote,
+    lines: lines.map((l) => ({
+      accountId: l.qbo_account_id,
+      postingType: l.side === "debit" ? "Debit" : "Credit",
+      amount: l.amount,
+    })),
+  });
+  const existingId = await findByPrivateNoteToken(realmId, accessToken, "JournalEntry", idemToken);
+  if (existingId) {
+    console.warn(`[createJournalEntry] idempotent hit — JE ${existingId} already posted for ${idemToken}; not duplicating.`);
+    const existing: any = await qboRequest(
+      realmId,
+      accessToken,
+      `/journalentry/${existingId}?minorversion=70`,
+      { method: "GET" }
+    );
+    const je = existing?.JournalEntry;
+    return {
+      qbo_je_id: String(je?.Id || existingId),
+      doc_number: je?.DocNumber || null,
+      txn_date: je?.TxnDate || txnDate,
+    };
+  }
+
   const body = {
     TxnDate: txnDate,
-    PrivateNote: privateNote.slice(0, 4000),
+    PrivateNote: `[${idemToken}] ${privateNote}`.trim().slice(0, 4000),
     Line: lines.map((l) => ({
       DetailType: "JournalEntryLineDetail",
       Amount: Number(Math.abs(l.amount).toFixed(2)),

@@ -20,6 +20,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { createHash } from 'crypto';
 import type { Database } from './database.types';
 
 const QBO_BASE = process.env.QBO_ENVIRONMENT === 'production'
@@ -958,6 +959,32 @@ export interface CreatedJournalEntry {
  * Validates debits = credits server-side before sending — QBO rejects
  * unbalanced JEs with a confusing 6000 error otherwise.
  */
+/**
+ * Deterministic idempotency token for a journal entry. Hashes the realm,
+ * date, caller note, and the (sorted) line set so a retry of the SAME
+ * logical JE produces the SAME token — but two structurally-identical JEs
+ * for different entities (different note text) hash differently and are NOT
+ * falsely deduped. Embedded in PrivateNote and looked up via
+ * findByPrivateNoteToken before posting, so a transient-error retry can't
+ * double-post adjustment entries and corrupt equity/liability balances.
+ */
+export function jeIdempotencyToken(parts: {
+  realmId: string;
+  txnDate: string;
+  note: string;
+  lines: Array<{ accountId: string; postingType: string; amount: number }>;
+}): string {
+  const norm = parts.lines
+    .map((l) => `${l.postingType}:${l.accountId}:${Math.abs(l.amount).toFixed(2)}`)
+    .sort()
+    .join("|");
+  const h = createHash("sha1")
+    .update(`${parts.realmId}|${parts.txnDate}|${parts.note}|${norm}`)
+    .digest("hex")
+    .slice(0, 16);
+  return `SNAP-JE-${h}`;
+}
+
 export async function createJournalEntry(
   realmId: string,
   accessToken: string,
@@ -984,9 +1011,33 @@ export async function createJournalEntry(
     );
   }
 
+  // Idempotency: if this exact JE was already posted on a prior attempt,
+  // return it instead of creating a duplicate.
+  const idemToken = jeIdempotencyToken({
+    realmId,
+    txnDate: params.txn_date,
+    note: params.private_note || "",
+    lines: params.lines.map((l) => ({
+      accountId: l.account_id,
+      postingType: l.posting_type,
+      amount: l.amount,
+    })),
+  });
+  const existingId = await findByPrivateNoteToken(realmId, accessToken, "JournalEntry", idemToken);
+  if (existingId) {
+    console.warn(`[createJournalEntry] idempotent hit — JE ${existingId} already posted for ${idemToken}; not duplicating.`);
+    const existing = await qboRequest<{ JournalEntry: CreatedJournalEntry }>(
+      realmId,
+      accessToken,
+      `/journalentry/${existingId}?minorversion=70`,
+      { method: "GET" }
+    );
+    return existing.JournalEntry;
+  }
+
   const body: any = {
     TxnDate: params.txn_date,
-    PrivateNote: params.private_note || undefined,
+    PrivateNote: `[${idemToken}] ${params.private_note || ""}`.trim().slice(0, 4000),
     DocNumber: params.doc_number || undefined,
     Line: params.lines.map((l) => ({
       DetailType: "JournalEntryLineDetail",
