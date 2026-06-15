@@ -138,7 +138,7 @@ export async function POST(request: Request) {
   // line, Job B (working from a pre-A snapshot) tries to reclassify the
   // same line and gets a "no matching line" failure. Block same-client
   // parallel; different clients in parallel are still fully supported.
-  const ACTIVE_RECLASS_STATUSES = ["executing", "in_review", "web_search_paused"] as any;
+  const ACTIVE_RECLASS_STATUSES = ["executing", "in_review", "web_search_paused", "ai_paused"] as any;
   const { data: rivalReclassJobs } = await service
     .from("reclass_jobs")
     .select("id, status, workflow")
@@ -853,6 +853,78 @@ async function runFullCategorization(
     `[reclass] Pre-pass: ${kbHits} knowledge-base hits, ${cacheHits} bank-rule cache hits, ${linesForClaude.length} sent to Claude.`
   );
 
+  // ── LARGE JOBS: durable, resumable chunked AI categorization ─────────────
+  // A multi-month range can have more lines than one serverless invocation can
+  // categorize before the function budget runs out — and the single-pass path
+  // below builds every row in memory and bulk-inserts only at the very end, so
+  // a mid-run timeout loses everything (James Painting LLC, Jun 2026: 0 rows).
+  //
+  // For big jobs we persist the already-decided rows now, enqueue every line
+  // still needing Claude into reclass_ai_queue, and pause at status='ai_paused'.
+  // The bookkeeper clicks Continue (→ /api/reclass/[id]/categorize-chunk), which
+  // runs runAiChunks() in a FRESH invocation with its own 800s budget — writing
+  // real reclassifications rows + draining the queue in time-bounded chunks,
+  // pausing again between runs for approval. No invocation can time out
+  // mid-categorization, and progress is never lost. Small jobs keep the
+  // simpler single-pass path below unchanged.
+  if (linesForClaude.length > AI_CHUNK_THRESHOLD) {
+    // 1. Persist the decided-now rows: skip rows (already in reclassRows) plus
+    //    the pre-matched (KB / bank-rule / transfer) decisions.
+    const refIdToLinePrep = new Map<string, ReclassLine>();
+    for (const l of inScopeLines) refIdToLinePrep.set(`${l.transaction_id}::${l.line_id}`, l);
+    for (const [refId, decision] of preMatched) {
+      const line = refIdToLinePrep.get(refId);
+      if (!line) continue;
+      reclassRows.push(buildRowFromAiDecision(jobId, line, decision, uncategorizedAccount));
+    }
+    await setPhase(`saving (${reclassRows.length} decided rows)`);
+    const PREP_BATCH = 500;
+    for (let i = 0; i < reclassRows.length; i += PREP_BATCH) {
+      const { error: insErr } = await service
+        .from("reclassifications")
+        .insert(reclassRows.slice(i, i + PREP_BATCH));
+      if (insErr) throw new Error(`Decided-row insert failed: ${insErr.message}`);
+    }
+
+    // 2. Enqueue everything still needing Claude (full ReclassLine payloads, so
+    //    a chunk run rebuilds the AI input + the row without re-fetching QBO).
+    const queueRows = linesForClaude.map((l) => ({
+      reclass_job_id: jobId,
+      ref_id: `${l.transaction_id}::${l.line_id}`,
+      payload: l as any,
+    }));
+    const Q_BATCH = 500;
+    for (let i = 0; i < queueRows.length; i += Q_BATCH) {
+      const { error: qErr } = await service
+        .from("reclass_ai_queue" as any)
+        .insert(queueRows.slice(i, i + Q_BATCH));
+      if (qErr) throw new Error(`Queue enqueue failed: ${qErr.message}`);
+    }
+
+    // 3. Persist the stats we already know. The AI-decision counts + the
+    //    web-search vendor list are computed from the rows at finalize.
+    const uniqueVendorsPrep = new Set(lines.map((l) => l.vendor_name).filter(Boolean)).size;
+    const { error: prepErr } = await service
+      .from("reclass_jobs")
+      .update({
+        transactions_pulled: transactionsPulled,
+        transactions_in_scope: stats.inScope,
+        transactions_skipped_reconciled: stats.skipReconciled,
+        transactions_skipped_closed: stats.skipClosedQbo + stats.skipClosedDouble,
+        transactions_skipped_unsupported: stats.skipUnsupported,
+        unique_vendors_count: uniqueVendorsPrep,
+        status: "ai_paused",
+        error_message: `[ai_progress] 0/${linesForClaude.length}`,
+      } as any)
+      .eq("id", jobId);
+    if (prepErr) throw new Error(`Chunk prep update failed: ${prepErr.message}`);
+
+    console.log(
+      `[reclass ${jobId}] chunked AI armed — ${reclassRows.length} decided now, ${linesForClaude.length} queued for Claude (chunk size ${AI_CHUNK_SIZE}). Awaiting Continue.`
+    );
+    return;
+  }
+
   await setPhase(`running_ai (${linesForClaude.length} lines)`);
 
   // 5. Pass remaining lines to Claude
@@ -1029,6 +1101,296 @@ async function runFullCategorization(
     .eq("id", jobId);
   if (finalErr) throw new Error(`Final status update failed: ${finalErr.message}`);
   console.log(`[reclass ${jobId}] DONE — moved to ${finalState.status}${wsCount > 0 ? ` (${wsCount} vendors pending web search)` : ""}`);
+}
+
+// ============== CHUNKED AI CATEGORIZATION (large jobs) ==============
+//
+// Lines-to-Claude above which discovery switches from the single-pass path to
+// the durable, resumable chunked path (persist decided rows + enqueue the rest
+// + pause at ai_paused; categorize-chunk drains the queue in time-bounded runs).
+const AI_CHUNK_THRESHOLD = 120;
+// Lines dequeued + sent to Claude per pass within a categorize-chunk run.
+const AI_CHUNK_SIZE = 60;
+// Wall-clock budget for one categorize-chunk run. maxDuration is 800s; we stop
+// starting new chunks at 10 min and pause cleanly so the invocation always
+// returns before the platform kills it.
+const AI_CHUNK_BUDGET_MS = 10 * 60 * 1000;
+
+/**
+ * Map one AI decision (or its absence) to a reclassifications row, applying the
+ * SAME resolution rules as the single-pass path (lines ~920-968): ask_client /
+ * flagged keep their own (possibly null) target; needs_review with no target
+ * gets a soft landing to Uncategorized; a missing decision falls back to
+ * needs_review (or flagged if there's no Uncategorized account).
+ */
+function buildRowFromAiDecision(
+  jobId: string,
+  line: ReclassLine,
+  decision: FullCategorizationDecision | undefined,
+  uncategorizedAccount: AvailableAccount | null
+) {
+  if (!decision) {
+    return buildReclassRow(jobId, line, {
+      target_account_id: uncategorizedAccount?.qbo_account_id || null,
+      target_account_name: uncategorizedAccount?.account_name || null,
+      decision: uncategorizedAccount ? "needs_review" : "flagged",
+      confidence: 0,
+      reasoning: uncategorizedAccount
+        ? "AI did not return a decision — needs bookkeeper review before executing."
+        : "AI did not return a decision for this line.",
+    });
+  }
+  const isAskClient = decision.decision === "ask_client";
+  const isFlagged = decision.decision === "flagged";
+  const resolvedTargetId =
+    isAskClient || isFlagged
+      ? decision.target_account_id || null
+      : decision.target_account_id || uncategorizedAccount?.qbo_account_id || null;
+  const resolvedTargetName =
+    isAskClient || isFlagged
+      ? decision.target_account_name || null
+      : decision.target_account_name || uncategorizedAccount?.account_name || null;
+  const resolvedDecision = isAskClient
+    ? "ask_client"
+    : isFlagged
+      ? "flagged"
+      : !decision.target_account_id && uncategorizedAccount
+        ? "needs_review"
+        : decision.decision;
+  return buildReclassRow(jobId, line, {
+    target_account_id: resolvedTargetId,
+    target_account_name: resolvedTargetName,
+    decision: resolvedDecision,
+    confidence: decision.confidence,
+    reasoning: decision.flagged_reason || decision.reasoning,
+  });
+}
+
+/**
+ * Finalize a chunked full_categorization once its queue is empty. Decision
+ * counts + the web-search-eligible vendor list are recomputed from the rows we
+ * actually wrote (durable across pauses/retries). The pulled / in-scope /
+ * skipped stats were already persisted when discovery enqueued the work.
+ */
+async function finalizeFullCategorization(
+  service: ReturnType<typeof createServiceSupabase>,
+  jobId: string
+): Promise<void> {
+  const { data: rows } = await service
+    .from("reclassifications")
+    .select("decision, ai_confidence, vendor_name")
+    .eq("reclass_job_id", jobId);
+
+  let autoApprove = 0;
+  let needsReview = 0;
+  let flagged = 0;
+  const wsVendors = new Set<string>();
+  for (const r of (rows || []) as any[]) {
+    if (r.decision === "auto_approve") autoApprove++;
+    else if (r.decision === "needs_review") needsReview++;
+    else if (r.decision === "flagged") flagged++;
+
+    // Web-search eligibility mirrors the single-pass rule: skip ask_client +
+    // skip rows (reconciled / closed / no-op), skip confidence >= 0.7, require
+    // a real vendor name.
+    if (r.decision === "ask_client" || r.decision === "skip") continue;
+    if ((r.ai_confidence ?? 0) >= 0.7) continue;
+    const v = (r.vendor_name || "").trim();
+    if (!v || v.length < 2 || v.toLowerCase() === "unknown vendor") continue;
+    wsVendors.add(v);
+  }
+
+  const wsCount = wsVendors.size;
+  const baseUpdate: any = {
+    transactions_auto_approve: autoApprove,
+    transactions_needs_review: needsReview,
+    transactions_flagged: flagged,
+    ai_completed_at: new Date().toISOString(),
+  };
+  const finalState: any =
+    wsCount > 0
+      ? { ...baseUpdate, status: "web_search_paused", error_message: `[ws_pending] ${wsCount}` }
+      : { ...baseUpdate, status: "in_review", error_message: null };
+
+  const { error } = await service.from("reclass_jobs").update(finalState).eq("id", jobId);
+  if (error) throw new Error(`Final status update failed: ${error.message}`);
+  console.log(
+    `[reclass ${jobId}] DONE (chunked) — moved to ${finalState.status}${wsCount > 0 ? ` (${wsCount} vendors pending web search)` : ""}`
+  );
+}
+
+/**
+ * Process a job's reclass_ai_queue in time-bounded chunks. Self-contained
+ * (re-loads job + client + token + accounts) so it runs identically whether
+ * kicked off by discovery or by the categorize-chunk Continue endpoint. Inserts
+ * rows BEFORE deleting their queue entries (never lose categorization work),
+ * pauses at status='ai_paused' when the time budget is hit with work left, and
+ * finalizes when the queue drains.
+ */
+export async function runAiChunks(jobId: string): Promise<void> {
+  const service = createServiceSupabase();
+  const startedAt = Date.now();
+
+  const { data: job } = await service
+    .from("reclass_jobs")
+    .select("*, client_links(*)")
+    .eq("id", jobId)
+    .single();
+  if (!job) throw new Error("Job not found");
+  const clientLink = (job as any).client_links;
+  if (!clientLink) throw new Error("Client link not found");
+  const threshold: number = (job as any).auto_approve_threshold || 500;
+
+  // Total AI line count is carried in the [ai_progress] denominator the
+  // discovery step wrote ("[ai_progress] 0/N"). The retry path preserves a
+  // valid "[ai_progress] done/N" prefix too, so this parse holds across
+  // retries. Fall back to live queue depth on the first pass if absent.
+  const totalMatch = ((job as any).error_message || "").match(/\[ai_progress\]\s*\d+\/(\d+)/);
+  let aiTotal: number | null = totalMatch ? parseInt(totalMatch[1], 10) : null;
+
+  const accessToken = await getValidToken(clientLink.id, service as any, "ironbooks/api/reclass/categorize-chunk");
+  const allAccounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
+  // Same eligible-target filter as discovery (P&L + equity) so the chunk runs
+  // see the identical account set discovery offered.
+  const isReclassTargetType = (t: string | undefined): boolean => {
+    if (!t) return false;
+    const norm = t.toLowerCase().replace(/\s+/g, "");
+    return (
+      norm === "income" ||
+      norm === "otherincome" ||
+      norm === "expense" ||
+      norm === "otherexpense" ||
+      norm === "costofgoodssold" ||
+      norm === "equity"
+    );
+  };
+  const availableAccounts: AvailableAccount[] = allAccounts
+    .filter((a) => a.Active !== false && isReclassTargetType(a.AccountType))
+    .map((a) => ({
+      qbo_account_id: a.Id,
+      account_name: a.Name,
+      account_type: a.AccountType || "",
+      account_subtype: a.AccountSubType || "",
+    }));
+  const uncategorizedAccount = await getOrCreateUncategorizedAccount(
+    clientLink.qbo_realm_id,
+    accessToken,
+    availableAccounts
+  );
+  if (
+    uncategorizedAccount &&
+    !availableAccounts.find((a) => a.qbo_account_id === uncategorizedAccount.qbo_account_id)
+  ) {
+    availableAccounts.push(uncategorizedAccount);
+  }
+
+  // Flip to executing while this run works (the Continue gate sets ai_paused
+  // between runs; finalize sets web_search_paused / in_review).
+  await service.from("reclass_jobs").update({ status: "executing" } as any).eq("id", jobId);
+
+  const countRemaining = async (): Promise<number> => {
+    const { count } = await service
+      .from("reclass_ai_queue" as any)
+      .select("id", { count: "exact", head: true })
+      .eq("reclass_job_id", jobId);
+    return count || 0;
+  };
+
+  while (true) {
+    const remainingBefore = await countRemaining();
+    if (aiTotal == null) aiTotal = remainingBefore;
+    if (remainingBefore === 0) {
+      await finalizeFullCategorization(service, jobId);
+      return;
+    }
+
+    // Out of budget with work left → pause for the bookkeeper's Continue click.
+    // Rows from completed chunks are already persisted + dequeued; nothing lost.
+    if (Date.now() - startedAt > AI_CHUNK_BUDGET_MS) {
+      const done = Math.max(0, (aiTotal || 0) - remainingBefore);
+      await service
+        .from("reclass_jobs")
+        .update({ status: "ai_paused", error_message: `[ai_progress] ${done}/${aiTotal}` } as any)
+        .eq("id", jobId);
+      console.log(`[reclass ${jobId}] AI paused — ${done}/${aiTotal} categorized, ${remainingBefore} remaining`);
+      return;
+    }
+
+    // Dequeue the next chunk (FIFO).
+    const { data: queued, error: qErr } = await service
+      .from("reclass_ai_queue" as any)
+      .select("id, payload")
+      .eq("reclass_job_id", jobId)
+      .order("id", { ascending: true })
+      .limit(AI_CHUNK_SIZE);
+    if (qErr) throw new Error(`Queue read failed: ${qErr.message}`);
+    if (!queued || queued.length === 0) {
+      await finalizeFullCategorization(service, jobId);
+      return;
+    }
+
+    const chunkLines: ReclassLine[] = queued.map((q: any) => q.payload as ReclassLine);
+    const aiLines: FullCategorizationLine[] = chunkLines.map((l) => ({
+      ref_id: `${l.transaction_id}::${l.line_id}`,
+      vendor_name: l.vendor_name,
+      amount: l.transaction_amount,
+      date: l.transaction_date,
+      description: l.description,
+      private_note: l.private_note,
+      current_account_name: l.current_account_name,
+    }));
+
+    const doneBase = Math.max(0, (aiTotal || 0) - remainingBefore);
+    const aiResult = await categorizeAllTransactions({
+      clientName: clientLink.client_name,
+      jurisdiction: clientLink.jurisdiction,
+      stateProvince: clientLink.state_province || "",
+      lines: aiLines,
+      availableAccounts,
+      autoApproveThreshold: threshold,
+      onProgress: async (doneBatches, totalBatches) => {
+        // Heartbeat (keeps updated_at fresh for the watchdog) + smooth global
+        // progress: already-done + this chunk's batch fraction.
+        const within = totalBatches > 0 ? Math.round((doneBatches / totalBatches) * chunkLines.length) : 0;
+        const globalDone = Math.min(aiTotal || 0, doneBase + within);
+        await service
+          .from("reclass_jobs")
+          .update({ error_message: `[ai_progress] ${globalDone}/${aiTotal}` } as any)
+          .eq("id", jobId);
+      },
+    });
+
+    const decisionByRef = new Map<string, FullCategorizationDecision>();
+    for (const d of aiResult.decisions) decisionByRef.set(d.ref_id, d);
+
+    const rows = chunkLines.map((line) =>
+      buildRowFromAiDecision(
+        jobId,
+        line,
+        decisionByRef.get(`${line.transaction_id}::${line.line_id}`),
+        uncategorizedAccount
+      )
+    );
+
+    // Insert rows BEFORE deleting the queue entries. If the invocation dies in
+    // the gap, the worst case is a watchdog-failed job whose partial rows are
+    // kept (bookkeeper starts fresh) — never lost work. ai_paused is only set
+    // at the top-of-loop budget check, after a clean insert+delete, so the
+    // normal Continue flow can't re-process a chunk and duplicate rows.
+    const { error: insErr } = await service.from("reclassifications").insert(rows as any);
+    if (insErr) throw new Error(`Chunk insert failed: ${insErr.message}`);
+
+    const ids = queued.map((q: any) => q.id);
+    const { error: delErr } = await service.from("reclass_ai_queue" as any).delete().in("id", ids);
+    if (delErr) throw new Error(`Queue delete failed: ${delErr.message}`);
+
+    const remainingAfter = Math.max(0, remainingBefore - rows.length);
+    const done = Math.max(0, (aiTotal || 0) - remainingAfter);
+    await service
+      .from("reclass_jobs")
+      .update({ error_message: `[ai_progress] ${done}/${aiTotal}` } as any)
+      .eq("id", jobId);
+  }
 }
 
 /**
