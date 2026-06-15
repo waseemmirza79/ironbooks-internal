@@ -119,11 +119,13 @@
   "app/flagged/page.tsx: error TS2339: Property 'full_name' does not exist on type 'never'.",
   "app/flagged/page.tsx: error TS2339: Property 'role' does not exist on type 'never'.",
   "app/jobs/[id]/execute/page.tsx: error TS2339: Property 'status' does not exist on type 'never'.",
+  "app/jobs/[id]/review/page.tsx: error TS2322: Type '{ account_name: string; parent_account_name: string | null; is_parent: boolean | null; section: \"revenue\" | \"cogs\" | \"gross_profit\" | \"operating_expense\" | \"other_income\" | \"other_expense\" | \"equity\" | \"asset\" | \"liability\"; sort_order: number; }[]' is not assignable to type 'MasterAccount[]'.",
   "app/jobs/[id]/review/page.tsx: error TS2339: Property 'ai_completed_at' does not exist on type 'never'.",
   "app/jobs/[id]/review/page.tsx: error TS2339: Property 'error_message' does not exist on type 'never'.",
   "app/jobs/[id]/review/page.tsx: error TS2339: Property 'id' does not exist on type 'never'.",
   "app/jobs/[id]/review/page.tsx: error TS2339: Property 'status' does not exist on type 'never'.",
   "app/jobs/[id]/review/page.tsx: error TS2339: Property 'updated_at' does not exist on type 'never'.",
+  "app/jobs/[id]/review/page.tsx: error TS2345: Argument of type 'string' is not assignable to parameter of type 'NonNullable<\"US\" | \"CA\">'.",
   "app/jobs/[id]/review/review-client.tsx: error TS2345: Argument of type '{ bookkeeper_override: boolean; flagged_reason?: string | undefined; ai_suggested_target?: string | undefined; new_name?: string | null | undefined; action: \"keep\" | \"rename\" | \"delete\" | \"flag\" | \"create\" | \"merge\"; }' is not assignable to parameter of type 'never'.",
   "app/jobs/new/form.tsx: error TS2339: Property 'id' does not exist on type 'never'.",
   "app/jobs/new/form.tsx: error TS2339: Property 'status' does not exist on type 'never'.",
@@ -155,5 +157,6 @@
   "middleware.ts: error TS7006: Parameter 'cookiesToSet' implicitly has an 'any' type.",
   "middleware.ts: error TS7031: Binding element 'name' implicitly has an 'any' type.",
   "middleware.ts: error TS7031: Binding element 'options' implicitly has an 'any' type.",
-  "middleware.ts: error TS7031: Binding element 'value' implicitly has an 'any' type."
+  "middleware.ts: error TS7031: Binding element 'value' implicitly has an 'any' type.",
+  "scripts/add-bookkeepers.ts: error TS18047: 'authId' is possibly 'null'."
 ]

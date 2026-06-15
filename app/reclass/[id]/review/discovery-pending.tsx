@@ -27,6 +27,8 @@ export function ReclassDiscoveryPending({
   const [wsStarting, setWsStarting] = useState(false);
   const [wsSkipping, setWsSkipping] = useState(false);
   const [wsError, setWsError] = useState<string>("");
+  const [aiContinuing, setAiContinuing] = useState(false);
+  const [aiError, setAiError] = useState<string>("");
 
   useEffect(() => {
     const t = setInterval(() => setElapsed((s) => s + 1), 1000);
@@ -87,6 +89,9 @@ export function ReclassDiscoveryPending({
         // Polling resumes when the bookkeeper clicks "Web search" (status flips
         // back to executing).
         if (data.status === "web_search_paused") return;
+        // ai_paused: large job paused between chunked-categorization runs. Stop
+        // polling and show the Continue gate; polling resumes on Continue.
+        if (data.status === "ai_paused") return;
 
         setTimeout(poll, 2000);
       } catch (e: any) {
@@ -168,6 +173,48 @@ export function ReclassDiscoveryPending({
     } catch {
       setWsError("Network error — try again");
       setWsSkipping(false);
+    }
+  }
+
+  // Continue the chunked AI categorization: runs the next batch in a fresh
+  // invocation, then re-enters polling (which stops again at ai_paused for the
+  // next approval, or moves on to web_search_paused / in_review when done).
+  async function continueAiChunk() {
+    setAiContinuing(true);
+    setAiError("");
+    try {
+      const res = await fetch(`/api/reclass/${jobId}/categorize-chunk`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setAiError(data.error || `Failed (${res.status})`);
+        setAiContinuing(false);
+        return;
+      }
+      setStatus("executing");
+      setAiContinuing(false);
+      async function pollAfterContinue() {
+        try {
+          const r = await fetch(`/api/reclass/${jobId}/status`);
+          if (!r.ok) { setTimeout(pollAfterContinue, 2000); return; }
+          const d = await r.json();
+          setStatus(d.status);
+          setStats(d.stats);
+          if (d.ai_progress) setAiProgress(d.ai_progress);
+          if (d.phase !== undefined) setPhase(d.phase);
+          if (d.web_search_pending_count !== undefined && d.web_search_pending_count !== null) {
+            setWsPendingCount(d.web_search_pending_count);
+          }
+          if (d.status === "in_review") { window.location.reload(); return; }
+          if (d.status === "failed") { setError(d.error_message || "Categorization failed"); return; }
+          if (d.status === "web_search_paused") return; // show ws prompt
+          if (d.status === "ai_paused") return; // show gate again for next batch
+          setTimeout(pollAfterContinue, 2000);
+        } catch { setTimeout(pollAfterContinue, 2000); }
+      }
+      pollAfterContinue();
+    } catch {
+      setAiError("Network error — try again");
+      setAiContinuing(false);
     }
   }
 
@@ -296,6 +343,75 @@ export function ReclassDiscoveryPending({
     );
   }
 
+  // ── CHUNKED CATEGORIZATION GATE ────────────────────────────────────────
+  // Large job: AI categorization runs in approved batches so no single run can
+  // time out. Show progress + a Continue button; each click runs the next batch
+  // (up to ~10 min) then pauses back here. Pre-matched + skipped rows are
+  // already saved; this only covers the lines that still need Claude.
+  if (status === "ai_paused" && !aiContinuing) {
+    const done = aiProgress?.done ?? 0;
+    const total = aiProgress?.total ?? 0;
+    const remaining = Math.max(0, total - done);
+    const started = done > 0;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    return (
+      <div className="bg-white rounded-2xl border border-gray-100 p-8 space-y-5">
+        <div className="flex items-start gap-3 p-4 bg-teal-lighter/50 text-navy rounded-lg border border-teal/20">
+          <Database className="flex-shrink-0 mt-0.5 text-teal" size={20} />
+          <div>
+            <div className="font-semibold mb-1">
+              {started ? "Categorization paused — continue when ready" : "Large job — categorize in approved batches"}
+            </div>
+            <div className="text-sm text-ink-slate">
+              {total} transaction{total === 1 ? "" : "s"} need AI categorization. To stay well
+              within time limits, SNAP runs them in batches you approve — each run handles a
+              batch (up to ~10 min) then pauses here.
+              {started ? ` ${done} of ${total} done so far.` : ""}
+            </div>
+          </div>
+        </div>
+
+        {total > 0 && (
+          <div>
+            <div className="w-full bg-gray-100 rounded-full h-2">
+              <div className="bg-teal h-2 rounded-full transition-all" style={{ width: `${pct}%` }} />
+            </div>
+            <div className="text-xs text-ink-slate mt-1">{done} / {total} categorized ({pct}%)</div>
+          </div>
+        )}
+
+        <div className="space-y-2 text-sm">
+          <div className="flex justify-between py-2 border-b border-gray-100">
+            <span className="text-ink-slate">Categorized so far</span>
+            <span className="font-semibold text-navy">{done}</span>
+          </div>
+          <div className="flex justify-between py-2">
+            <span className="text-ink-slate">Remaining to categorize</span>
+            <span className="font-semibold text-navy">{remaining}</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={continueAiChunk}
+            disabled={aiContinuing}
+            className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-5 py-2.5 rounded-lg disabled:opacity-50"
+          >
+            {aiContinuing ? <Loader2 size={14} className="animate-spin" /> : <PlayCircle size={15} />}
+            {started ? `Continue — categorize next batch` : "Start categorization"}
+          </button>
+          {aiError && <span className="text-sm font-semibold text-red-600">{aiError}</span>}
+        </div>
+
+        <p className="text-xs text-ink-slate leading-relaxed">
+          Each batch is saved to QuickBooks-ready review as it finishes, so your progress is never
+          lost — you can close this page and come back to continue. When all batches are done,
+          you&apos;ll move to web search / manual review.
+        </p>
+      </div>
+    );
+  }
+
   // Stage detection driven by server-side phase markers (more reliable than
   // elapsed time). Falls back to time-based guess only when no phase yet.
   type Stage = "pulling" | "knowledge_base" | "ai" | "web_search" | "saving";
@@ -336,7 +452,7 @@ export function ReclassDiscoveryPending({
 
   // Right-side counter on the phase banner — shows whichever progress is active.
   const activeCounter = aiProgress && stage === "ai"
-    ? `Batch ${aiProgress.done} / ${aiProgress.total}`
+    ? `${aiProgress.done} / ${aiProgress.total}`
     : wsProgress && stage === "web_search"
       ? `Batch ${wsProgress.done} / ${wsProgress.total}`
       : null;
@@ -420,7 +536,7 @@ export function ReclassDiscoveryPending({
             </div>
             <div className="text-xs text-ink-slate mt-0.5">
               {aiProgress
-                ? `Batch ${aiProgress.done} of ${aiProgress.total} complete`
+                ? `${aiProgress.done} of ${aiProgress.total} categorized`
                 : "Sequential batches — ~15 lines per call, ~10–60s each"}
             </div>
           </div>

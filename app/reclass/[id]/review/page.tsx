@@ -39,8 +39,9 @@ export default async function ReclassReviewPage({
 
   // Show the pending/progress UI while discovering or waiting for web search chunks.
   // `web_search_paused` = AI done, waiting for bookkeeper to click Continue.
+  // `ai_paused` = large job paused between chunked-categorization runs (Continue gate).
   // `failed` = watchdog caught a hang — pending component shows retry CTA.
-  if (job.status === "executing" || job.status === "web_search_paused" || job.status === "failed" || !job.ai_completed_at) {
+  if (job.status === "executing" || job.status === "web_search_paused" || (job.status as string) === "ai_paused" || job.status === "failed" || !job.ai_completed_at) {
     return (
       <AppShell>
         <TopBar

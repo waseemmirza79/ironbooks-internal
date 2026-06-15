@@ -223,6 +223,27 @@ export async function sweepStaleJobs(): Promise<SweepResult> {
     .lt("updated_at", webSearchIdleCutoff)
     .select("id");
 
+  // reclass_jobs — ai_paused idle rescue. A large chunked categorization parks
+  // at ai_paused between approved runs, waiting for the bookkeeper to click
+  // Continue. The watchdog never fails it while paused (only `executing` rows
+  // are swept), but an abandoned pause blocks the per-client concurrency guard
+  // forever. After 6h idle, fail it — partial rows stay with the failed job and
+  // the bookkeeper starts a fresh run. NOT unparked to in_review (unlike
+  // web_search_paused): categorization is incomplete, so the still-queued lines
+  // would be missing from review.
+  const errorMsgAiPausedIdle =
+    "Auto-failed by watchdog: categorization paused (ai_paused) for >6h with no Continue. Partial results were saved but the run is incomplete — start a fresh reclass to finish it.";
+  const { data: reclassD } = await service
+    .from("reclass_jobs")
+    .update({
+      status: "failed",
+      error_message: errorMsgAiPausedIdle,
+      execution_completed_at: new Date().toISOString(),
+    } as any)
+    .eq("status", "ai_paused" as any)
+    .lt("updated_at", webSearchIdleCutoff)
+    .select("id");
+
   // stripe_recon_jobs — uses status='discovering' during the QBO fetch
   // phase (different status name than coa/reclass). We sweep both
   // 'discovering' and 'executing' rows older than the never-started cutoff.
@@ -272,7 +293,7 @@ export async function sweepStaleJobs(): Promise<SweepResult> {
 
   return {
     coa_failed: (coaA?.length || 0) + (coaB?.length || 0) + coaSilentIds.length,
-    reclass_failed: (reclassA?.length || 0) + (reclassB?.length || 0) + (reclassC?.length || 0),
+    reclass_failed: (reclassA?.length || 0) + (reclassB?.length || 0) + (reclassC?.length || 0) + (reclassD?.length || 0),
     stripe_recon_failed: stripeFailed,
     cleanup_runs_failed: cleanupFailed,
     month_end_recovered: monthEndRecovered,
