@@ -15,7 +15,7 @@ const INTERNAL_EMAIL_DOMAIN = "@ironbooks.com";
  * Order of preference for the redirect destination:
  *   1. Explicit `next` query param — invite emails drop you on a specific page
  *   2. role='client'    → /portal
- *   3. everything else  → /dashboard
+ *   3. everything else  → /today (the internal daily command center)
  *
  * Auto-provisioning: if no users row exists for this auth user and the
  * email ends in @ironbooks.com, we create a bookkeeper row on the fly.
@@ -165,5 +165,5 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/portal`);
   }
 
-  return NextResponse.redirect(`${origin}/dashboard`);
+  return NextResponse.redirect(`${origin}/today`);
 }

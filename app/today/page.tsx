@@ -3,16 +3,18 @@ import { TopBar } from "@/components/TopBar";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, ArrowRight, Sparkles, Clock, Pause } from "lucide-react";
+import { ArrowRight, Sparkles, Pause } from "lucide-react";
 import { ClientFlagsWidget } from "./client-flags-widget";
 import { ReclassRequestsWidget, type PendingReclassRequest } from "./reclass-requests-widget";
 import { ClientInboxWidget, type InboundCommRow } from "./client-inbox-widget";
 import { StatementApprovalsWidget, type StatementApprovalRow } from "./statement-approvals-widget";
 import { StatementEscalationsWidget, type StatementEscalationRow } from "./statement-escalations-widget";
 import { CleanupDeadlinesWidget, type CleanupDeadlineRow } from "./cleanup-deadlines-widget";
-import { ViewAsSelector } from "./view-as-selector";
 import { QboHealthAlert } from "@/components/QboHealthAlert";
 import { MonthlyBsCheckButton } from "./monthly-bs-check";
+import { PulseBar } from "./pulse-bar";
+import { FocusHero } from "./focus-hero";
+import { computeTodayPriority } from "@/lib/today-priority";
 
 export const dynamic = "force-dynamic";
 
@@ -482,7 +484,6 @@ export default async function TodayPage({
 
   // Top-line totals
   const totalPending = Array.from(pendingByClient.values()).reduce((s, n) => s + n, 0);
-  const totalAnomalies = Array.from(anomaliesByClient.values()).reduce((s, n) => s + n, 0);
   const totalAutoExecuted = Array.from(autoExecuted24h.values()).reduce((s, n) => s + n, 0);
 
   // Sort clients: paused first, then by pending count desc, then by name
@@ -502,106 +503,118 @@ export default async function TodayPage({
     day: "numeric",
   });
 
+  // Priority model — the "Focus now" hero + pulse-bar counts, computed over
+  // the data already fetched above (no extra queries).
+  const clientNameById = new Map<string, string>(
+    eligibleClients.map((c) => [c.id, c.client_name])
+  );
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const { hero, counts } = computeTodayPriority({
+    eligibleClients,
+    pendingFlags,
+    pendingReclassRequests,
+    inboundComms,
+    cleanupDeadlines,
+    statementEscalations,
+    pendingByClient,
+    anomaliesByClient,
+    clientNameById,
+    totalPending,
+    todayStr,
+  });
+  // Cleanup deadlines belong to "Your work" only when the page is scoped to a
+  // single bookkeeper (themselves, or a senior viewing-as). For a senior
+  // viewing the whole fleet, cleanup lives in the Team band instead — so
+  // don't count it toward the personal "Your work" total in that case.
+  const workCount =
+    pendingFlags.length +
+    pendingReclassRequests.length +
+    inboundComms.length +
+    (scopeUserId ? cleanupDeadlines.length : 0);
+  const viewAsName = viewAs
+    ? allBookkeepers.find((b) => b.id === viewAs)?.full_name || "bookkeeper"
+    : null;
+
+  // Today is an action queue, not a directory — only surface clients that
+  // actually need attention (queued review items, anomalies, or a paused
+  // feed). The full client list lives on /clients.
+  const clientsNeedingReview = eligibleClients.filter(
+    (c) =>
+      c.daily_recon_paused ||
+      (pendingByClient.get(c.id) || 0) > 0 ||
+      (anomaliesByClient.get(c.id) || 0) > 0
+  );
+
   return (
     <AppShell>
       <TopBar title="Today" subtitle={`Daily reconciliation · ${today}`} />
-      <div className="px-8 py-6 max-w-5xl space-y-6">
-        {/* Dead QBO connections — seniors only (they run the re-auth flow).
+      <div className="px-8 py-6 max-w-5xl space-y-5">
+        {/* Pulse bar — time-pressure at a glance + month-end status + view-as */}
+        <PulseBar
+          counts={counts}
+          isSenior={isSenior}
+          monthlyClosedCount={monthlyClosedCount}
+          totalClients={eligibleClients.length}
+          closingPeriodLabel={closingPeriodLabel}
+          bookkeepers={allBookkeepers}
+          viewAs={viewAs}
+        />
+
+        {/* Dead QBO connections — seniors only. Sits right up top so a broken
+            connection (which silently blocks recon) is impossible to miss.
             Renders nothing when the fleet is healthy. */}
         {isSenior && <QboHealthAlert />}
 
-        {/* Inbound client messages + statement uploads — top slot: a
-            client sending files is usually waiting on us to act on them */}
-        {isSenior && (
-          <div className="flex justify-end">
-            <ViewAsSelector bookkeepers={allBookkeepers} current={viewAs} />
-          </div>
-        )}
+        {/* Focus now — the single most important thing, computed. */}
+        <FocusHero
+          hero={hero}
+          autoExecuted={totalAutoExecuted}
+          dueSoon={counts.dueToday + counts.dueSoon}
+        />
 
-        {cleanupDeadlines.length > 0 && (
-          <CleanupDeadlinesWidget rows={cleanupDeadlines} showBookkeeper={isSenior && !viewAs} />
-        )}
-
-        {statementApprovals.length > 0 && <StatementApprovalsWidget rows={statementApprovals} />}
-
-        {statementEscalations.length > 0 && <StatementEscalationsWidget rows={statementEscalations} />}
-
-        {inboundComms.length > 0 && <ClientInboxWidget rows={inboundComms} />}
-
-        {/* Portal flags from clients — shown above daily recon since they're
-            often more urgent (client is actively waiting for a response) */}
-        {pendingFlags.length > 0 && <ClientFlagsWidget flags={pendingFlags} />}
-
-        {/* Client reclass requests — clients flagging a category they want
-            changed. Approving runs the bulk reclass + activates a bank rule. */}
-        {pendingReclassRequests.length > 0 && (
-          <ReclassRequestsWidget requests={pendingReclassRequests} />
-        )}
-
-        {/* Month-end at-a-glance — only show if there's at least one
-            production client, otherwise just clutter. Links into
-            /month-end for the bulk delivery workflow. */}
-        {eligibleClients.length > 0 && (
-          <Link
-            href="/month-end"
-            className="flex items-center gap-4 px-5 py-3 bg-gradient-to-r from-navy/[0.04] to-white rounded-2xl border border-navy/15 hover:border-navy/30 transition-colors group"
-          >
-            <div className="p-2 rounded-lg bg-navy/10 flex-shrink-0">
-              <CheckCircle2 size={16} className="text-navy" />
+        {/* ── YOUR WORK ── the logged-in person's actionable queue ── */}
+        <section id="work" className="space-y-4 scroll-mt-4">
+          <h2 className="text-sm font-bold text-navy uppercase tracking-wider">
+            {workCount > 0 ? `Your work · ${workCount} to act on` : "Your work"}
+          </h2>
+          {workCount === 0 ? (
+            <div className="bg-white rounded-2xl border border-gray-100 px-5 py-6 text-sm text-ink-slate">
+              Nothing waiting on you right now.
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-xs font-bold uppercase tracking-widest text-ink-light">
-                Month-end · {closingPeriodLabel}
-              </div>
-              <div className="text-sm font-bold text-navy mt-0.5">
-                <span className="text-emerald-700">{monthlyClosedCount}</span> of {eligibleClients.length} clients closed for the period
-              </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Client-waiting items first (a human is blocked on a reply),
+                  then your cleanup deadlines. Each widget self-manages its
+                  resolve state and hides at zero rows. */}
+              {pendingFlags.length > 0 && <ClientFlagsWidget flags={pendingFlags} />}
+              {pendingReclassRequests.length > 0 && (
+                <ReclassRequestsWidget requests={pendingReclassRequests} />
+              )}
+              {inboundComms.length > 0 && <ClientInboxWidget rows={inboundComms} />}
+              {scopeUserId && cleanupDeadlines.length > 0 && (
+                <CleanupDeadlinesWidget rows={cleanupDeadlines} showBookkeeper={false} />
+              )}
             </div>
-            <div className="text-xs font-bold text-navy group-hover:text-teal flex items-center gap-1 flex-shrink-0">
-              Open Month-End <ArrowRight size={12} />
-            </div>
-          </Link>
-        )}
+          )}
+        </section>
 
-        {/* Top-line summary */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <SummaryCard
-            label="Already in QuickBooks (auto, last 24h)"
-            value={totalAutoExecuted}
-            icon={<CheckCircle2 className="text-emerald-600" size={20} />}
-            tone="success"
-          />
-          <SummaryCard
-            label="Need your decision"
-            value={totalPending}
-            icon={<Clock className="text-amber-600" size={20} />}
-            tone={totalPending > 0 ? "amber" : "muted"}
-          />
-          <SummaryCard
-            label="High-risk — review first"
-            value={totalAnomalies}
-            icon={<AlertTriangle className="text-red-600" size={20} />}
-            tone={totalAnomalies > 0 ? "red" : "muted"}
-          />
-        </div>
-
-        {/* Per-client list */}
+        {/* ── CLIENTS NEEDING REVIEW ── action queue, not a directory ── */}
+        {clientsNeedingReview.length > 0 && (
+        <section id="clients" className="scroll-mt-4">
         <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
           <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
             <h2 className="text-sm font-bold text-navy uppercase tracking-wider">
-              Clients on daily recon ({eligibleClients.length})
+              Needs review today ({clientsNeedingReview.length})
             </h2>
-            {isSenior && (
-              <Link
-                href="/admin/daily-recon"
-                className="text-xs font-semibold text-teal hover:text-teal-dark"
-              >
-                Manage →
-              </Link>
-            )}
+            <Link
+              href="/clients"
+              className="text-xs font-semibold text-teal hover:text-teal-dark"
+            >
+              All clients →
+            </Link>
           </div>
           <ul className="divide-y divide-gray-50">
-            {eligibleClients.map((c) => {
+            {clientsNeedingReview.map((c) => {
               const pending = pendingByClient.get(c.id) || 0;
               const anomalies = anomaliesByClient.get(c.id) || 0;
               const autoToday = autoExecuted24h.get(c.id) || 0;
@@ -655,39 +668,43 @@ export default async function TodayPage({
             })}
           </ul>
         </div>
+        </section>
+        )}
+
+        {/* ── TEAM ── senior oversight queues, walled off from personal work ── */}
+        {isSenior &&
+          (viewAsName ? (
+            <div className="bg-white rounded-2xl border border-gray-100 px-5 py-4 text-sm text-ink-slate">
+              Viewing <span className="font-semibold text-navy">{viewAsName}</span>&apos;s work ·{" "}
+              <Link href="/today" className="font-semibold text-teal hover:text-teal-dark">
+                exit to team queues
+              </Link>
+            </div>
+          ) : (
+            <section id="team" className="space-y-4 scroll-mt-4">
+              <h2 className="text-sm font-bold text-navy uppercase tracking-wider">Team</h2>
+              {statementApprovals.length > 0 && <StatementApprovalsWidget rows={statementApprovals} />}
+              {statementEscalations.length > 0 && (
+                <StatementEscalationsWidget rows={statementEscalations} />
+              )}
+              {cleanupDeadlines.length > 0 && (
+                <CleanupDeadlinesWidget rows={cleanupDeadlines} showBookkeeper={true} />
+              )}
+              {statementApprovals.length === 0 &&
+                statementEscalations.length === 0 &&
+                cleanupDeadlines.length === 0 && (
+                  <div className="bg-white rounded-2xl border border-gray-100 px-5 py-6 text-sm text-ink-slate">
+                    No approvals or escalations pending.
+                  </div>
+                )}
+            </section>
+          ))}
 
         <p className="text-xs text-ink-light text-center max-w-md mx-auto leading-relaxed">
           Auto items are already in QuickBooks; review items need your sign-off first.
         </p>
       </div>
     </AppShell>
-  );
-}
-
-function SummaryCard({
-  label,
-  value,
-  icon,
-  tone,
-}: {
-  label: string;
-  value: number;
-  icon: React.ReactNode;
-  tone: "success" | "amber" | "red" | "muted";
-}) {
-  const accent =
-    tone === "success" ? "bg-emerald-50 border-emerald-100"
-    : tone === "amber" ? "bg-amber-50 border-amber-100"
-    : tone === "red" ? "bg-red-50 border-red-100"
-    : "bg-white border-gray-100";
-  return (
-    <div className={`rounded-2xl border ${accent} p-4 flex items-center gap-3`}>
-      <div className="flex-shrink-0">{icon}</div>
-      <div>
-        <div className="text-2xl font-bold text-navy leading-none">{value}</div>
-        <div className="text-xs text-ink-slate mt-1">{label}</div>
-      </div>
-    </div>
   );
 }
 

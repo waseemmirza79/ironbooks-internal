@@ -104,12 +104,14 @@ export async function middleware(request: NextRequest) {
         !!request.cookies.get("snap_impersonate_user_id")?.value;
       if (isPortal && !isImpersonating) {
         const url = request.nextUrl.clone();
-        url.pathname = "/dashboard";
+        url.pathname = "/today";
         return NextResponse.redirect(url);
       }
       if (isRoot) {
+        // Today is the internal home — the daily command center every
+        // staff member should land on after login.
         const url = request.nextUrl.clone();
-        url.pathname = "/dashboard";
+        url.pathname = "/today";
         return NextResponse.redirect(url);
       }
     }
