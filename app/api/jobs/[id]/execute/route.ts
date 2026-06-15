@@ -43,12 +43,19 @@ export async function POST(
   // nothing to do (or the worker dies), and the row spins until the
   // watchdog catches it. Nothing-to-execute → mark complete immediately
   // so the bookkeeper moves on cleanly instead of staring at a spinner.
+  // Use explicit .neq() calls instead of .not("action", "in", "(...)"):
+  // the PostgREST not.in syntax routed through supabase-js was matching
+  // zero rows in practice (silently broken), leaving every cleanup job
+  // stuck on "Nothing to execute" even with 90+ pending actions. Explicit
+  // neq()s have no escaping ambiguity. "ignore" was in the original
+  // exclude list but isn't a real action value in the enum — dropped.
   const { count: actionableCount } = await service
     .from("coa_actions")
     .select("id", { count: "exact", head: true })
     .eq("job_id", jobId)
     .eq("executed", false)
-    .not("action", "in", '("flag","ignore","keep")');
+    .neq("action", "flag")
+    .neq("action", "keep");
   if (!actionableCount || actionableCount === 0) {
     await service
       .from("coa_jobs")

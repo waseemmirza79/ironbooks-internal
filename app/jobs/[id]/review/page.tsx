@@ -1,7 +1,7 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
-import { createServerSupabase } from "@/lib/supabase";
+import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { notFound } from "next/navigation";
 import { Loader2, AlertCircle, RefreshCcw } from "lucide-react";
 import Link from "next/link";
@@ -113,10 +113,20 @@ export default async function ReviewPage({
 
   // Fetch master COA leaf accounts for the job's jurisdiction + industry.
   // Falls back to no-industry filter if Migration 7 hasn't run yet.
+  //
+  // Uses the SERVICE-ROLE client deliberately: master_coa is global
+  // reference data (the Ironbooks-curated chart-of-accounts template),
+  // not client-scoped. Its RLS policy gates SELECT behind is_team_member(),
+  // which can return false in server-component contexts where auth.uid()
+  // isn't reliably populated — leaving the Map-to-Master dropdown empty
+  // for legitimately authenticated bookkeepers. Bypassing RLS here is
+  // intentional and safe: every staff user who can reach this page should
+  // see the full master COA.
   const jurisdiction = (clientLink?.jurisdiction as string) || 'US';
   const industry = ((clientLink as any)?.industry as string) || 'painters';
+  const refData = createServiceSupabase();
 
-  let { data: masterAccounts } = await supabase
+  let { data: masterAccounts } = await refData
     .from("master_coa")
     .select("account_name, parent_account_name, is_parent, section, sort_order")
     .eq("jurisdiction", jurisdiction)
@@ -125,7 +135,7 @@ export default async function ReviewPage({
     .order("sort_order");
   // Fallbacks for missing industry rows or pre-Migration-7 state
   if ((masterAccounts || []).length === 0 && industry !== "painters") {
-    const painters = await supabase
+    const painters = await refData
       .from("master_coa")
       .select("account_name, parent_account_name, is_parent, section, sort_order")
       .eq("jurisdiction", jurisdiction)
@@ -135,7 +145,7 @@ export default async function ReviewPage({
     masterAccounts = painters.data;
   }
   if ((masterAccounts || []).length === 0) {
-    const noFilter = await supabase
+    const noFilter = await refData
       .from("master_coa")
       .select("account_name, parent_account_name, is_parent, section, sort_order")
       .eq("jurisdiction", jurisdiction)
