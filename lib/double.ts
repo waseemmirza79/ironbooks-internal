@@ -18,6 +18,17 @@
 const DEFAULT_BASE = "https://api.doublehq.com";
 const BASE = process.env.DOUBLE_BASE_URL || DEFAULT_BASE;
 
+/**
+ * Hard ceiling on any single Double HTTP call. Without it, a Double
+ * endpoint that accepts the connection but never responds hangs forever.
+ * In reclass discovery's account-fetch phase, getClientEndCloses() runs
+ * with no timeout and no heartbeat — a hung Double call there stalls the
+ * whole job silently until the 15-min watchdog (the "stuck at Fetching
+ * chart of accounts" symptom). 30s turns that into a fast, catchable error
+ * that the calling try/catch already degrades gracefully (doubleCloses=[]).
+ */
+const DOUBLE_REQUEST_TIMEOUT_MS = 30_000;
+
 // ============== TYPES ==============
 
 /** From GET /api/clients — the paginated list endpoint returns this sparse shape */
@@ -136,11 +147,20 @@ async function getAccessToken(): Promise<string> {
   body.set("client_id", clientId);
   body.set("client_secret", clientSecret);
 
-  const res = await fetch(`${BASE}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+      signal: AbortSignal.timeout(DOUBLE_REQUEST_TIMEOUT_MS),
+    });
+  } catch (err: any) {
+    if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+      throw new Error(`Double OAuth token request timed out after ${DOUBLE_REQUEST_TIMEOUT_MS / 1000}s`);
+    }
+    throw err;
+  }
 
   if (!res.ok) {
     const text = await res.text();
@@ -222,8 +242,19 @@ async function doubleRequest<T>(path: string, opts: RequestOptions = {}): Promis
     },
   };
   if (opts.body) init.body = JSON.stringify(opts.body);
+  init.signal = AbortSignal.timeout(DOUBLE_REQUEST_TIMEOUT_MS);
 
-  const res = await fetch(url, init);
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch (err: any) {
+    if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+      throw new Error(
+        `Double API timed out after ${DOUBLE_REQUEST_TIMEOUT_MS / 1000}s on ${path} — Double did not respond.`
+      );
+    }
+    throw err;
+  }
 
   // Handle 401: token might have been revoked mid-cache. Clear and retry once.
   if (res.status === 401 && tokenCache) {

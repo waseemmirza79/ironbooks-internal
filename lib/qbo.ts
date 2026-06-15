@@ -666,6 +666,17 @@ function extractIntuitTid(res: Response): string {
   return res.headers.get('intuit_tid') || res.headers.get('Intuit_Tid') || '(no tid)';
 }
 
+/**
+ * Hard ceiling on any single QBO HTTP call. QBO occasionally accepts a
+ * connection and then never responds; without a timeout that hangs the
+ * whole request forever. In a background job (e.g. reclass discovery's
+ * account-fetch phase) a single hung call goes silent until the 15-min
+ * watchdog kills the job — the bookkeeper just sees an eternal spinner.
+ * 60s converts that silent hang into a fast, catchable error. QBO's own
+ * guidance is sub-60s responses, so a legit call never trips this.
+ */
+const QBO_REQUEST_TIMEOUT_MS = 60_000;
+
 export async function qboRequest<T>(
   realmId: string,
   accessToken: string,
@@ -673,15 +684,29 @@ export async function qboRequest<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${QBO_BASE}/v3/company/${realmId}${endpoint}`;
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...options,
+      // Caller-supplied signal wins if present; otherwise enforce our ceiling.
+      signal: options.signal ?? AbortSignal.timeout(QBO_REQUEST_TIMEOUT_MS),
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    });
+  } catch (err: any) {
+    // AbortSignal.timeout fires a TimeoutError; surface it as a clear,
+    // job-failing message rather than a raw "The operation was aborted".
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      throw new Error(
+        `QBO API timed out after ${QBO_REQUEST_TIMEOUT_MS / 1000}s at ${endpoint} (realm ${realmId}) — QuickBooks did not respond.`
+      );
+    }
+    throw err;
+  }
 
   const intuitTid = extractIntuitTid(res);
 
