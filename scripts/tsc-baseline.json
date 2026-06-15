@@ -155,5 +155,6 @@
   "middleware.ts: error TS7006: Parameter 'cookiesToSet' implicitly has an 'any' type.",
   "middleware.ts: error TS7031: Binding element 'name' implicitly has an 'any' type.",
   "middleware.ts: error TS7031: Binding element 'options' implicitly has an 'any' type.",
-  "middleware.ts: error TS7031: Binding element 'value' implicitly has an 'any' type."
+  "middleware.ts: error TS7031: Binding element 'value' implicitly has an 'any' type.",
+  "scripts/add-bookkeepers.ts: error TS18047: 'authId' is possibly 'null'."
 ]

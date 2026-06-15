@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Loader2, AlertCircle, CheckCircle2, Sparkles, Search, Database, RotateCcw, XCircle, PlayCircle } from "lucide-react";
@@ -28,8 +28,22 @@ export function ReclassDiscoveryPending({
   const [wsSkipping, setWsSkipping] = useState(false);
   const [wsError, setWsError] = useState<string>("");
 
+  // Stall detection: a hung background task keeps the job in `executing`
+  // with no advancing progress until the DB watchdog fails it (up to ~40
+  // min later). That's an eternity of bare spinner for a new bookkeeper, so
+  // we surface a soft "this may be stuck" warning after a few quiet minutes —
+  // well before the watchdog — with the recovery action inline.
+  const lastAdvanceRef = useRef<number>(Date.now());
+  const progressSigRef = useRef<string>("");
+  const statusRef = useRef<string>("starting");
+  const [quietMs, setQuietMs] = useState<number>(0);
+  const STALL_MS = 180_000; // 3 min of no forward progress while executing
+
   useEffect(() => {
-    const t = setInterval(() => setElapsed((s) => s + 1), 1000);
+    const t = setInterval(() => {
+      setElapsed((s) => s + 1);
+      setQuietMs(Date.now() - lastAdvanceRef.current);
+    }, 1000);
     return () => clearInterval(t);
   }, []);
 
@@ -69,6 +83,22 @@ export function ReclassDiscoveryPending({
         if (data.phase !== undefined) setPhase(data.phase);
         if (data.web_search_pending_count !== undefined && data.web_search_pending_count !== null) {
           setWsPendingCount(data.web_search_pending_count);
+        }
+
+        // Reset the stall clock whenever anything actually moves (status,
+        // phase, or a progress counter). If the signature stops changing, the
+        // background task has likely died and the stall warning kicks in.
+        statusRef.current = data.status;
+        const sig = [
+          data.status,
+          data.phase ?? "",
+          data.ai_progress?.done ?? "",
+          data.web_search_progress?.done ?? "",
+          data.stats?.pulled ?? "",
+        ].join("|");
+        if (sig !== progressSigRef.current) {
+          progressSigRef.current = sig;
+          lastAdvanceRef.current = Date.now();
         }
 
         if (data.status === "in_review") {
@@ -341,6 +371,12 @@ export function ReclassDiscoveryPending({
       ? `Batch ${wsProgress.done} / ${wsProgress.total}`
       : null;
 
+  // Surfaced when discovery has been running but made no forward progress for
+  // a few minutes — a strong hint the background task died (it'll be
+  // watchdog-failed eventually, but this tells the bookkeeper now).
+  const stalled = statusRef.current === "executing" && quietMs > STALL_MS;
+  const quietMin = Math.max(1, Math.round(quietMs / 60000));
+
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-8">
       <div className="flex items-center gap-3 mb-2">
@@ -366,6 +402,30 @@ export function ReclassDiscoveryPending({
           <span className="text-xs text-ink-slate ml-auto">{activeCounter}</span>
         )}
       </div>
+
+      {/* Stall warning — no forward progress for a few minutes. Reassures the
+          bookkeeper their data is safe and offers the recovery action inline,
+          well before the DB watchdog would auto-fail it. */}
+      {stalled && (
+        <div className="mb-5 p-3 rounded-lg bg-amber-50 border border-amber-200 flex items-start gap-2">
+          <AlertCircle className="text-amber-600 flex-shrink-0 mt-0.5" size={16} />
+          <div className="text-sm text-amber-900 leading-relaxed">
+            <span className="font-semibold">Taking longer than usual</span> — no progress for{" "}
+            {quietMin} min. Discovery normally finishes in 1–3 minutes; this can happen on a large
+            date range or a stalled AI call. Nothing has been written to QuickBooks, so it&apos;s
+            safe to{" "}
+            <button
+              onClick={cancelJob}
+              disabled={cancelling}
+              className="font-semibold underline hover:text-amber-950 disabled:opacity-50"
+            >
+              cancel and start a fresh reclass
+            </button>{" "}
+            (a narrower date range helps on big clients). If left alone, a watchdog will auto-fail
+            it so it never hangs forever.
+          </div>
+        </div>
+      )}
 
       {/* Pipeline stages */}
       <div className="rounded-xl bg-gray-50 p-4 mb-5 border border-gray-100">
