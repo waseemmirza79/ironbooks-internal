@@ -43,7 +43,9 @@ export default async function CashFlowPage({
     .select("*")
     .eq("id", ctx.clientLinkId)
     .single();
-  if ((clientRow as any)?.bs_enabled === false) {
+  // Cash flow derives from the balance sheet, so gate it the same way: show
+  // only once the BS has been explicitly pushed to the portal (bs_enabled=true).
+  if ((clientRow as any)?.bs_enabled !== true) {
     return (
       <div className="max-w-2xl">
         <h1 className="text-2xl font-bold text-navy">Cash Flow</h1>

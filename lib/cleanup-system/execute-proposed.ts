@@ -16,7 +16,8 @@ export async function executeProposedEntries(
   service: SupabaseClient,
   runId: string,
   userId: string,
-  module?: string
+  module?: string,
+  entryId?: string
 ): Promise<{ executed: number; failed: number; skipped: number }> {
   let query = service
     .from("proposed_entries")
@@ -26,6 +27,10 @@ export async function executeProposedEntries(
     .eq("executed", false);
 
   if (module) query = query.eq("module", module);
+  // Scope to a single entry — used by the per-row "Approve & post" path so one
+  // Approve click posts exactly that entry to QBO (the bulk module path omits
+  // entryId and posts every approved-unexecuted entry in the module).
+  if (entryId) query = query.eq("id", entryId);
 
   const { data: entries } = await query;
   if (!entries || entries.length === 0) {

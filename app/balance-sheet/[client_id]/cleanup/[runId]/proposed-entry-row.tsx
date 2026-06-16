@@ -1,7 +1,7 @@
 "use client";
 
 import { parseEntryMeta, type UfEntryMeta } from "@/lib/cleanup-system/entry-meta";
-import { CheckCircle2, AlertCircle, XCircle, Clock } from "lucide-react";
+import { CheckCircle2, AlertCircle, XCircle, Clock, Loader2 } from "lucide-react";
 
 /**
  * Plain-English label for each entry_type that lands in a proposed_entries
@@ -92,12 +92,26 @@ export function ProposedEntryRow({
   entry,
   onApprove,
   onOverrideInvoice,
+  posting,
 }: {
   entry: any;
   onApprove: (id: string) => void;
   onOverrideInvoice: (id: string, invoiceId: string, docNumber: string) => void;
+  posting?: boolean;
 }) {
   const meta = parseEntryMeta(entry.ai_reasoning);
+
+  // Full journal-entry breakdown (debit/credit lines + accounts). je_lines is
+  // already on the row from GET /proposed; we just surface it so the bookkeeper
+  // can see exactly what will hit QuickBooks before approving.
+  const jeLines: any[] = Array.isArray(entry.je_lines) ? entry.je_lines : [];
+  const jeDebitTotal = jeLines
+    .filter((l) => l.side === "debit")
+    .reduce((s, l) => s + Number(l.amount || 0), 0);
+  const jeCreditTotal = jeLines
+    .filter((l) => l.side !== "debit")
+    .reduce((s, l) => s + Number(l.amount || 0), 0);
+  const jeBalanced = Math.abs(jeDebitTotal - jeCreditTotal) < 0.005;
   const ufMeta = meta?.type === "uf_match" ? (meta as UfEntryMeta) : null;
   const arMeta = meta?.type === "ar_duplicate" ? meta : null;
 
@@ -227,6 +241,53 @@ export function ProposedEntryRow({
             </div>
           )}
 
+          {/* Full journal-entry breakdown — exactly what posts to QuickBooks */}
+          {jeLines.length > 0 && (
+            <div className="mt-2.5 rounded-lg border border-gray-200 overflow-hidden">
+              <div className="grid grid-cols-[1fr_5rem_5rem] gap-x-2 px-3 py-1.5 bg-gray-50 text-[10px] font-bold uppercase tracking-wider text-ink-slate">
+                <span>Account</span>
+                <span className="text-right">Debit</span>
+                <span className="text-right">Credit</span>
+              </div>
+              {jeLines.map((l, i) => {
+                const acct =
+                  l.qbo_account_name || l.account_name || l.account_hint || "(unresolved account)";
+                const isDebit = l.side === "debit";
+                const amt = Number(l.amount || 0);
+                return (
+                  <div
+                    key={i}
+                    className="grid grid-cols-[1fr_5rem_5rem] gap-x-2 px-3 py-1.5 text-xs border-t border-gray-100"
+                  >
+                    <span className="text-navy min-w-0">
+                      <span className="font-medium">{acct}</span>
+                      {l.description && (
+                        <span className="text-ink-light"> · {l.description}</span>
+                      )}
+                    </span>
+                    <span className="text-right tabular-nums text-navy">
+                      {isDebit ? formatMoney(amt) : ""}
+                    </span>
+                    <span className="text-right tabular-nums text-navy">
+                      {!isDebit ? formatMoney(amt) : ""}
+                    </span>
+                  </div>
+                );
+              })}
+              <div className="grid grid-cols-[1fr_5rem_5rem] gap-x-2 px-3 py-1.5 text-xs border-t border-gray-200 bg-gray-50 font-bold">
+                <span className="text-ink-slate">Total</span>
+                <span className="text-right tabular-nums text-navy">{formatMoney(jeDebitTotal)}</span>
+                <span className="text-right tabular-nums text-navy">{formatMoney(jeCreditTotal)}</span>
+              </div>
+              {!jeBalanced && (
+                <div className="px-3 py-1.5 text-[11px] text-red-700 bg-red-50 border-t border-red-200 flex items-center gap-1">
+                  <AlertCircle size={11} /> Debits and credits don&apos;t balance — QuickBooks will
+                  reject this until it does.
+                </div>
+              )}
+            </div>
+          )}
+
           {/* State + confidence + execution result */}
           <div className="flex items-center gap-2 mt-2.5">
             <span
@@ -249,15 +310,20 @@ export function ProposedEntryRow({
           )}
         </div>
 
-        {/* Approve CTA — disabled if no invoice picked yet */}
+        {/* Approve CTA — approving posts the entry to QuickBooks immediately. */}
         {canApprove && (
           <button
             onClick={() => onApprove(entry.id)}
-            disabled={approveDisabled}
-            title={approveDisabled ? "Pick an invoice first" : "Approve for posting"}
-            className="text-xs font-bold px-3 py-1.5 rounded-lg border border-green-300 text-green-700 hover:bg-green-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+            disabled={approveDisabled || posting}
+            title={
+              approveDisabled
+                ? "Pick an invoice first"
+                : "Approve — posts this entry to QuickBooks now"
+            }
+            className="text-xs font-bold px-3 py-1.5 rounded-lg border border-green-300 text-green-700 hover:bg-green-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0 inline-flex items-center gap-1.5"
           >
-            Approve
+            {posting ? <Loader2 size={12} className="animate-spin" /> : null}
+            {posting ? "Posting…" : "Approve & post"}
           </button>
         )}
       </div>

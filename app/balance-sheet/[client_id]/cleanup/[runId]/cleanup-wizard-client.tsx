@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { MODULE_LABELS, MODULE_ORDER, type CleanupModule } from "@/lib/cleanup-system/types";
 import { ProposedEntryRow } from "./proposed-entry-row";
+import { parseEntryMeta } from "@/lib/cleanup-system/entry-meta";
 import { StatementsReview, periodLabel, type Statements } from "@/app/production/rec-card";
 
 type WizardStep = "diagnose" | "modules" | "review" | "qa" | "deliver";
@@ -301,12 +302,17 @@ export function CleanupWizardClient({
   clientLinkId,
   clientName,
   runId,
+  bsEnabled,
 }: {
   clientLinkId: string;
   clientName: string;
   runId: string;
+  bsEnabled?: boolean;
 }) {
   const [step, setStep] = useState<WizardStep>("diagnose");
+  const [postingId, setPostingId] = useState<string | null>(null);
+  const [bsPushed, setBsPushed] = useState<boolean>(!!bsEnabled);
+  const [pushingBs, setPushingBs] = useState(false);
   const [status, setStatus] = useState<RunStatus | null>(null);
   const [entries, setEntries] = useState<any[]>([]);
   const [qa, setQa] = useState<any>(null);
@@ -408,13 +414,28 @@ export function CleanupWizardClient({
     }
   }
 
+  // Approve = post to QuickBooks immediately. One row, one synchronous QBO
+  // write; the row reflects "Posted ✓" or the error inline.
   async function approveEntry(id: string) {
-    await fetch(`/api/cleanup/${runId}/proposed/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision: "approved" }),
-    });
-    await loadEntries(activeModule || undefined, reviewTab);
+    setPostingId(id);
+    setError("");
+    try {
+      const res = await fetch(`/api/cleanup/${runId}/proposed/${id}/approve-post`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Posting failed");
+      if (data.posted === false && data.error) setError(data.error);
+      await loadEntries(activeModule || undefined, reviewTab);
+      await refresh();
+    } catch (e: any) {
+      setError(e.message);
+      await loadEntries(activeModule || undefined, reviewTab);
+    } finally {
+      setPostingId(null);
+    }
   }
 
   /**
@@ -425,18 +446,53 @@ export function CleanupWizardClient({
    * already-auto-approved rows), but the next step posts to QBO so the
    * extra speed bump is worth it.
    */
+  // Publish the cleaned balance sheet to the client portal (separate from the
+  // P&L production promote). Until this is clicked, the portal BS + Cash Flow
+  // stay hidden behind the "still cleaning up" placeholder.
+  async function pushBalanceSheet() {
+    if (
+      !window.confirm(
+        `Publish ${clientName}'s balance sheet to their client portal?\n\nThey'll be able to see their Balance Sheet and Cash Flow. Only do this once the BS is cleaned and approved.`
+      )
+    )
+      return;
+    setPushingBs(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/clients/${clientLinkId}/production`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "push_balance_sheet" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Couldn't publish the balance sheet");
+      setBsPushed(true);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setPushingBs(false);
+    }
+  }
+
   function countAutoApprovable() {
     return entries.filter((e) => e.decision === "auto_approve" && !e.executed).length;
   }
   function countUfConfident() {
-    return entries.filter(
-      (e) =>
-        !e.executed &&
-        ["needs_review", "auto_approve"].includes(e.decision) &&
-        /(exact_invoice_number|high_confidence)/.test(
-          typeof e.ai_reasoning === "string" ? e.ai_reasoning : JSON.stringify(e.ai_reasoning || "")
-        )
-    ).length;
+    return entries.filter((e) => {
+      if (e.executed || !["needs_review", "auto_approve"].includes(e.decision)) return false;
+      const meta = parseEntryMeta(e.ai_reasoning);
+      const isConfident =
+        meta?.type === "uf_match" &&
+        (meta.kind === "exact_invoice_number" || meta.kind === "high_confidence");
+      if (!isConfident) return false;
+      // Only count entries that actually have an invoice target — otherwise
+      // they'd silently skip at post time and the count would lie.
+      const hasTarget =
+        !!e.bookkeeper_override_target_id ||
+        !!e.to_account_id ||
+        (meta?.type === "uf_match" && !!meta.proposed_invoice_id);
+      return hasTarget;
+    }).length;
   }
 
   async function approveAllAuto() {
@@ -445,13 +501,39 @@ export function CleanupWizardClient({
       setError("Nothing to bulk-approve in this module — try the Auto-approved tab to confirm.");
       return;
     }
-    if (!window.confirm(`Approve ${n} auto-approved ${n === 1 ? "entry" : "entries"}?\n\nNothing posts to QuickBooks until you click Execute.`)) return;
-    await fetch(`/api/cleanup/${runId}/proposed`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "approve_all_auto", module: activeModule }),
-    });
-    await loadEntries(activeModule || undefined, reviewTab);
+    if (!window.confirm(`Approve and post ${n} auto-approved ${n === 1 ? "entry" : "entries"} to QuickBooks now?\n\nThis writes to the client's books immediately.`)) return;
+    setActing(true);
+    setError("");
+    try {
+      const approveRes = await fetch(`/api/cleanup/${runId}/proposed`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "approve_all_auto", module: activeModule }),
+      });
+      if (!approveRes.ok) {
+        const d = await approveRes.json().catch(() => ({}));
+        throw new Error(d.error || "Couldn't approve the entries — nothing was posted.");
+      }
+      // Post the just-approved batch to QBO (the click is the attestation).
+      if (activeModule) {
+        const execRes = await fetch(`/api/cleanup/${runId}/modules/${activeModule}/execute`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ attested: true }),
+        });
+        if (!execRes.ok) {
+          const d = await execRes.json().catch(() => ({}));
+          throw new Error(d.error || "Approved, but posting to QuickBooks failed to start.");
+        }
+      }
+      await refresh();
+      await loadEntries(activeModule || undefined, reviewTab);
+    } catch (e: any) {
+      setError(e.message);
+      await loadEntries(activeModule || undefined, reviewTab);
+    } finally {
+      setActing(false);
+    }
   }
 
   async function approveUfConfident() {
@@ -460,13 +542,37 @@ export function CleanupWizardClient({
       setError("No exact / high-confidence UF matches to bulk-approve right now.");
       return;
     }
-    if (!window.confirm(`Approve ${n} UF ${n === 1 ? "match" : "matches"} (exact + high confidence)?\n\nNothing posts to QuickBooks until you click Execute.`)) return;
-    await fetch(`/api/cleanup/${runId}/proposed`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "approve_uf_confident" }),
-    });
-    await loadEntries("undeposited_funds", reviewTab);
+    if (!window.confirm(`Approve and post ${n} UF ${n === 1 ? "match" : "matches"} (exact + high confidence) to QuickBooks now?\n\nThis writes to the client's books immediately.`)) return;
+    setActing(true);
+    setError("");
+    try {
+      const approveRes = await fetch(`/api/cleanup/${runId}/proposed`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "approve_uf_confident" }),
+      });
+      if (!approveRes.ok) {
+        const d = await approveRes.json().catch(() => ({}));
+        throw new Error(d.error || "Couldn't approve the matches — nothing was posted.");
+      }
+      const mod = activeModule || "undeposited_funds";
+      const execRes = await fetch(`/api/cleanup/${runId}/modules/${mod}/execute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attested: true }),
+      });
+      if (!execRes.ok) {
+        const d = await execRes.json().catch(() => ({}));
+        throw new Error(d.error || "Approved, but posting to QuickBooks failed to start.");
+      }
+      await refresh();
+      await loadEntries(mod, reviewTab);
+    } catch (e: any) {
+      setError(e.message);
+      await loadEntries(activeModule || "undeposited_funds", reviewTab);
+    } finally {
+      setActing(false);
+    }
   }
 
   async function overrideInvoice(
@@ -1071,8 +1177,8 @@ export function CleanupWizardClient({
               Review {activeModule ? `· ${MODULE_LABELS[activeModule]}` : "queue"}
             </h3>
             <p className="text-xs text-ink-light mt-0.5">
-              Each row is a proposed change. Approve the ones that look right —
-              everything you approve will post to QuickBooks when you click Execute.
+              Each row is a proposed change — expand to see the exact debits and
+              credits. <strong>Approving an entry posts it to QuickBooks right away.</strong>
             </p>
           </div>
 
@@ -1195,6 +1301,7 @@ export function CleanupWizardClient({
                 entry={e}
                 onApprove={approveEntry}
                 onOverrideInvoice={overrideInvoice}
+                posting={postingId === e.id}
               />
             ))}
           </div>
@@ -1326,6 +1433,34 @@ export function CleanupWizardClient({
           <p className="text-sm text-emerald-800 mb-6 max-w-md mx-auto">
             Report published to the client portal. Mark the engagement complete to close out, or jump back to your workflow.
           </p>
+
+          {/* Publish the cleaned Balance Sheet to the portal — separate, explicit
+              step so the client never sees the BS before it's approved here. */}
+          <div className="mb-6 max-w-md mx-auto rounded-xl border border-emerald-300 bg-white p-4 text-left">
+            {bsPushed ? (
+              <div className="flex items-center gap-2 text-sm font-semibold text-emerald-800">
+                <CheckCircle2 size={16} className="text-emerald-600" />
+                Balance Sheet is live in the client portal
+              </div>
+            ) : (
+              <>
+                <div className="text-sm font-bold text-navy mb-1">Balance Sheet not visible to the client yet</div>
+                <p className="text-xs text-ink-slate mb-3">
+                  The client&apos;s portal Balance Sheet &amp; Cash Flow stay hidden until you
+                  publish them. Push now that the cleanup is approved.
+                </p>
+                <button
+                  onClick={pushBalanceSheet}
+                  disabled={pushingBs}
+                  className="w-full inline-flex items-center justify-center gap-2 bg-navy text-white font-bold py-2.5 rounded-lg hover:bg-[#0a1722] disabled:opacity-50"
+                >
+                  {pushingBs ? <Loader2 size={15} className="animate-spin" /> : <ArrowRight size={15} />}
+                  {pushingBs ? "Publishing…" : "Publish Balance Sheet to client portal"}
+                </button>
+              </>
+            )}
+          </div>
+
           <div className="flex gap-3 justify-center flex-wrap">
             <a
               href={`/clients/${clientLinkId}`}

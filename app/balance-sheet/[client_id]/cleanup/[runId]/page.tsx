@@ -20,7 +20,7 @@ export default async function CleanupWizardPage({
   const service = createServiceSupabase();
   const { data: client } = await service
     .from("client_links")
-    .select("id, client_name")
+    .select("id, client_name, bs_enabled")
     .eq("id", client_id)
     .single();
   if (!client) notFound();
@@ -45,6 +45,7 @@ export default async function CleanupWizardPage({
           clientLinkId={client_id}
           clientName={(client as any).client_name || "Client"}
           runId={runId}
+          bsEnabled={(client as any).bs_enabled === true}
         />
       </div>
     </AppShell>

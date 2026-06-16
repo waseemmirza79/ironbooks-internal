@@ -32,7 +32,10 @@ export default async function BalanceSheetPage() {
     .select("*")
     .eq("id", ctx.clientLinkId)
     .single();
-  if ((clientRow as any)?.bs_enabled === false) {
+  // Show the BS only once a bookkeeper has explicitly pushed it to the portal
+  // (bs_enabled = true). NULL / false → still hidden behind the placeholder, so
+  // a client never sees an un-cleaned balance sheet before it's approved here.
+  if ((clientRow as any)?.bs_enabled !== true) {
     return (
       <div className="max-w-2xl">
         <h1 className="text-2xl font-bold text-navy">Balance Sheet</h1>
