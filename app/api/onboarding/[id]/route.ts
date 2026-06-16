@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { resendOnboardingEmail } from "@/lib/ghl";
+import { applyOnboardingFormToProfile } from "@/lib/onboarding";
 
 export const dynamic = "force-dynamic";
 
@@ -106,6 +107,19 @@ export async function POST(
         return NextResponse.json({ error: `Create client failed: ${createErr.message}` }, { status: 500 });
       }
       await stamp({ status: "converted", client_link_id: created.id });
+
+      // Populate the new client's profile from the stored onboarding-form
+      // answers (blanks-only). The insert above only set name/status/owner;
+      // this fills contact, address, corporate type, revenue band, software,
+      // etc. Fail-soft — a mapping hiccup must not fail the conversion.
+      if (lead.ob_form_payload) {
+        try {
+          await applyOnboardingFormToProfile(service, created.id, lead.ob_form_payload);
+        } catch (e: any) {
+          console.warn(`[onboarding ${id}] profile fill on convert failed:`, e?.message);
+        }
+      }
+
       await service.from("audit_log").insert({
         event_type: "onboarding_lead_converted",
         user_id: user.id,

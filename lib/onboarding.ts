@@ -186,6 +186,108 @@ export function extractContactFields(payload: any) {
   };
 }
 
+// ── Onboarding form → client profile (migration 73) ─────────────────────────
+// The Ironbooks onboarding form posts these flat camelCase keys. This is the
+// authoritative mapping from form field → client_links column. GHL sometimes
+// nests custom fields under `customData`, so we read both top-level and there.
+
+import type { SupabaseClient as _SupabaseClient } from "@supabase/supabase-js";
+
+function readFormField(payload: any, key: string): string | null {
+  const v = payload?.[key] ?? payload?.customData?.[key];
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim();
+  return s === "" ? null : s;
+}
+
+function normalizeCountry(v: string): string {
+  const s = v.trim().toLowerCase();
+  if (["usa", "us", "u.s.", "u.s.a.", "united states"].includes(s)) return "United States";
+  if (["canada", "ca", "can"].includes(s)) return "Canada";
+  return v;
+}
+
+function titleCase(v: string): string {
+  return v.charAt(0).toUpperCase() + v.slice(1).toLowerCase();
+}
+
+/** form key → client_links column (+ optional value transform). */
+const FORM_TO_PROFILE: { key: string; col: string; transform?: (v: string) => string }[] = [
+  { key: "firstName", col: "contact_first_name" },
+  { key: "lastName", col: "contact_last_name" },
+  { key: "email", col: "client_email" },
+  { key: "phone", col: "client_phone" },
+  { key: "companyName", col: "legal_business_name" },
+  { key: "businessType", col: "trade_type" },
+  { key: "corporationType", col: "corporate_type" },
+  { key: "yearEnd", col: "fiscal_year_end" },
+  { key: "country", col: "country", transform: normalizeCountry },
+  { key: "province", col: "state_province" },
+  { key: "annualRevenue", col: "annual_revenue_range" },
+  { key: "taxsFiled", col: "taxes_up_to_date", transform: titleCase }, // note: form key is "taxsFiled"
+  { key: "lastBookkeeper", col: "prior_bookkeeper" },
+  { key: "accountingSoftware", col: "accounting_software" },
+  { key: "payrollProvider", col: "payroll_provider" },
+  { key: "numberOfEmployees", col: "employee_count_range" },
+  { key: "keepReceipts", col: "keeps_receipts" },
+  { key: "bankConnected", col: "bank_connected_to_software" },
+  { key: "creditCards", col: "uses_business_cards" },
+  // additionalNotes is intentionally NOT mapped to client_links.notes (that's
+  // the internal bookkeeper notes field). It stays visible via the onboarding
+  // answers card + the raw stored payload.
+];
+
+/** Map a form payload to the client_links profile columns it should set. */
+export function mapOnboardingFormToProfile(payload: any): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const { key, col, transform } of FORM_TO_PROFILE) {
+    const raw = readFormField(payload, key);
+    if (raw == null) continue;
+    out[col] = transform ? transform(raw) : raw;
+  }
+  return out;
+}
+
+/**
+ * Write the mapped onboarding-form fields onto a client_links row. Fills
+ * blanks only by default (never stomps a bookkeeper's manual edit); pass
+ * { overwrite: true } to let the form win. Stamps profile_updated_at. Returns
+ * how many columns were written. Fail-soft — caller decides what to do on error.
+ */
+export async function applyOnboardingFormToProfile(
+  service: _SupabaseClient,
+  clientLinkId: string,
+  payload: any,
+  opts: { overwrite?: boolean } = {}
+): Promise<{ filled: number; error?: string }> {
+  const mapped = mapOnboardingFormToProfile(payload);
+  if (Object.keys(mapped).length === 0) return { filled: 0 };
+
+  let updates: Record<string, any> = mapped;
+  if (!opts.overwrite) {
+    const cols = Object.keys(mapped);
+    const { data: cur } = await (service as any)
+      .from("client_links")
+      .select(cols.join(", "))
+      .eq("id", clientLinkId)
+      .single();
+    updates = {};
+    for (const [k, v] of Object.entries(mapped)) {
+      const existing = cur?.[k];
+      if (existing == null || String(existing).trim() === "") updates[k] = v;
+    }
+  }
+  if (Object.keys(updates).length === 0) return { filled: 0 };
+
+  updates.profile_updated_at = new Date().toISOString();
+  const { error } = await (service as any)
+    .from("client_links")
+    .update(updates)
+    .eq("id", clientLinkId);
+  if (error) return { filled: 0, error: error.message };
+  return { filled: Object.keys(updates).length - 1 };
+}
+
 /**
  * Upsert a lead from an inbound webhook keyed on the GHL contact id. Logs
  * the raw event first (idempotency/audit), then merges the milestone fields
