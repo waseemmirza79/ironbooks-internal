@@ -40,6 +40,7 @@ import {
   Copy,
   Check,
   X,
+  Archive,
 } from "lucide-react";
 import { CleanupReportModal } from "@/components/CleanupReportModal";
 
@@ -187,6 +188,7 @@ export function ClientsList({
       behind: active.filter((c) => c.status === "behind").length,
       paused: active.filter((c) => c.status === "paused").length,
       flagged: clients.filter((c) => c.flagged_cleanups > 0).length,
+      archived: clients.filter((c) => !c.is_active || c.status === "churned").length,
     };
   }, [clients]);
 
@@ -291,6 +293,18 @@ export function ClientsList({
             />
           </>
         )}
+        {/* Archived — the dedicated store for inactivated clients. They're
+            excluded from every other view; this is the only place they
+            surface, each with a Reactivate button to bring them back. */}
+        <div className="w-px h-6 bg-gray-200 mx-1" />
+        <StatusPill
+          label="Archived"
+          count={statusCounts.archived}
+          active={statusFilter === "inactive"}
+          onClick={() => setStatusFilter(statusFilter === "inactive" ? "all_active" : "inactive")}
+          color="#94A3B8"
+          icon={Archive}
+        />
       </div>
 
       {/* Search + secondary filters */}
