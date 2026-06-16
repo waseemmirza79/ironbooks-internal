@@ -213,7 +213,7 @@ export default async function ClientProfilePage({
   // used elsewhere in this codebase pending a types regen.
   const { data: clientLinkRaw } = await service
     .from("client_links")
-    .select("id, client_name, qbo_realm_id, industry, jurisdiction, state_province, status, last_synced_at, double_client_id, double_client_name, daily_recon_enabled, daily_recon_paused, daily_recon_paused_reason, daily_recon_enabled_at, cleanup_completed_at, contact_first_name, contact_last_name, client_email, client_phone, legal_business_name, trade_type, corporate_type, fiscal_year_end, country, address_line1, address_line2, city, postal_code, annual_revenue_range, taxes_up_to_date, prior_bookkeeper, accounting_software, payroll_provider, employee_count_range, uses_business_cards, keeps_receipts, bank_connected_to_software, profile_updated_at" as any)
+    .select("id, client_name, qbo_realm_id, industry, jurisdiction, state_province, status, last_synced_at, double_client_id, double_client_name, daily_recon_enabled, daily_recon_paused, daily_recon_paused_reason, daily_recon_enabled_at, cleanup_completed_at" as any)
     .eq("id", id)
     .single();
 
@@ -234,30 +234,6 @@ export default async function ClientProfilePage({
     daily_recon_paused_reason: string | null;
     daily_recon_enabled_at: string | null;
     cleanup_completed_at: string | null;
-    // Profile detail fields (migration 73)
-    contact_first_name: string | null;
-    contact_last_name: string | null;
-    client_email: string | null;
-    client_phone: string | null;
-    legal_business_name: string | null;
-    trade_type: string | null;
-    corporate_type: string | null;
-    fiscal_year_end: string | null;
-    country: string | null;
-    address_line1: string | null;
-    address_line2: string | null;
-    city: string | null;
-    postal_code: string | null;
-    annual_revenue_range: string | null;
-    taxes_up_to_date: string | null;
-    prior_bookkeeper: string | null;
-    accounting_software: string | null;
-    payroll_provider: string | null;
-    employee_count_range: string | null;
-    uses_business_cards: string | null;
-    keeps_receipts: string | null;
-    bank_connected_to_software: string | null;
-    profile_updated_at: string | null;
   };
 
   // Parallel-load all data for every tab so the user can switch tabs
