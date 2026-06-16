@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { UserPlus, MoreVertical, Power, PowerOff, ChevronDown, Loader2, Mail, X, Shield, Crown, User as UserIcon, Eye, CheckCircle2 } from "lucide-react";
+import { UserPlus, MoreVertical, Power, PowerOff, ChevronDown, Loader2, Mail, X, Shield, Crown, User as UserIcon, Eye, CheckCircle2, ArrowRightLeft, Building2, AlertTriangle, Check } from "lucide-react";
 
 interface UserStats {
   id: string;
@@ -25,10 +25,20 @@ interface UserStats {
   last_activity_at: string | null;
 }
 
+interface ClientLite {
+  id: string;
+  client_name: string;
+  status: string | null;
+}
+
 export function UsersManagement({ initialUsers }: { initialUsers: UserStats[] }) {
   const router = useRouter();
   const [users, setUsers] = useState(initialUsers);
   const [showInvite, setShowInvite] = useState(false);
+  // Transfer-clients flow: { user, deactivateOnDone, initialClients? }
+  const [transferFor, setTransferFor] = useState<
+    { user: UserStats; deactivateOnDone: boolean; initialClients?: ClientLite[] } | null
+  >(null);
 
   async function updateUser(userId: string, updates: { role?: string; is_active?: boolean }) {
     const res = await fetch(`/api/admin/users/${userId}`, {
@@ -46,6 +56,38 @@ export function UsersManagement({ initialUsers }: { initialUsers: UserStats[] })
     setUsers((prev) =>
       prev.map((u) => (u.id === userId ? { ...u, ...updates } : u))
     );
+    router.refresh();
+  }
+
+  // Deactivating a bookkeeper who still owns active clients should never
+  // silently orphan their book — check first, and if they have clients, open
+  // the transfer modal (which can reassign + deactivate in one step).
+  async function requestDeactivate(u: UserStats) {
+    try {
+      const res = await fetch(`/api/admin/users/${u.id}/clients`);
+      const body = await res.json().catch(() => ({ clients: [] }));
+      const clients: ClientLite[] = body.clients || [];
+      if (clients.length > 0) {
+        setTransferFor({ user: u, deactivateOnDone: true, initialClients: clients });
+      } else {
+        updateUser(u.id, { is_active: false });
+      }
+    } catch {
+      // If the check fails, fall back to opening the modal so the admin can
+      // decide rather than deactivating blind.
+      setTransferFor({ user: u, deactivateOnDone: true });
+    }
+  }
+
+  function openTransfer(u: UserStats) {
+    setTransferFor({ user: u, deactivateOnDone: false });
+  }
+
+  function onTransferDone(opts: { deactivatedUserId?: string }) {
+    if (opts.deactivatedUserId) {
+      setUsers((prev) => prev.map((u) => (u.id === opts.deactivatedUserId ? { ...u, is_active: false } : u)));
+    }
+    setTransferFor(null);
     router.refresh();
   }
 
@@ -76,7 +118,13 @@ export function UsersManagement({ initialUsers }: { initialUsers: UserStats[] })
         </div>
 
         {users.map((u) => (
-          <UserRow key={u.id} user={u} onUpdate={(updates) => updateUser(u.id, updates)} />
+          <UserRow
+            key={u.id}
+            user={u}
+            onUpdate={(updates) => updateUser(u.id, updates)}
+            onRequestDeactivate={() => requestDeactivate(u)}
+            onTransferClients={() => openTransfer(u)}
+          />
         ))}
 
         {users.length === 0 && (
@@ -85,6 +133,17 @@ export function UsersManagement({ initialUsers }: { initialUsers: UserStats[] })
       </div>
 
       {showInvite && <InviteModal onClose={() => { setShowInvite(false); router.refresh(); }} />}
+
+      {transferFor && (
+        <TransferClientsModal
+          sourceUser={transferFor.user}
+          deactivateOnDone={transferFor.deactivateOnDone}
+          initialClients={transferFor.initialClients}
+          allUsers={users}
+          onClose={() => setTransferFor(null)}
+          onDone={onTransferDone}
+        />
+      )}
     </div>
   );
 }
@@ -92,9 +151,13 @@ export function UsersManagement({ initialUsers }: { initialUsers: UserStats[] })
 function UserRow({
   user,
   onUpdate,
+  onRequestDeactivate,
+  onTransferClients,
 }: {
   user: UserStats;
   onUpdate: (updates: { role?: string; is_active?: boolean }) => void;
+  onRequestDeactivate: () => void;
+  onTransferClients: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [roleMenuOpen, setRoleMenuOpen] = useState(false);
@@ -205,9 +268,27 @@ function UserRow({
               >
                 View activity
               </Link>
+              {user.role !== "viewer" && (
+                <button
+                  onClick={() => {
+                    onTransferClients();
+                    setMenuOpen(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-teal-lighter text-navy"
+                >
+                  <ArrowRightLeft size={12} className="text-ink-slate" />
+                  Transfer clients
+                </button>
+              )}
               <button
                 onClick={() => {
-                  onUpdate({ is_active: !user.is_active });
+                  if (user.is_active) {
+                    // Route deactivation through the clients check so we never
+                    // orphan an active book (offer reassignment first).
+                    onRequestDeactivate();
+                  } else {
+                    onUpdate({ is_active: true });
+                  }
                   setMenuOpen(false);
                 }}
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-teal-lighter text-navy"
@@ -224,6 +305,254 @@ function UserRow({
                   </>
                 )}
               </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TransferClientsModal({
+  sourceUser,
+  deactivateOnDone,
+  initialClients,
+  allUsers,
+  onClose,
+  onDone,
+}: {
+  sourceUser: UserStats;
+  deactivateOnDone: boolean;
+  initialClients?: ClientLite[];
+  allUsers: UserStats[];
+  onClose: () => void;
+  onDone: (opts: { deactivatedUserId?: string }) => void;
+}) {
+  const [clients, setClients] = useState<ClientLite[] | null>(initialClients ?? null);
+  const [loading, setLoading] = useState(!initialClients);
+  // client_link_id → target bookkeeper id ("" = no target chosen yet)
+  const [targets, setTargets] = useState<Record<string, string>>({});
+  const [bulkTarget, setBulkTarget] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  // Eligible targets: active staff who can own clients, minus the source user.
+  const candidates = allUsers.filter(
+    (u) => u.is_active && u.id !== sourceUser.id && ["admin", "lead", "bookkeeper"].includes(u.role)
+  );
+
+  useEffect(() => {
+    if (initialClients) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/admin/users/${sourceUser.id}/clients`);
+        const body = await res.json();
+        if (!cancelled) setClients(body.clients || []);
+      } catch {
+        if (!cancelled) setClients([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sourceUser.id, initialClients]);
+
+  const list = clients || [];
+  const assignedCount = list.filter((c) => targets[c.id]).length;
+  const unassignedCount = list.length - assignedCount;
+
+  function applyBulk() {
+    if (!bulkTarget) return;
+    setTargets(Object.fromEntries(list.map((c) => [c.id, bulkTarget])));
+  }
+
+  async function submit(deactivate: boolean) {
+    setError("");
+    const assignments = list
+      .filter((c) => targets[c.id])
+      .map((c) => ({ client_link_id: c.id, to_bookkeeper_id: targets[c.id] }));
+
+    if (deactivate && unassignedCount > 0) {
+      const ok = confirm(
+        `${unassignedCount} client${unassignedCount === 1 ? "" : "s"} ${unassignedCount === 1 ? "has" : "have"} no new owner and will be left unassigned when ${sourceUser.full_name} is deactivated. Continue?`
+      );
+      if (!ok) return;
+    }
+    if (!deactivate && assignments.length === 0) {
+      setError("Choose a new owner for at least one client.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/admin/users/${sourceUser.id}/transfer-clients`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assignments, deactivate }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      onDone({ deactivatedUserId: body.deactivated ? sourceUser.id : undefined });
+    } catch (e: any) {
+      setError(e?.message || "Transfer failed");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col">
+        <div className="px-6 py-5 border-b border-gray-200 flex items-center justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="rounded-lg flex items-center justify-center w-9 h-9 bg-teal-light flex-shrink-0">
+              <ArrowRightLeft size={18} className="text-teal" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-lg font-bold text-navy truncate">
+                {deactivateOnDone ? `Reassign ${sourceUser.full_name}'s clients` : `Transfer ${sourceUser.full_name}'s clients`}
+              </h3>
+              <p className="text-xs text-ink-slate">
+                {deactivateOnDone
+                  ? "Hand off their book before deactivating, so nothing is orphaned."
+                  : "Move some or all of their clients to other bookkeepers or managers."}
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100 flex-shrink-0">
+            <X size={18} className="text-ink-slate" />
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="p-10 text-center text-sm text-ink-slate">
+            <Loader2 size={20} className="animate-spin mx-auto mb-2 text-teal" />
+            Loading clients…
+          </div>
+        ) : list.length === 0 ? (
+          <div className="p-6">
+            <div className="p-4 bg-gray-50 rounded-lg text-sm text-ink-slate text-center">
+              {sourceUser.full_name} has no active clients assigned — nothing to transfer.
+            </div>
+            <div className="flex justify-end gap-3 pt-4">
+              <button onClick={onClose} className="text-sm font-semibold text-ink-slate hover:text-navy px-3 py-2">
+                Cancel
+              </button>
+              {deactivateOnDone && (
+                <button
+                  onClick={() => submit(true)}
+                  disabled={saving}
+                  className="inline-flex items-center gap-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+                >
+                  {saving ? <Loader2 size={14} className="animate-spin" /> : <PowerOff size={14} />}
+                  Deactivate {sourceUser.full_name?.split(" ")[0]}
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Bulk assign */}
+            <div className="px-6 py-3 border-b border-gray-100 bg-gray-50 flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold text-ink-slate">
+                {list.length} active client{list.length === 1 ? "" : "s"} · assign all to:
+              </span>
+              <select
+                value={bulkTarget}
+                onChange={(e) => setBulkTarget(e.target.value)}
+                className="px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm outline-none focus:border-teal text-navy bg-white"
+              >
+                <option value="">Choose…</option>
+                {candidates.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.full_name} ({c.role})
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={applyBulk}
+                disabled={!bulkTarget}
+                className="text-xs font-semibold text-teal hover:text-teal-dark border border-teal/30 px-3 py-1.5 rounded-lg disabled:opacity-40"
+              >
+                Apply to all
+              </button>
+            </div>
+
+            {/* Per-client target */}
+            <div className="overflow-y-auto px-6 py-2 flex-1">
+              {list.map((c) => (
+                <div key={c.id} className="flex items-center gap-3 py-2.5 border-b border-gray-100 last:border-0">
+                  <Building2 size={15} className="text-ink-light flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold text-navy truncate">{c.client_name}</div>
+                    {c.status && <div className="text-xs text-ink-slate capitalize">{c.status}</div>}
+                  </div>
+                  <ArrowRightLeft size={13} className="text-ink-light flex-shrink-0" />
+                  <select
+                    value={targets[c.id] || ""}
+                    onChange={(e) => setTargets((t) => ({ ...t, [c.id]: e.target.value }))}
+                    className={`px-2.5 py-1.5 border rounded-lg text-sm outline-none focus:border-teal bg-white min-w-[170px] ${
+                      targets[c.id] ? "border-teal/40 text-navy" : "border-gray-200 text-ink-slate"
+                    }`}
+                  >
+                    <option value="">— Keep / choose —</option>
+                    {candidates.map((cand) => (
+                      <option key={cand.id} value={cand.id}>
+                        {cand.full_name} ({cand.role})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-200 space-y-3">
+              {deactivateOnDone && unassignedCount > 0 && (
+                <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+                  <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
+                  {unassignedCount} client{unassignedCount === 1 ? "" : "s"} still {unassignedCount === 1 ? "has" : "have"} no new owner — they&apos;ll be left unassigned if you deactivate now.
+                </div>
+              )}
+              {error && <div className="text-sm font-semibold text-red-600">{error}</div>}
+
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <span className="text-xs text-ink-slate">
+                  {assignedCount} of {list.length} assigned a new owner
+                </span>
+                <div className="flex items-center gap-3">
+                  <button onClick={onClose} className="text-sm font-semibold text-ink-slate hover:text-navy px-3 py-2">
+                    Cancel
+                  </button>
+                  {deactivateOnDone ? (
+                    <>
+                      <button
+                        onClick={() => submit(false)}
+                        disabled={saving || assignedCount === 0}
+                        className="inline-flex items-center gap-2 text-sm font-semibold text-teal hover:text-teal-dark border border-teal/30 px-4 py-2 rounded-lg disabled:opacity-40"
+                      >
+                        Transfer only
+                      </button>
+                      <button
+                        onClick={() => submit(true)}
+                        disabled={saving}
+                        className="inline-flex items-center gap-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+                      >
+                        {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                        Transfer & deactivate
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => submit(false)}
+                      disabled={saving || assignedCount === 0}
+                      className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+                    >
+                      {saving ? <Loader2 size={14} className="animate-spin" /> : <ArrowRightLeft size={14} />}
+                      Transfer {assignedCount > 0 ? assignedCount : ""} client{assignedCount === 1 ? "" : "s"}
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           </>
         )}
