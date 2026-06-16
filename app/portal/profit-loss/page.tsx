@@ -12,6 +12,7 @@ import { createServiceSupabase } from "@/lib/supabase";
 import { PortalErrorState } from "../error-state";
 import { ProfitLossClient } from "./profit-loss-client";
 import { StatementSwitcher } from "../financial-statements/statement-switcher";
+import { NoClosedPeriodState } from "../no-closed-period";
 
 /**
  * Live P&L page. Defaults to the most-recently-CLOSED month ("Last month").
@@ -63,6 +64,19 @@ export default async function ProfitLossPage() {
   ]);
 
   const closed = await closedPromise;
+
+  // No reconciled month → show the "being prepared" state instead of any
+  // P&L figures (strict data-accuracy policy). Keep the statement switcher
+  // so the client can still navigate between statements.
+  if (!closed) {
+    return (
+      <div className="space-y-4">
+        <StatementSwitcher active="pnl" />
+        <NoClosedPeriodState />
+      </div>
+    );
+  }
+
   const [thisMonthPL, quarterPL, ytdPL, lastYearPL] = await othersPromise;
 
   const ranges: Record<string, DateRange> = {

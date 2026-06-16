@@ -140,7 +140,7 @@ export interface ClosedPeriodResult {
 export async function resolveClosedPeriod(
   service: any,
   clientLinkId: string
-): Promise<ClosedPeriodResult> {
+): Promise<ClosedPeriodResult | null> {
   let closedThrough: string | null = null;
   let source: ClosedPeriodResult["source"] = "calendar_default";
 
@@ -175,11 +175,15 @@ export async function resolveClosedPeriod(
     } catch { /* fall through */ }
   }
 
-  // 3. Calendar default — end of last completed calendar month
+  // 3. No reconciliation signal at all → return null. We deliberately do
+  //    NOT fall back to "end of last calendar month" anymore: that was a
+  //    GUESS that a month was closed when it wasn't, surfacing unreconciled
+  //    (often alarming) numbers. Per policy, the portal only ever shows a
+  //    month we can PROVE is reconciled (a monthly close or a completed
+  //    cleanup). When neither exists, callers render a "not ready yet"
+  //    empty state instead of any data.
   if (!closedThrough) {
-    const now = new Date();
-    const endOfLast = new Date(now.getFullYear(), now.getMonth(), 0);
-    closedThrough = endOfLast.toISOString().slice(0, 10);
+    return null;
   }
 
   // CLAMP: the "closed" month must never be the CURRENT month. A cleanup
@@ -193,6 +197,25 @@ export async function resolveClosedPeriod(
       .toISOString()
       .slice(0, 10);
     if (closedThrough > endOfLastMonth) closedThrough = endOfLastMonth;
+  }
+
+  // PARTIAL-MONTH GUARD: a closed-through date that lands MID-month means
+  // that month is only partially reconciled. Cleanups finish whenever they
+  // finish — Clean Cut's cleanup_range_end was 2026-05-20, which reconciled
+  // May 1–20 but NOT May 21–31. Treating May as "closed" then surfaces a
+  // partial month's P&L (incomplete, often alarming: a -$22K "loss" that's
+  // really just half a month of costs against not-yet-booked revenue). The
+  // last FULLY-closed month is the prior complete month unless closedThrough
+  // is that month's final day. Applies to every client + every surface that
+  // resolves a closed period (Overview, P&L, Cash Flow, cleanup reports).
+  {
+    const ct = new Date(closedThrough + "T00:00:00");
+    const lastDayOfCtMonth = new Date(ct.getFullYear(), ct.getMonth() + 1, 0).getDate();
+    if (ct.getDate() < lastDayOfCtMonth) {
+      // Mid-month → step back to the last day of the prior (complete) month.
+      const priorMonthEnd = new Date(ct.getFullYear(), ct.getMonth(), 0);
+      closedThrough = priorMonthEnd.toISOString().slice(0, 10);
+    }
   }
 
   // Build the month range containing closedThrough
@@ -255,8 +278,10 @@ export async function resolveClosedPeriodWithRevenue(
   realmId: string,
   accessToken: string,
   maxLookback = 6
-): Promise<ClosedPeriodWithRevenue> {
+): Promise<ClosedPeriodWithRevenue | null> {
   const base = await resolveClosedPeriod(service, clientLinkId);
+  // No reconciled period → no data to show (strict accuracy policy).
+  if (!base) return null;
 
   let month = base.closedMonth;
   let pl = await safe(

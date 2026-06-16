@@ -34,17 +34,23 @@ export default async function AskAiPage() {
     ctx.qboRealmId,
     ctx.accessToken
   );
-  const overview = await fetchOverview(
-    ctx.qboRealmId,
-    ctx.accessToken,
-    closed.effectiveMonth,
-    closed.priorMonth,
-    closed.effectivePL // reuse the P&L the resolver already fetched
-  ).catch(() => null);
+  // No reconciled month → data-driven starters would reference numbers we
+  // won't show, so fall back to the generic starters. The AI chat itself
+  // stays available (it can still answer general questions).
+  const overview = closed
+    ? await fetchOverview(
+        ctx.qboRealmId,
+        ctx.accessToken,
+        closed.effectiveMonth,
+        closed.priorMonth,
+        closed.effectivePL // reuse the P&L the resolver already fetched
+      ).catch(() => null)
+    : null;
 
-  const starters = overview
-    ? buildDynamicStarters(overview, closed.effectiveMonth.label ?? closed.base.closedMonthLabel)
-    : DEFAULT_STARTERS;
+  const starters =
+    overview && closed
+      ? buildDynamicStarters(overview, closed.effectiveMonth.label ?? closed.base.closedMonthLabel)
+      : DEFAULT_STARTERS;
 
   return <AskAiClient starters={starters} />;
 }

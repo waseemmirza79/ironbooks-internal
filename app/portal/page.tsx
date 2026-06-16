@@ -7,6 +7,7 @@ import {
 import { tryResolvePortalContext } from "@/lib/portal-context";
 import { fetchOverview, resolveClosedPeriodWithRevenue } from "@/lib/portal-data";
 import { createServiceSupabase } from "@/lib/supabase";
+import { NoClosedPeriodState } from "./no-closed-period";
 import { fetchPublishedPackage } from "@/lib/month-end/portal-package";
 import { classifyProfitLoss, marginVerdict, netMarginVerdict, type PortalPl } from "@/lib/portal-pl";
 import { getOrGenerateDashboardNarrative } from "@/lib/dashboard-narrative";
@@ -45,6 +46,12 @@ export default async function PortalOverview() {
     resolveClosedPeriodWithRevenue(service, ctx.clientLinkId, ctx.qboRealmId, ctx.accessToken),
     fetchPublishedPackage(service, ctx.clientLinkId),
   ]);
+
+  // No reconciled month yet → show the "being prepared" state, never
+  // partial/guessed numbers. (Strict data-accuracy policy.)
+  if (!closed) {
+    return <NoClosedPeriodState />;
+  }
 
   const data = await fetchOverview(
     ctx.qboRealmId,
