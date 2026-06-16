@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
   Home, Wallet, Receipt, MessageSquare,
-  GraduationCap, Settings, FileCheck2, Mail, BookOpen, Tags,
+  GraduationCap, Settings, FileCheck2, Mail, BookOpen, Tags, CreditCard,
 } from "lucide-react";
 import { MessagesNavLink } from "./messages-nav-link";
 import { FinancialStatementsNav } from "./financial-statements-nav";
@@ -153,6 +153,7 @@ export default async function PortalLayout({ children }: { children: React.React
             <NavLink href="/portal/ask-ai" icon={MessageSquare} label="Ask the AI" badge="NEW" />
             <NavLink href="/portal/knowledge-base" icon={BookOpen} label="Knowledge Base" />
             <NavLink href="/portal/learn" icon={GraduationCap} label="Learn" />
+            <NavLink href="/portal/billing" icon={CreditCard} label="Billing & Plan" />
           </nav>
 
           <div className="px-3 py-3 border-t border-white/10 space-y-1">
