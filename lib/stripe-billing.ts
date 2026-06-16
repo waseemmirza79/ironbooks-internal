@@ -55,6 +55,28 @@ async function stripePost<T>(path: string, params: Record<string, string>): Prom
   return res.json();
 }
 
+/**
+ * Look up a Stripe customer id by email. Returns the most recently-created
+ * matching customer's id, or null if none match. Used to auto-link a
+ * client_link to its Stripe customer without anyone pasting `cus_xxx` by hand.
+ *
+ * Stripe's email filter is exact (case-insensitive). If a business has
+ * multiple Stripe customers under the same email (rare — usually a duplicate),
+ * we take the newest, which is almost always the live subscription.
+ */
+export async function findStripeCustomerIdByEmail(email: string): Promise<string | null> {
+  const trimmed = (email || "").trim();
+  if (!trimmed) return null;
+  const data = await stripeGet<any>(
+    `/customers?email=${encodeURIComponent(trimmed)}&limit=100`
+  );
+  const customers: any[] = data?.data ?? [];
+  if (customers.length === 0) return null;
+  // Newest first (Stripe returns by created desc already, but be explicit).
+  customers.sort((a, b) => (b.created ?? 0) - (a.created ?? 0));
+  return customers[0]?.id ?? null;
+}
+
 /** Derive tier from the monthly amount in dollars. */
 export function tierFromAmountDollars(dollars: number): ServiceTier {
   if (dollars <= 300) return "insight";

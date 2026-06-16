@@ -5,6 +5,7 @@ import { PortalErrorState } from "../error-state";
 import {
   getCustomerBillingInfo,
   getCustomerInvoices,
+  findStripeCustomerIdByEmail,
   type StripeBillingInfo,
   type StripeInvoice,
 } from "@/lib/stripe-billing";
@@ -70,7 +71,7 @@ export default async function BillingPage() {
 
   const { data: clientLink } = await service
     .from("client_links")
-    .select("id, client_name, jurisdiction, stripe_customer_id, billing_start_date, billing_cancel_request_at, billing_cancel_request_note")
+    .select("id, client_name, jurisdiction, client_email, stripe_customer_id, billing_start_date, billing_cancel_request_at, billing_cancel_request_note")
     .eq("id", clientLinkId)
     .single();
 
@@ -78,7 +79,36 @@ export default async function BillingPage() {
     return <PortalErrorState code="fetch_failed" message="Could not load billing info." />;
   }
 
-  const stripeCustomerId = (clientLink as any).stripe_customer_id as string | null;
+  let stripeCustomerId = (clientLink as any).stripe_customer_id as string | null;
+
+  // Auto-link: if we don't have a Stripe customer id on file yet, try to find
+  // it by email (the client_link's billing email, falling back to the
+  // signed-in user's email). On a hit, persist it back to client_links so the
+  // lookup only ever runs once per client. Fail soft — a miss just leaves the
+  // page in its "contact us" fallback state.
+  if (!stripeCustomerId) {
+    const candidateEmails = [
+      (clientLink as any).client_email as string | null,
+      user.email || null,
+    ].filter((e): e is string => !!e && e.trim().length > 0);
+
+    for (const email of candidateEmails) {
+      try {
+        const found = await findStripeCustomerIdByEmail(email);
+        if (found) {
+          stripeCustomerId = found;
+          await service
+            .from("client_links")
+            .update({ stripe_customer_id: found } as any)
+            .eq("id", clientLinkId);
+          break;
+        }
+      } catch (err: any) {
+        console.warn("[billing] Stripe customer lookup failed:", err.message);
+        break; // Stripe unreachable — don't hammer it on the next candidate
+      }
+    }
+  }
   const billingStart = (clientLink as any).billing_start_date as string | null;
   const cancelRequestAt = (clientLink as any).billing_cancel_request_at as string | null;
   const cancelRequestNote = (clientLink as any).billing_cancel_request_note as string | null;
