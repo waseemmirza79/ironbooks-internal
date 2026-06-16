@@ -4,20 +4,27 @@ import { useState } from "react";
 import {
   CheckCircle2, ChevronRight, CreditCard, ExternalLink, Phone,
   ArrowUpCircle, FileText, AlertTriangle, XCircle, Loader2, Star,
+  Download, Calendar,
 } from "lucide-react";
 import type { ServiceTier, TierConfig } from "./page";
 import { TIERS, INCLUDED_FEATURES } from "./page";
+import type { StripeInvoice } from "@/lib/stripe-billing";
 
 interface Props {
   clientLinkId: string;
   clientName: string;
   tier: ServiceTier | null;
+  monthlyAmountDollars: number | null;
+  subscriptionStatus: string | null;
+  currentPeriodEnd: string | null;
   billingStart: string | null;
   stripeCustomerId: string | null;
+  invoices: StripeInvoice[];
   coachingCallLink: string | null;
   cancelRequestAt: string | null;
   cancelRequestNote: string | null;
   impersonating: boolean;
+  portalReturnUrl: string;
 }
 
 const TIER_COLORS: Record<string, string> = {
@@ -27,30 +34,44 @@ const TIER_COLORS: Record<string, string> = {
   navy:   "bg-navy/10 text-navy border-navy/20",
 };
 
-function fmt(n: number) {
-  return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0 });
+const STATUS_COLORS: Record<string, string> = {
+  active:   "bg-emerald-50 text-emerald-700 border-emerald-200",
+  past_due: "bg-red-50 text-red-700 border-red-200",
+  canceled: "bg-slate-50 text-slate-600 border-slate-200",
+};
+
+function fmtMoney(n: number, currency = "USD") {
+  return n.toLocaleString("en-US", { style: "currency", currency, minimumFractionDigits: 0 });
 }
 
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 }
 
+function fmtMonthYear(iso: string) {
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", year: "numeric" });
+}
+
 export function BillingClient({
   clientLinkId,
   clientName,
   tier,
+  monthlyAmountDollars,
+  subscriptionStatus,
+  currentPeriodEnd,
   billingStart,
   stripeCustomerId,
+  invoices,
   coachingCallLink,
   cancelRequestAt,
   cancelRequestNote,
   impersonating,
+  portalReturnUrl,
 }: Props) {
   const currentTier = tier ? TIERS.find((t) => t.key === tier) || null : null;
   const currentIdx = tier ? TIERS.findIndex((t) => t.key === tier) : -1;
-  const nextTier: TierConfig | null = currentIdx >= 0 && currentIdx < TIERS.length - 1
-    ? TIERS[currentIdx + 1]
-    : null;
+  const nextTier: TierConfig | null =
+    currentIdx >= 0 && currentIdx < TIERS.length - 1 ? TIERS[currentIdx + 1] : null;
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -59,27 +80,24 @@ export function BillingClient({
         <h1 className="text-3xl font-bold text-navy mt-1">Billing & Plan</h1>
         {impersonating && (
           <div className="mt-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 inline-block">
-            Preview mode — actions are disabled while impersonating
+            Preview mode — payment actions disabled while impersonating
           </div>
         )}
       </div>
 
-      {/* ── Current plan ── */}
       <CurrentPlanCard
         tier={currentTier}
+        monthlyAmountDollars={monthlyAmountDollars}
+        subscriptionStatus={subscriptionStatus}
+        currentPeriodEnd={currentPeriodEnd}
         billingStart={billingStart}
+        hasStripe={!!stripeCustomerId}
       />
 
-      {/* ── What's included ── */}
       <WhatIsIncludedCard />
 
-      {/* ── Book a coaching call ── */}
-      <CoachingCallCard
-        coachingCallLink={coachingCallLink}
-        impersonating={impersonating}
-      />
+      <CoachingCallCard coachingCallLink={coachingCallLink} impersonating={impersonating} />
 
-      {/* ── Upgrade ── */}
       {nextTier && currentTier && (
         <UpgradeCard
           currentTier={currentTier}
@@ -89,13 +107,13 @@ export function BillingClient({
         />
       )}
 
-      {/* ── Receipts ── */}
       <ReceiptsCard
+        invoices={invoices}
         stripeCustomerId={stripeCustomerId}
         impersonating={impersonating}
+        portalReturnUrl={portalReturnUrl}
       />
 
-      {/* ── Cancel request ── */}
       <CancelRequestCard
         clientLinkId={clientLinkId}
         cancelRequestAt={cancelRequestAt}
@@ -106,29 +124,49 @@ export function BillingClient({
   );
 }
 
-// ─── Current plan card ───────────────────────────────────────────────────────
+// ─── Current plan ─────────────────────────────────────────────────────────────
 
-function CurrentPlanCard({ tier, billingStart }: { tier: TierConfig | null; billingStart: string | null }) {
+function CurrentPlanCard({
+  tier,
+  monthlyAmountDollars,
+  subscriptionStatus,
+  currentPeriodEnd,
+  billingStart,
+  hasStripe,
+}: {
+  tier: TierConfig | null;
+  monthlyAmountDollars: number | null;
+  subscriptionStatus: string | null;
+  currentPeriodEnd: string | null;
+  billingStart: string | null;
+  hasStripe: boolean;
+}) {
   if (!tier) {
     return (
       <div className="bg-white border border-slate-200 rounded-2xl p-6">
-        <div className="flex items-center gap-2 mb-1">
+        <div className="flex items-center gap-2 mb-3">
           <Star size={16} className="text-ink-slate" />
           <h2 className="text-sm font-bold text-navy uppercase tracking-wider">Your plan</h2>
         </div>
-        <p className="text-sm text-ink-slate mt-3">
-          Your service tier hasn't been set up yet. Your Ironbooks team will confirm your plan details.
-          Reach out to{" "}
+        <p className="text-sm text-ink-slate">
+          {hasStripe
+            ? "We couldn't retrieve your subscription details right now. Try refreshing, or reach out to "
+            : "Your plan details haven't been set up yet. Reach out to "}
           <a href="mailto:admin@ironbooks.com" className="text-teal underline underline-offset-2">
             admin@ironbooks.com
-          </a>{" "}
-          with any questions.
+          </a>
+          {hasStripe ? "." : " to confirm your tier."}
         </p>
       </div>
     );
   }
 
   const colorClass = TIER_COLORS[tier.color] || TIER_COLORS.navy;
+  const statusLabel = subscriptionStatus === "active" ? "Active"
+    : subscriptionStatus === "past_due" ? "Past due"
+    : subscriptionStatus === "canceled" ? "Canceled"
+    : null;
+  const statusColor = STATUS_COLORS[subscriptionStatus ?? ""] || STATUS_COLORS.canceled;
 
   return (
     <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
@@ -137,23 +175,38 @@ function CurrentPlanCard({ tier, billingStart }: { tier: TierConfig | null; bill
           <Star size={16} className="text-ink-slate" />
           <h2 className="text-sm font-bold text-navy uppercase tracking-wider">Your plan</h2>
         </div>
-        <span className={`text-xs font-bold px-2.5 py-1 rounded-full border ${colorClass}`}>
-          {tier.name}
-        </span>
+        <div className="flex items-center gap-2">
+          {statusLabel && (
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${statusColor}`}>
+              {statusLabel}
+            </span>
+          )}
+          <span className={`text-xs font-bold px-2.5 py-1 rounded-full border ${colorClass}`}>
+            {tier.name}
+          </span>
+        </div>
       </div>
+
       <div className="px-6 py-5 space-y-4">
         <div className="flex items-end gap-2">
-          {tier.monthlyFee !== null ? (
+          {monthlyAmountDollars !== null ? (
             <>
-              <span className="text-3xl font-black text-navy">{fmt(tier.monthlyFee)}</span>
+              <span className="text-3xl font-black text-navy">{fmtMoney(monthlyAmountDollars)}</span>
+              <span className="text-sm text-ink-slate mb-1">/month · 12-month commitment</span>
+            </>
+          ) : tier.monthlyFee !== null ? (
+            <>
+              <span className="text-3xl font-black text-navy">{fmtMoney(tier.monthlyFee)}</span>
               <span className="text-sm text-ink-slate mb-1">/month · 12-month commitment</span>
             </>
           ) : (
             <span className="text-2xl font-black text-navy">Custom pricing</span>
           )}
         </div>
+
         <p className="text-sm text-ink-slate">{tier.tagline}</p>
-        <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
           <div>
             <dt className="text-[10px] uppercase tracking-wider text-ink-light font-semibold">Revenue cap</dt>
             <dd className="font-semibold text-navy mt-0.5">{tier.revenueCap}</dd>
@@ -163,17 +216,36 @@ function CurrentPlanCard({ tier, billingStart }: { tier: TierConfig | null; bill
             <dd className="font-semibold text-navy mt-0.5">{tier.onboardingCall}</dd>
           </div>
           {billingStart && (
-            <div className="col-span-2">
+            <div>
               <dt className="text-[10px] uppercase tracking-wider text-ink-light font-semibold">Member since</dt>
               <dd className="font-semibold text-navy mt-0.5">{fmtDate(billingStart)}</dd>
             </div>
           )}
+          {currentPeriodEnd && subscriptionStatus === "active" && (
+            <div>
+              <dt className="text-[10px] uppercase tracking-wider text-ink-light font-semibold">Next billing date</dt>
+              <dd className="font-semibold text-navy mt-0.5">{fmtDate(currentPeriodEnd)}</dd>
+            </div>
+          )}
         </dl>
+
+        {subscriptionStatus === "past_due" && (
+          <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-xs text-red-800 flex items-start gap-2">
+            <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+            <span>
+              Your subscription is past due. Please update your payment method to keep your account active.
+              Email{" "}
+              <a href="mailto:admin@ironbooks.com" className="underline">admin@ironbooks.com</a>{" "}
+              if you need help.
+            </span>
+          </div>
+        )}
+
         {tier.key === "insight" && (
           <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-xs text-amber-800">
-            <strong>Tier 1 participation reminder:</strong> To keep Insight pricing available, we ask
-            that you promote Ironbooks once per quarter via your email list or social media using our
-            templates. Send a link or screenshot to{" "}
+            <strong>Tier 1 participation reminder:</strong> To keep Insight pricing available, promote
+            Ironbooks once per quarter via email or social media using our templates. Send a link or
+            screenshot to{" "}
             <a href="mailto:admin@ironbooks.com" className="underline">admin@ironbooks.com</a>.
           </div>
         )}
@@ -182,7 +254,7 @@ function CurrentPlanCard({ tier, billingStart }: { tier: TierConfig | null; bill
   );
 }
 
-// ─── What's included ─────────────────────────────────────────────────────────
+// ─── What's included ──────────────────────────────────────────────────────────
 
 function WhatIsIncludedCard() {
   return (
@@ -201,10 +273,7 @@ function WhatIsIncludedCard() {
       </ul>
       <div className="px-6 pb-5 text-xs text-ink-slate">
         All tiers include a 12-month commitment. Questions about your scope?{" "}
-        <a href="mailto:admin@ironbooks.com" className="text-teal underline underline-offset-2">
-          Email us
-        </a>
-        .
+        <a href="mailto:admin@ironbooks.com" className="text-teal underline underline-offset-2">Email us</a>.
       </div>
     </div>
   );
@@ -226,40 +295,36 @@ function CoachingCallCard({
         <h2 className="text-sm font-bold text-navy uppercase tracking-wider">Book a coaching call</h2>
       </div>
       <div className="px-6 py-5 space-y-3">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="text-lg font-black text-navy">$150 <span className="text-sm font-normal text-ink-slate">/ 30 min</span></div>
-            <p className="text-sm text-ink-slate mt-1">
-              A focused 1:1 review of your numbers with your bookkeeping coach. Covers your P&amp;L,
-              margin, cash position — whatever you want to dig into.
-            </p>
+        <div>
+          <div className="text-lg font-black text-navy">
+            $150 <span className="text-sm font-normal text-ink-slate">/ 30 min</span>
           </div>
+          <p className="text-sm text-ink-slate mt-1">
+            A focused 1:1 with your bookkeeping coach. Dig into your P&amp;L, margins, cash position —
+            whatever matters most right now.
+          </p>
         </div>
         <div className="rounded-lg bg-slate-50 border border-slate-200 px-4 py-3 text-xs text-ink-slate">
-          <strong className="text-navy">What to expect:</strong> Your coach will review your most recent
-          month before the call. Come with your top 2–3 questions and leave with a clear action plan.
+          <strong className="text-navy">What to expect:</strong> Your coach reviews your most recent
+          month before the call. Come with 2–3 questions, leave with a clear action plan.
         </div>
-        {coachingCallLink ? (
-          impersonating ? (
-            <div className="text-xs text-ink-slate italic">Payment link hidden during impersonation.</div>
-          ) : (
-            <a
-              href={coachingCallLink}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-bold px-5 py-2.5 rounded-lg transition-colors"
-            >
-              Book & pay now
-              <ExternalLink size={13} />
-            </a>
-          )
+        {impersonating ? (
+          <div className="text-xs text-ink-slate italic">Payment link hidden during impersonation.</div>
+        ) : coachingCallLink ? (
+          <a
+            href={coachingCallLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-bold px-5 py-2.5 rounded-lg transition-colors"
+          >
+            Book & pay now <ExternalLink size={13} />
+          </a>
         ) : (
           <a
             href="mailto:admin@ironbooks.com?subject=Book%20a%20coaching%20call"
             className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-bold px-5 py-2.5 rounded-lg transition-colors"
           >
-            Request a session
-            <ExternalLink size={13} />
+            Request a session <ExternalLink size={13} />
           </a>
         )}
       </div>
@@ -287,7 +352,7 @@ function UpgradeCard({
 
   const subject = encodeURIComponent(`Upgrade request — ${clientName} → ${nextTier.name}`);
   const body = encodeURIComponent(
-    `Hi,\n\nI'd like to upgrade my Ironbooks plan from ${currentTier.name} to ${nextTier.name}.\n\nPlease let me know next steps.\n\nThanks,\n${clientName}`
+    `Hi,\n\nI'd like to upgrade from ${currentTier.name} to ${nextTier.name}.\n\nPlease let me know next steps.\n\nThanks,\n${clientName}`
   );
 
   return (
@@ -301,14 +366,19 @@ function UpgradeCard({
           <div>
             <div className="text-sm font-bold text-navy">{nextTier.name}</div>
             <div className="text-xs text-ink-slate mt-0.5">{nextTier.tagline}</div>
-            <div className="text-xs text-ink-slate mt-1">Revenue cap: <strong>{nextTier.revenueCap}</strong></div>
+            <div className="text-xs text-ink-slate mt-1">
+              Revenue cap: <strong>{nextTier.revenueCap}</strong>
+            </div>
           </div>
           <div className="text-right flex-shrink-0">
             {nextTier.monthlyFee !== null ? (
               <>
-                <div className="text-xl font-black text-navy">{fmt(nextTier.monthlyFee)}<span className="text-xs font-normal text-ink-slate">/mo</span></div>
+                <div className="text-xl font-black text-navy">
+                  {fmtMoney(nextTier.monthlyFee)}
+                  <span className="text-xs font-normal text-ink-slate">/mo</span>
+                </div>
                 {priceDiff !== null && (
-                  <div className="text-xs text-ink-slate">+{fmt(priceDiff)}/mo from current</div>
+                  <div className="text-xs text-ink-slate">+{fmtMoney(priceDiff)}/mo</div>
                 )}
               </>
             ) : (
@@ -317,8 +387,8 @@ function UpgradeCard({
           </div>
         </div>
         <p className="text-sm text-ink-slate">
-          Ready to unlock more capacity? Send us a quick note and we'll confirm the upgrade and
-          adjust your billing in the next cycle.
+          Ready to unlock more capacity? Send us a note and we'll confirm the upgrade and
+          adjust your billing at the next cycle.
         </p>
         {impersonating ? (
           <div className="text-xs text-ink-slate italic">Email link hidden during impersonation.</div>
@@ -327,8 +397,7 @@ function UpgradeCard({
             href={`mailto:admin@ironbooks.com?subject=${subject}&body=${body}`}
             className="inline-flex items-center gap-2 border-2 border-navy text-navy hover:bg-navy hover:text-white text-sm font-bold px-5 py-2.5 rounded-lg transition-colors"
           >
-            Request upgrade
-            <ChevronRight size={14} />
+            Request upgrade <ChevronRight size={14} />
           </a>
         )}
       </div>
@@ -339,33 +408,124 @@ function UpgradeCard({
 // ─── Receipts ─────────────────────────────────────────────────────────────────
 
 function ReceiptsCard({
+  invoices,
   stripeCustomerId,
   impersonating,
+  portalReturnUrl,
 }: {
+  invoices: StripeInvoice[];
   stripeCustomerId: string | null;
   impersonating: boolean;
+  portalReturnUrl: string;
 }) {
+  const [portalLoading, setPortalLoading] = useState(false);
+  const [portalError, setPortalError] = useState<string | null>(null);
+
+  async function openPortal() {
+    setPortalLoading(true);
+    setPortalError(null);
+    try {
+      const res = await fetch("/api/portal/billing/customer-portal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ returnUrl: portalReturnUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not open billing portal");
+      window.location.href = data.url;
+    } catch (e: any) {
+      setPortalError(e.message || "Something went wrong");
+      setPortalLoading(false);
+    }
+  }
+
   return (
     <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
-      <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-2">
-        <FileText size={16} className="text-ink-slate" />
-        <h2 className="text-sm font-bold text-navy uppercase tracking-wider">Receipts & invoices</h2>
-      </div>
-      <div className="px-6 py-5 space-y-3">
-        <p className="text-sm text-ink-slate">
-          Access your payment history and download PDF receipts for any invoice.
-        </p>
-        {impersonating ? (
-          <div className="text-xs text-ink-slate italic">Links hidden during impersonation.</div>
-        ) : stripeCustomerId ? (
-          <CustomerPortalButton clientLinkId={""} hasStripeId />
-        ) : (
-          <a
-            href="mailto:admin@ironbooks.com?subject=Request%20for%20receipts"
-            className="inline-flex items-center gap-2 text-sm font-semibold text-teal hover:underline"
+      <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <FileText size={16} className="text-ink-slate" />
+          <h2 className="text-sm font-bold text-navy uppercase tracking-wider">Receipts & invoices</h2>
+        </div>
+        {stripeCustomerId && !impersonating && (
+          <button
+            onClick={openPortal}
+            disabled={portalLoading}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-navy disabled:opacity-50"
+            title="Open Stripe billing portal to manage payment method"
           >
-            Email us for a copy of your invoices
-            <ExternalLink size={13} />
+            {portalLoading ? <Loader2 size={11} className="animate-spin" /> : <CreditCard size={11} />}
+            Update payment method
+          </button>
+        )}
+      </div>
+
+      <div className="px-6 py-5">
+        {portalError && (
+          <p className="text-xs text-red-600 mb-3">{portalError}</p>
+        )}
+
+        {impersonating ? (
+          <p className="text-xs text-ink-slate italic">Invoice links hidden during impersonation.</p>
+        ) : invoices.length === 0 ? (
+          <div className="space-y-2">
+            <p className="text-sm text-ink-slate">
+              {stripeCustomerId
+                ? "No paid invoices found yet."
+                : "Connect your Stripe account to see invoice history here."}
+            </p>
+            {!stripeCustomerId && (
+              <a
+                href="mailto:admin@ironbooks.com?subject=Request%20for%20receipts"
+                className="inline-flex items-center gap-1.5 text-sm font-semibold text-teal hover:underline"
+              >
+                Email us for a copy of your invoices <ExternalLink size={12} />
+              </a>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {invoices.map((inv) => (
+              <InvoiceRow key={inv.id} invoice={inv} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InvoiceRow({ invoice }: { invoice: StripeInvoice }) {
+  const label = invoice.number
+    ? invoice.number
+    : fmtMonthYear(invoice.periodStart);
+
+  return (
+    <div className="flex items-center justify-between gap-3 py-2.5 border-b border-slate-100 last:border-0">
+      <div className="flex items-center gap-3 min-w-0">
+        <Calendar size={13} className="text-ink-light flex-shrink-0" />
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-navy truncate">{label}</div>
+          <div className="text-xs text-ink-light">
+            {fmtDate(invoice.periodStart)} – {fmtDate(invoice.periodEnd)}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-3 flex-shrink-0">
+        <span className="text-sm font-bold text-navy">
+          {fmtMoney(invoice.amountPaid, invoice.currency)}
+        </span>
+        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+          Paid
+        </span>
+        {invoice.invoicePdfUrl && (
+          <a
+            href={invoice.invoicePdfUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-xs font-semibold text-ink-slate hover:text-navy"
+            title="Download PDF receipt"
+          >
+            <Download size={12} /> PDF
           </a>
         )}
       </div>
@@ -373,45 +533,10 @@ function ReceiptsCard({
   );
 }
 
-function CustomerPortalButton({ hasStripeId }: { clientLinkId: string; hasStripeId: boolean }) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  if (!hasStripeId) return null;
-
-  async function open() {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/portal/billing/customer-portal", { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Could not open billing portal");
-      window.location.href = data.url;
-    } catch (e: any) {
-      setError(e.message || "Something went wrong");
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div>
-      <button
-        onClick={open}
-        disabled={loading}
-        className="inline-flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-lg border border-slate-200 hover:bg-slate-50 text-navy disabled:opacity-50"
-      >
-        {loading ? <Loader2 size={13} className="animate-spin" /> : <ExternalLink size={13} />}
-        View payment history
-      </button>
-      {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
-    </div>
-  );
-}
-
 // ─── Cancel request ───────────────────────────────────────────────────────────
 
 function CancelRequestCard({
-  clientLinkId,
+  clientLinkId: _clientLinkId,
   cancelRequestAt,
   cancelRequestNote,
   impersonating,
@@ -463,19 +588,15 @@ function CancelRequestCard({
             <span>
               We received your cancellation request
               {submittedAt ? ` on ${fmtDate(submittedAt)}` : ""}.
-              Someone from our team will be in touch within 1–2 business days to confirm
-              and walk you through the transition.
+              Your manager will be in touch within 1–2 business days.
             </span>
           </div>
           {cancelRequestNote && (
-            <div className="text-xs text-ink-slate italic mt-2">
-              Your note: "{cancelRequestNote}"
-            </div>
+            <div className="text-xs text-ink-slate italic mt-1">Your note: "{cancelRequestNote}"</div>
           )}
           <p className="text-xs text-ink-slate pt-2">
-            Please note: submitting this form does not cancel your account automatically.
-            Your 12-month commitment and billing continue until we confirm the cancellation
-            in writing. See your agreement for full terms.
+            This does not cancel your account automatically. Your 12-month commitment continues
+            until we confirm the cancellation in writing. See your agreement for full terms.
           </p>
         </div>
       </div>
@@ -498,9 +619,8 @@ function CancelRequestCard({
             <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-xs text-amber-800 flex items-start gap-2">
               <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
               <span>
-                Submitting a request does not cancel your account or stop billing. Your 12-month
-                commitment terms apply. We're happy to discuss your situation before any final
-                decision is made.
+                Submitting a request does not cancel your account or stop billing. Your
+                12-month commitment terms apply. We're happy to discuss your situation first.
               </span>
             </div>
             <button
@@ -518,15 +638,15 @@ function CancelRequestCard({
             <textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder="Optional: share what's behind this decision (e.g. budget, the service isn't a fit, closing the business)…"
+              placeholder="Optional: share what's behind this decision…"
               rows={4}
               className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-navy placeholder:text-ink-light resize-none focus:outline-none focus:border-navy"
             />
             <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-xs text-amber-800 flex items-start gap-2">
               <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
               <span>
-                This notifies your Ironbooks manager. It does <strong>not</strong> cancel your account
-                or stop billing. Your manager will be in touch within 1–2 business days.
+                This notifies your manager. It does <strong>not</strong> cancel your account
+                or stop billing.
               </span>
             </div>
             {error && <p className="text-xs text-red-600">{error}</p>}

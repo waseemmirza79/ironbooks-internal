@@ -2,6 +2,12 @@ import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { redirect } from "next/navigation";
 import { BillingClient } from "./billing-client";
 import { PortalErrorState } from "../error-state";
+import {
+  getCustomerBillingInfo,
+  getCustomerInvoices,
+  type StripeBillingInfo,
+  type StripeInvoice,
+} from "@/lib/stripe-billing";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +17,7 @@ export interface TierConfig {
   key: ServiceTier;
   name: string;
   tagline: string;
-  monthlyFee: number | null;    // null = custom
+  monthlyFee: number | null;
   firstMonthFee: number | null;
   revenueCap: string;
   onboardingCall: string;
@@ -73,10 +79,10 @@ export const INCLUDED_FEATURES = [
 ];
 
 /**
- * Portal billing page — no QBO required (the data is from client_links and
- * Stripe, not QuickBooks). Resolves client identity via session → client_users
- * mapping, bypassing the QBO-aware portal context so billing is always
- * accessible even if QBO is temporarily disconnected.
+ * Portal billing page — no QBO required. Resolves identity via session →
+ * client_users, then pulls tier + invoices from Stripe using the customer's
+ * stripe_customer_id. Tier is derived from the subscription price so it
+ * never needs to be set manually.
  */
 export default async function BillingPage() {
   const supabase = await createServerSupabase();
@@ -85,8 +91,6 @@ export default async function BillingPage() {
 
   const service = createServiceSupabase();
 
-  // Resolve client_link_id from the user's client_users mapping.
-  // Supports impersonation cookie too by checking admin role first.
   const { data: profile } = await service
     .from("users")
     .select("role")
@@ -95,8 +99,6 @@ export default async function BillingPage() {
   const role = (profile as any)?.role;
   const isInternal = ["admin", "lead", "bookkeeper", "viewer"].includes(role);
 
-  // Internal staff shouldn't see their own billing page (they have no client_link).
-  // Check the impersonation cookie to let admins preview the billing page.
   const { cookies } = await import("next/headers");
   const cookieStore = await cookies();
   const impersonatingClientLinkId = cookieStore.get("ironbooks_impersonate_client_link_id")?.value;
@@ -112,7 +114,6 @@ export default async function BillingPage() {
         />
       );
     }
-    // Real client: look up via client_users
     const { data: mapping } = await (service as any)
       .from("client_users")
       .select("client_link_id")
@@ -132,7 +133,7 @@ export default async function BillingPage() {
 
   const { data: clientLink } = await service
     .from("client_links")
-    .select("id, client_name, service_tier, stripe_customer_id, billing_start_date, billing_cancel_request_at, billing_cancel_request_note")
+    .select("id, client_name, stripe_customer_id, billing_start_date, billing_cancel_request_at, billing_cancel_request_note")
     .eq("id", clientLinkId)
     .single();
 
@@ -140,24 +141,45 @@ export default async function BillingPage() {
     return <PortalErrorState code="fetch_failed" message="Could not load billing info." />;
   }
 
-  const tier = ((clientLink as any).service_tier as ServiceTier | null) || null;
-  const coachingCallLink = process.env.STRIPE_COACHING_CALL_PAYMENT_LINK || null;
   const stripeCustomerId = (clientLink as any).stripe_customer_id as string | null;
   const billingStart = (clientLink as any).billing_start_date as string | null;
   const cancelRequestAt = (clientLink as any).billing_cancel_request_at as string | null;
   const cancelRequestNote = (clientLink as any).billing_cancel_request_note as string | null;
+  const coachingCallLink = process.env.STRIPE_COACHING_CALL_PAYMENT_LINK || null;
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "https://app.ironbooks.com";
+
+  // Pull tier + invoices from Stripe. Fail soft — if no customer ID or Stripe
+  // is unreachable, the page still renders with a "contact us" fallback.
+  let billingInfo: StripeBillingInfo | null = null;
+  let invoices: StripeInvoice[] = [];
+
+  if (stripeCustomerId) {
+    try {
+      [billingInfo, invoices] = await Promise.all([
+        getCustomerBillingInfo(stripeCustomerId),
+        getCustomerInvoices(stripeCustomerId, 24),
+      ]);
+    } catch (err: any) {
+      console.warn("[billing] Stripe fetch failed:", err.message);
+    }
+  }
 
   return (
     <BillingClient
       clientLinkId={clientLinkId}
       clientName={(clientLink as any).client_name}
-      tier={tier}
+      tier={billingInfo?.tier ?? null}
+      monthlyAmountDollars={billingInfo?.monthlyAmountDollars ?? null}
+      subscriptionStatus={billingInfo?.subscriptionStatus ?? null}
+      currentPeriodEnd={billingInfo?.currentPeriodEnd ?? null}
       billingStart={billingStart}
       stripeCustomerId={stripeCustomerId}
+      invoices={invoices}
       coachingCallLink={coachingCallLink}
       cancelRequestAt={cancelRequestAt}
       cancelRequestNote={cancelRequestNote}
       impersonating={!!impersonatingClientLinkId && isInternal}
+      portalReturnUrl={`${baseUrl}/portal/billing`}
     />
   );
 }
