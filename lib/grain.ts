@@ -17,25 +17,48 @@
  * mapping is isolated to `normalizeRecording` / `normalizeActionItems`.
  */
 
-const BASE = process.env.GRAIN_API_BASE || "https://api.grain.com/_/public-api";
+// Grain Public API v2: recordings are listed via POST with a JSON body that
+// carries `include` flags + the pagination cursor, and a Public-Api-Version
+// header. ai_summary + ai_action_items come back IN the list response.
+const BASE = process.env.GRAIN_API_BASE || "https://api.grain.com/_/public-api/v2";
+const API_VERSION = process.env.GRAIN_API_VERSION || "2025-10-31";
 const IRONBOOKS_DOMAIN = "ironbooks.com";
+const INCLUDE = { participants: true, ai_summary: true, ai_action_items: true };
 
 export function grainConfigured(): boolean {
   return !!process.env.GRAIN_API_TOKEN;
 }
 
-async function grainGet<T>(path: string): Promise<T> {
+async function grainPost<T>(path: string, body: any = {}): Promise<T> {
   const token = process.env.GRAIN_API_TOKEN;
   if (!token) throw new Error("GRAIN_API_TOKEN not configured");
   const res = await fetch(`${BASE}${path}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-    signal: AbortSignal.timeout(20_000),
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Public-Api-Version": API_VERSION,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Grain ${res.status} on ${path}: ${text.slice(0, 200)}`);
   }
   return res.json();
+}
+
+function fmtDuration(ms: number | null | undefined): string | null {
+  if (!ms || ms <= 0) return null;
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+    : `${m}:${String(sec).padStart(2, "0")}`;
 }
 
 export interface GrainParticipant {
@@ -79,12 +102,13 @@ function normalizeParticipants(raw: any): GrainParticipant[] {
 }
 
 function normalizeActionItems(raw: any): GrainActionItem[] {
-  const list: any[] = raw?.action_items || raw?.actionItems || [];
+  const list: any[] = raw?.ai_action_items || raw?.action_items || raw?.actionItems || [];
   return list.map((a) => ({
     text: a.text ?? a.description ?? "",
     status: a.status ?? null,
     dueDate: a.due_date ?? a.dueDate ?? null,
-    assigneeName: a.assignee?.name ?? a.assignee_name ?? null,
+    assigneeName:
+      a.assignee?.name ?? a.assignee_name ?? (typeof a.assignee === "string" ? a.assignee : null),
     transcriptUrl: a.transcript_url ?? a.transcriptUrl ?? null,
   })).filter((a) => a.text);
 }
@@ -98,8 +122,8 @@ function normalizeRecording(raw: any): GrainRecording {
     title: raw.title ?? "Untitled call",
     url: raw.url ?? raw.share_url ?? (raw.id ? `https://grain.com/share/recording/${raw.id}` : null),
     startDatetime: raw.start_datetime ?? raw.startDatetime ?? null,
-    durationLabel: raw.duration ?? null,
-    summary: raw.summary ?? raw.intelligence_summary ?? null,
+    durationLabel: fmtDuration(raw.duration_ms) ?? raw.duration ?? null,
+    summary: raw.ai_summary ?? raw.summary ?? raw.intelligence_summary ?? null,
     participants,
     ironbooksHost,
     actionItems: normalizeActionItems(raw),
@@ -153,10 +177,9 @@ export async function listClientGrainRecordings(params: {
 
   while (page < maxPages && matched.length < maxResults) {
     page++;
-    const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
     let body: any;
     try {
-      body = await grainGet<any>(`/recordings${qs}`);
+      body = await grainPost<any>("/recordings", { include: INCLUDE, ...(cursor ? { cursor } : {}) });
     } catch (err: any) {
       console.warn(`[grain] recordings page ${page} failed:`, err.message);
       break;
@@ -173,29 +196,48 @@ export async function listClientGrainRecordings(params: {
     if (!cursor) break;
   }
 
-  // Enrich each match with detail (summary + action items) when the list
-  // response didn't already include them.
-  const enriched = await Promise.all(
-    matched.map(async (rec) => {
-      if (rec.summary && rec.actionItems.length) return rec;
-      try {
-        const detail = await grainGet<any>(`/recordings/${rec.id}?intelligence_notes_format=json`);
-        const d = normalizeRecording({ ...detail, id: rec.id });
-        return {
-          ...rec,
-          summary: rec.summary ?? d.summary,
-          actionItems: rec.actionItems.length ? rec.actionItems : d.actionItems,
-          participants: rec.participants.length ? rec.participants : d.participants,
-          ironbooksHost: rec.ironbooksHost ?? d.ironbooksHost,
-        };
-      } catch (err: any) {
-        console.warn(`[grain] detail ${rec.id} failed:`, err.message);
-        return rec;
-      }
-    })
-  );
+  return matched;
+}
 
-  return enriched;
+/**
+ * List ALL recordings the token can see (not client-scoped), paging through
+ * up to `maxPages`. Used by the backfill to cache every Ironbooks-hosted call.
+ * Each result is enriched with summary + action items via the detail endpoint
+ * when the list row didn't include them.
+ */
+export async function listAllRecordings(maxPages = 50): Promise<GrainRecording[]> {
+  if (!grainConfigured()) return [];
+  const all: GrainRecording[] = [];
+  let cursor: string | null = null;
+  let page = 0;
+  while (page < maxPages) {
+    page++;
+    let body: any;
+    try {
+      body = await grainPost<any>("/recordings", { include: INCLUDE, ...(cursor ? { cursor } : {}) });
+    } catch (err: any) {
+      console.warn(`[grain] listAll page ${page} failed:`, err.message);
+      break;
+    }
+    const rows: any[] = body?.recordings || body?.list || [];
+    for (const r of rows) all.push(normalizeRecording(r));
+    cursor = body?.cursor || null;
+    if (!cursor || rows.length === 0) break;
+  }
+  return all;
+}
+
+/** Fetch a single recording's detail (summary + action items + participants). */
+export async function getRecordingDetail(id: string): Promise<GrainRecording | null> {
+  if (!grainConfigured()) return null;
+  try {
+    const detail = await grainPost<any>(`/recordings/${id}`, { include: INCLUDE });
+    const rec = detail?.recording ?? detail;
+    return normalizeRecording({ ...rec, id });
+  } catch (err: any) {
+    console.warn(`[grain] detail ${id} failed:`, err.message);
+    return null;
+  }
 }
 
 /**
