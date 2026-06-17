@@ -376,11 +376,16 @@ export default async function ClientsPage() {
   const completeCoa = new Set<string>();
   const activeReclass = new Set<string>();
   const completeReclass = new Set<string>();
+  const hasBankRules = new Set<string>();
   if (allIds.length) {
-    const [coaJobsAll, reclassJobsAll] = await Promise.all([
+    const [coaJobsAll, reclassJobsAll, bankRulesAll] = await Promise.all([
       service.from("coa_jobs").select("client_link_id, status").in("client_link_id", allIds),
       service.from("reclass_jobs").select("client_link_id, status").in("client_link_id", allIds),
+      service.from("bank_rules").select("client_link_id").in("client_link_id", allIds),
     ]);
+    for (const r of (bankRulesAll.data as any[]) || []) {
+      if (r.client_link_id) hasBankRules.add(r.client_link_id);
+    }
     for (const j of (coaJobsAll.data as any[]) || []) {
       if (!j.client_link_id) continue;
       if (j.status === "complete") completeCoa.add(j.client_link_id);
@@ -455,6 +460,18 @@ export default async function ClientsPage() {
         in_cleanup_phase: !cleanupCompleted && !c.daily_recon_enabled,
         // Production clients get a Month-end deep link to finish the close.
         is_production: !!c.daily_recon_enabled && cleanupCompleted,
+        // Lifecycle checklist (row-expand drawer).
+        steps: {
+          qbo: !!c.qbo_connected,
+          coa: completeCoa.has(c.id),
+          reclass: completeReclass.has(c.id),
+          rules: hasBankRules.has(c.id),
+          bs: !!bsSkippedById.get(c.id) || cleanupCompleted,
+          bs_skipped: !!bsSkippedById.get(c.id),
+          signoff: cleanupCompleted,
+          production: !!c.daily_recon_enabled,
+          month_sent: monthDone.has(c.id),
+        },
       };
     });
 

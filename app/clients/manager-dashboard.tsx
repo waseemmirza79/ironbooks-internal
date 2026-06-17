@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   LayoutGrid, ChevronDown, ChevronRight, ExternalLink, Loader2, Search, SkipForward, Undo2, CalendarCheck,
+  CheckCircle2, Circle,
 } from "lucide-react";
 import { LIFECYCLE_META, type LifecycleStatus } from "@/lib/client-lifecycle";
 
@@ -21,6 +22,12 @@ export interface ManagerRow {
   in_cleanup_phase: boolean;
   /** true once promoted to production — gets a Month-end deep link */
   is_production: boolean;
+  /** lifecycle checklist for the row-expand drawer */
+  steps: {
+    qbo: boolean; coa: boolean; reclass: boolean; rules: boolean;
+    bs: boolean; bs_skipped: boolean; signoff: boolean;
+    production: boolean; month_sent: boolean;
+  };
 }
 interface Bk { id: string; full_name: string }
 
@@ -50,6 +57,13 @@ export function ManagerDashboard({
   const [statusFilter, setStatusFilter] = useState<LifecycleStatus | "all">("all");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleRow = (id: string) =>
+    setExpanded((prev) => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
 
   const filtered = useMemo(() => {
     let r = rows;
@@ -171,15 +185,25 @@ export function ManagerDashboard({
               </thead>
               <tbody>
                 {filtered.map((r) => (
-                  <tr key={r.id} className="border-b border-gray-50 hover:bg-teal-lighter/40">
+                  <Fragment key={r.id}>
+                  <tr className="border-b border-gray-50 hover:bg-teal-lighter/40">
                     <td className="py-2.5 pr-3">
-                      <Link href={`/clients/${r.id}`} className="font-semibold text-navy hover:underline inline-flex items-center gap-1 group">
-                        {r.client_name}
-                        <ExternalLink size={11} className="opacity-0 group-hover:opacity-50" />
-                      </Link>
-                      {(r.jurisdiction || r.state_province) && (
-                        <span className="text-[11px] text-ink-light ml-2">{r.state_province || r.jurisdiction}</span>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => toggleRow(r.id)}
+                          className="text-ink-light hover:text-navy flex-shrink-0"
+                          title="Lifecycle checklist"
+                        >
+                          {expanded.has(r.id) ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                        </button>
+                        <Link href={`/clients/${r.id}`} className="font-semibold text-navy hover:underline inline-flex items-center gap-1 group">
+                          {r.client_name}
+                          <ExternalLink size={11} className="opacity-0 group-hover:opacity-50" />
+                        </Link>
+                        {(r.jurisdiction || r.state_province) && (
+                          <span className="text-[11px] text-ink-light">{r.state_province || r.jurisdiction}</span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-2.5 pr-3">
                       {canEdit ? (
@@ -240,6 +264,14 @@ export function ManagerDashboard({
                       )}
                     </td>
                   </tr>
+                  {expanded.has(r.id) && (
+                    <tr className="bg-slate-50/60">
+                      <td colSpan={4} className="px-4 py-3">
+                        <Checklist steps={r.steps} />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
                 {filtered.length === 0 && (
                   <tr><td colSpan={4} className="py-8 text-center text-ink-light text-sm italic">No clients match.</td></tr>
@@ -250,5 +282,36 @@ export function ManagerDashboard({
         </div>
       )}
     </section>
+  );
+}
+
+/** Lifecycle checklist shown when a dashboard row is expanded. */
+function Checklist({ steps }: { steps: ManagerRow["steps"] }) {
+  const items: { label: string; done: boolean; note?: string }[] = [
+    { label: "QuickBooks connected", done: steps.qbo },
+    { label: "COA cleanup", done: steps.coa },
+    { label: "Reclassification", done: steps.reclass },
+    { label: "Bank rules created", done: steps.rules },
+    { label: "Balance-sheet cleanup", done: steps.bs, note: steps.bs_skipped ? "skipped" : undefined },
+    { label: "Cleanup signed off", done: steps.signoff },
+    { label: "In production (daily recon)", done: steps.production },
+    { label: "This month sent to client", done: steps.month_sent },
+  ];
+  return (
+    <ul className="grid grid-cols-2 sm:grid-cols-4 gap-x-5 gap-y-1.5">
+      {items.map((it) => (
+        <li key={it.label} className="flex items-center gap-1.5 text-xs">
+          {it.done ? (
+            <CheckCircle2 size={13} className="text-emerald-600 flex-shrink-0" />
+          ) : (
+            <Circle size={13} className="text-ink-light flex-shrink-0" />
+          )}
+          <span className={it.done ? "text-navy" : "text-ink-light"}>
+            {it.label}
+            {it.note && <span className="ml-1 text-[10px] italic text-amber-700">({it.note})</span>}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
