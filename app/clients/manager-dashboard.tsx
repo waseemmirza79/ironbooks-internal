@@ -4,8 +4,8 @@ import { Fragment, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  LayoutGrid, ChevronDown, ChevronRight, ExternalLink, Loader2, Search, SkipForward, Undo2, CalendarCheck,
-  CheckCircle2, Circle,
+  LayoutGrid, ChevronDown, ChevronRight, ExternalLink, Loader2, Search, SkipForward, CalendarCheck,
+  CheckCircle2, Circle, AlertTriangle,
 } from "lucide-react";
 import { LIFECYCLE_META, type LifecycleStatus } from "@/lib/client-lifecycle";
 
@@ -17,15 +17,16 @@ export interface ManagerRow {
   assigned_bookkeeper_id: string | null;
   assigned_bookkeeper_name: string | null;
   status: LifecycleStatus;
-  bs_cleanup_skipped: boolean;
-  /** true while the client is still in cleanup (BS skip is only meaningful here) */
+  /** true when BS cleanup is deferred (bs_enabled=false) but still owed → amber badge. */
+  bs_owed: boolean;
+  /** true while the client is still in cleanup (Defer BS only meaningful here) */
   in_cleanup_phase: boolean;
   /** true once promoted to production — gets a Month-end deep link */
   is_production: boolean;
   /** lifecycle checklist for the row-expand drawer */
   steps: {
     qbo: boolean; coa: boolean; reclass: boolean; rules: boolean;
-    bs: boolean; bs_skipped: boolean; signoff: boolean;
+    bs: boolean; bs_deferred: boolean; signoff: boolean;
     production: boolean; month_sent: boolean;
   };
 }
@@ -55,6 +56,7 @@ export function ManagerDashboard({
   const [rows, setRows] = useState(initialRows);
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState<LifecycleStatus | "all">("all");
+  const [bsOnly, setBsOnly] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -68,6 +70,7 @@ export function ManagerDashboard({
   const filtered = useMemo(() => {
     let r = rows;
     if (statusFilter !== "all") r = r.filter((x) => x.status === statusFilter);
+    if (bsOnly) r = r.filter((x) => x.bs_owed);
     if (q.trim()) {
       const s = q.toLowerCase();
       r = r.filter(
@@ -77,13 +80,15 @@ export function ManagerDashboard({
     return [...r].sort(
       (a, b) => LIFECYCLE_META[a.status].order - LIFECYCLE_META[b.status].order || a.client_name.localeCompare(b.client_name)
     );
-  }, [rows, q, statusFilter]);
+  }, [rows, q, statusFilter, bsOnly]);
 
   const counts = useMemo(() => {
     const m = new Map<LifecycleStatus, number>();
     for (const r of rows) m.set(r.status, (m.get(r.status) || 0) + 1);
     return m;
   }, [rows]);
+
+  const bsOwedCount = useMemo(() => rows.filter((r) => r.bs_owed).length, [rows]);
 
   const groupTotals = useMemo(() => {
     const g: Record<string, number> = { Pipeline: 0, Review: 0, Live: 0 };
@@ -106,16 +111,21 @@ export function ManagerDashboard({
     } catch (e: any) { setError(e.message); } finally { setBusy(null); }
   }
 
-  async function toggleSkipBs(id: string, skip: boolean) {
+  // Defer / un-defer BS cleanup reuses the existing production BS toggle
+  // (bs_off = defer/P&L-only, bs_on = BS done/full service) so there's ONE
+  // source of truth (bs_enabled), shared with the production board.
+  async function bsAction(id: string, defer: boolean) {
     setBusy(id); setError(null);
     try {
-      const res = await fetch(`/api/clients/${id}/skip-bs-cleanup`, {
+      const res = await fetch(`/api/clients/${id}/production`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ skip }),
+        body: JSON.stringify({ action: defer ? "bs_off" : "bs_on" }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-      setRows((prev) => prev.map((r) => r.id === id ? { ...r, bs_cleanup_skipped: skip } : r));
+      setRows((prev) => prev.map((r) => r.id === id
+        ? { ...r, bs_owed: defer, steps: { ...r.steps, bs_deferred: defer } }
+        : r));
       router.refresh();
     } catch (e: any) { setError(e.message); } finally { setBusy(null); }
   }
@@ -169,6 +179,15 @@ export function ManagerDashboard({
                 {LIFECYCLE_META[s].label} {counts.get(s)}
               </button>
             ))}
+            {bsOwedCount > 0 && (
+              <button
+                onClick={() => setBsOnly((v) => !v)}
+                className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full ${bsOnly ? "bg-amber-600 text-white" : "bg-amber-100 text-amber-800 hover:bg-amber-200"}`}
+                title="Clients in production/closed that still owe a balance-sheet cleanup"
+              >
+                <AlertTriangle size={11} /> BS outstanding {bsOwedCount}
+              </button>
+            )}
           </div>
 
           {error && <div className="mb-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">{error}</div>}
@@ -224,30 +243,36 @@ export function ManagerDashboard({
                       <span className={`inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full ${LIFECYCLE_META[r.status].tone}`}>
                         {LIFECYCLE_META[r.status].label}
                       </span>
-                      {r.bs_cleanup_skipped && (
-                        <span className="ml-1.5 text-[10px] text-ink-light italic">BS skipped</span>
+                      {r.bs_owed && (
+                        <span
+                          className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800"
+                          title="Balance-sheet cleanup deferred — still owed"
+                        >
+                          <AlertTriangle size={9} /> BS owed
+                        </span>
                       )}
                     </td>
                     <td className="py-2.5 pr-1 text-right whitespace-nowrap">
                       {busy === r.id && <Loader2 size={13} className="animate-spin text-teal inline mr-2" />}
-                      {canEdit && r.in_cleanup_phase && (
-                        r.bs_cleanup_skipped ? (
-                          <button
-                            onClick={() => toggleSkipBs(r.id, false)}
-                            className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg border border-gray-200 text-ink-slate hover:bg-gray-50"
-                            title="Undo: this client owes a BS cleanup again"
-                          >
-                            <Undo2 size={11} /> Un-skip BS
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => toggleSkipBs(r.id, true)}
-                            className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg border border-amber-200 text-amber-700 hover:bg-amber-50"
-                            title="Skip the balance-sheet cleanup for this client"
-                          >
-                            <SkipForward size={11} /> Skip BS
-                          </button>
-                        )
+                      {/* Defer BS — while in the cleanup phase and not already deferred */}
+                      {canEdit && r.in_cleanup_phase && !r.bs_owed && (
+                        <button
+                          onClick={() => bsAction(r.id, true)}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg border border-amber-200 text-amber-700 hover:bg-amber-50"
+                          title="Defer the balance-sheet cleanup (P&L-only) — move to production now, BS stays flagged as owed"
+                        >
+                          <SkipForward size={11} /> Defer BS
+                        </button>
+                      )}
+                      {/* Mark BS done — whenever it's owed (cleanup OR production) */}
+                      {canEdit && r.bs_owed && (
+                        <button
+                          onClick={() => bsAction(r.id, false)}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                          title="Mark the deferred balance-sheet cleanup as done (restores full BS service)"
+                        >
+                          <CheckCircle2 size={11} /> BS done
+                        </button>
                       )}
                       {r.is_production && (
                         <Link
@@ -292,7 +317,7 @@ function Checklist({ steps }: { steps: ManagerRow["steps"] }) {
     { label: "COA cleanup", done: steps.coa },
     { label: "Reclassification", done: steps.reclass },
     { label: "Bank rules created", done: steps.rules },
-    { label: "Balance-sheet cleanup", done: steps.bs, note: steps.bs_skipped ? "skipped" : undefined },
+    { label: "Balance-sheet cleanup", done: steps.bs, note: steps.bs_deferred ? "deferred — owed" : undefined },
     { label: "Cleanup signed off", done: steps.signoff },
     { label: "In production (daily recon)", done: steps.production },
     { label: "This month sent to client", done: steps.month_sent },

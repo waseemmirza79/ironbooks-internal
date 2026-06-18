@@ -143,9 +143,10 @@ export default async function ClientsPage() {
   const dueDateById = new Map<string, string | null>(
     linksData.map((l) => [l.id, (l as any).due_date ?? null])
   );
-  // bs_cleanup_skipped_at is fetched separately + tolerantly (see below) so a
-  // not-yet-applied migration 76 can't break the whole clients page.
-  const bsSkippedById = new Map<string, string | null>();
+  // BS cleanup deferral reuses the existing bs_enabled flag (migration 66):
+  // bs_enabled === false ⇒ P&L-only / BS deferred ("owed"). Fetched separately
+  // + tolerantly below. Default true.
+  const bsDeferredById = new Map<string, boolean>();
   const reviewStateById = new Map<string, string | null>(
     linksData.map((l) => [l.id, (l as any).cleanup_review_state ?? null])
   );
@@ -234,20 +235,16 @@ export default async function ClientsPage() {
     stripeNotRequiredById.set(l.id, !!(l as any).stripe_not_required);
   }
 
-  // Fetch bs_cleanup_skipped_at separately + tolerantly (migration 76). Kept
-  // out of the main client_links select so a not-yet-applied migration can't
-  // error the whole query and blank the page. Same pattern as py_taxes below.
-  const bsSkipQuery = await supabase
+  // Fetch bs_enabled separately + tolerantly. bs_enabled === false ⇒ BS
+  // deferred / P&L-only (still owed). Kept out of the main select for safety.
+  const bsEnabledQuery = await supabase
     .from("client_links")
-    .select("id, bs_cleanup_skipped_at");
-  if (bsSkipQuery.error) {
-    console.warn(
-      "[clients page] bs_cleanup_skipped_at not available — apply migration 76. BS-skip shows as off until then. Error:",
-      bsSkipQuery.error.message
-    );
+    .select("id, bs_enabled");
+  if (bsEnabledQuery.error) {
+    console.warn("[clients page] bs_enabled query failed:", bsEnabledQuery.error.message);
   } else {
-    for (const r of (bsSkipQuery.data as any[]) || []) {
-      if (r.id) bsSkippedById.set(r.id, r.bs_cleanup_skipped_at ?? null);
+    for (const r of (bsEnabledQuery.data as any[]) || []) {
+      if (r.id && r.bs_enabled === false) bsDeferredById.set(r.id, true);
     }
   }
 
@@ -431,13 +428,14 @@ export default async function ClientsPage() {
     .map((c: any) => {
       const cleanupCompleted = !!completionById.get(c.id);
       const reviewState = reviewStateById.get(c.id) ?? null;
+      const bsOwed = !!bsDeferredById.get(c.id);
       const status = deriveLifecycleStatus({
         status: c.status,
         qbo_connected: c.qbo_connected,
         cleanup_completed_at: cleanupCompleted ? "set" : null,
         cleanup_review_state: reviewState,
         daily_recon_enabled: c.daily_recon_enabled,
-        bs_cleanup_skipped_at: bsSkippedById.get(c.id) ?? null,
+        bs_deferred: bsOwed,
         has_active_coa: activeCoa.has(c.id),
         has_active_reclass: activeReclass.has(c.id),
         has_complete_coa: completeCoa.has(c.id),
@@ -455,8 +453,9 @@ export default async function ClientsPage() {
         assigned_bookkeeper_id: c.assigned_bookkeeper_id ?? null,
         assigned_bookkeeper_name: c.assigned_bookkeeper_name ?? null,
         status,
-        bs_cleanup_skipped: !!bsSkippedById.get(c.id),
-        // BS-skip is only meaningful while still in cleanup (not completed/production).
+        // BS cleanup deferral (orthogonal). bs_owed = bs_enabled false.
+        bs_owed: bsOwed,
+        // BS actions only meaningful while still in cleanup (not completed/production).
         in_cleanup_phase: !cleanupCompleted && !c.daily_recon_enabled,
         // Production clients get a Month-end deep link to finish the close.
         is_production: !!c.daily_recon_enabled && cleanupCompleted,
@@ -466,8 +465,8 @@ export default async function ClientsPage() {
           coa: completeCoa.has(c.id),
           reclass: completeReclass.has(c.id),
           rules: hasBankRules.has(c.id),
-          bs: !!bsSkippedById.get(c.id) || cleanupCompleted,
-          bs_skipped: !!bsSkippedById.get(c.id),
+          bs: !bsOwed && cleanupCompleted,
+          bs_deferred: bsOwed,
           signoff: cleanupCompleted,
           production: !!c.daily_recon_enabled,
           month_sent: monthDone.has(c.id),

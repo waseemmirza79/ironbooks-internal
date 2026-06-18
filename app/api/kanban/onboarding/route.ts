@@ -267,11 +267,11 @@ export async function GET(request: Request) {
     // active, the client is ready for BS work. Stripe is parallel — a
     // pending stripe link no longer blocks BS Cleanup.
     if (hasCompleteReclass && !latestReclassActive) {
-      // BS-cleanup bypass: a manager can mark a client as not needing BS
-      // cleanup (migration 76). Those drop off the cleanup board entirely —
-      // they're done with cleanup work and await manager sign-off on the
-      // dashboard, rather than nagging in the BS column.
-      if (!(client as any).bs_cleanup_skipped_at) {
+      // BS-cleanup deferral: a manager can defer BS (bs_enabled=false /
+      // P&L-only). Deferred clients drop off the cleanup board — they're done
+      // with pre-production cleanup work and carry a "BS owed" badge on the
+      // dashboard instead of nagging in the BS column.
+      if ((client as any).bs_enabled !== false) {
         columns.bs_cleanup.push(card);
       }
       continue;

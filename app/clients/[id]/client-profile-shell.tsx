@@ -25,6 +25,7 @@ import {
   PowerOff,
   Mail,
   Building2,
+  AlertTriangle,
 } from "lucide-react";
 import type {
   OutstandingWork,
@@ -145,6 +146,8 @@ interface Props {
   overview: OverviewBundle;
   financials: FinancialsBundle;
   onboarding?: OnboardingProfile | null;
+  /** BS cleanup deferred → still owed (amber banner on Overview). */
+  bsCleanupOwed?: boolean;
 }
 
 type TabId = "overview" | "profile" | "pl" | "bs" | "bank" | "activity";
@@ -158,7 +161,7 @@ const TABS: { id: TabId; label: string; icon: any }[] = [
   { id: "activity", label: "Activity", icon: Clock },
 ];
 
-export function ClientProfileShell({ clientLink, actorRole, overview, financials, onboarding }: Props) {
+export function ClientProfileShell({ clientLink, actorRole, overview, financials, onboarding, bsCleanupOwed }: Props) {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const canImpersonate = actorRole === "admin" || actorRole === "lead";
 
@@ -235,6 +238,7 @@ export function ClientProfileShell({ clientLink, actorRole, overview, financials
           overview={overview}
           qboStatus={financials.qboStatus}
           onboarding={onboarding}
+          bsCleanupOwed={bsCleanupOwed}
         />
       )}
       {activeTab === "profile" && (
@@ -720,11 +724,13 @@ function OverviewTab({
   overview,
   qboStatus,
   onboarding,
+  bsCleanupOwed,
 }: {
   clientLink: ClientLink;
   overview: OverviewBundle;
   qboStatus: "connected" | "token_expired" | "never_connected";
   onboarding?: OnboardingProfile | null;
+  bsCleanupOwed?: boolean;
 }) {
   const { outstanding, summary, activity, progress } = overview;
 
@@ -749,6 +755,15 @@ function OverviewTab({
         qboRealmId={clientLink.qbo_realm_id}
         status={qboStatus}
       />
+
+      {/* Balance-sheet cleanup deferred — still owed. Surfaced here so a
+          client live in production doesn't silently skip its BS cleanup. */}
+      {bsCleanupOwed && (
+        <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
+          <AlertTriangle size={15} className="flex-shrink-0" />
+          <span><strong>Balance-sheet cleanup deferred</strong> — this client still owes a BS cleanup. Mark it done from the Clients manager dashboard once complete.</span>
+        </div>
+      )}
 
       {/* Production status — the lever that takes a client from "we
           cleaned them up once" to "the 3am cron pulls their books

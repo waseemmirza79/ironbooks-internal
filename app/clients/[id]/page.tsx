@@ -324,6 +324,14 @@ export default async function ClientProfilePage({
     console.warn(`[client-profile ${id}] onboarding fetch failed:`, e?.message);
   }
 
+  // BS cleanup deferred? Reuses bs_enabled (false = P&L-only / BS still owed).
+  let bsCleanupOwed = false;
+  try {
+    const { data: bsRow } = await (service as any)
+      .from("client_links").select("bs_enabled").eq("id", id).single();
+    bsCleanupOwed = (bsRow as any)?.bs_enabled === false;
+  } catch { /* ignore */ }
+
   return (
     <AppShell>
       <TopBar
@@ -342,6 +350,7 @@ export default async function ClientProfilePage({
         clientLink={clientLink as any}
         actorRole={role}
         onboarding={onboarding}
+        bsCleanupOwed={bsCleanupOwed}
         overview={{
           outstanding,
           activity,

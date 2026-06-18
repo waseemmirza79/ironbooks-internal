@@ -1,8 +1,8 @@
 /**
  * Unified client lifecycle status — collapses the three SNAP surfaces
  * (onboarding board, cleanup kanban, production board) into one status the
- * manager dashboard uses. Derived from existing flags + job state; the only
- * stored input is bs_cleanup_skipped_at (migration 76).
+ * manager dashboard uses. Derived entirely from existing flags + job state —
+ * including bs_enabled (migration 66) for BS-deferral. No new columns.
  *
  * Mirrors the real SNAP phases so "In cleanup" isn't an opaque bucket — a
  * manager can see exactly where each client sits.
@@ -27,7 +27,8 @@ export interface LifecycleInput {
   cleanup_completed_at?: string | null;
   cleanup_review_state?: string | null;     // 'in_review' when submitted
   daily_recon_enabled?: boolean | null;
-  bs_cleanup_skipped_at?: string | null;
+  /** BS cleanup deferred (client_links.bs_enabled === false / P&L-only). */
+  bs_deferred?: boolean | null;
   has_active_coa?: boolean | null;
   has_active_reclass?: boolean | null;
   has_complete_coa?: boolean | null;
@@ -74,18 +75,14 @@ export function deriveLifecycleStatus(c: LifecycleInput): LifecycleStatus {
   // ── Pipeline (cleanup phases), furthest-along first ──
   if (c.has_active_reclass) return "reclassify";
   if (c.has_complete_reclass) {
-    // Reclass done → owes a BS cleanup, unless a manager skipped it — in which
-    // case the cleanup pipeline is finished and it's awaiting sign-off
-    // (NOT the same as 'ready_for_review', which means actually submitted).
-    return c.bs_cleanup_skipped_at ? "ready_to_close" : "bs_cleanup";
+    // Reclass done → still in the BS-cleanup queue unless BS was DEFERRED
+    // (bs_enabled=false / P&L-only). Deferred ⇒ pre-production pipeline is
+    // finished, awaiting sign-off ('ready_to_close'); the "BS owed" badge
+    // rides alongside (orthogonal — driven by bs_enabled === false).
+    return c.bs_deferred ? "ready_to_close" : "bs_cleanup";
   }
   if (c.has_active_coa) return "coa_cleanup";
   if (c.has_complete_coa) return "reclassify"; // COA done, reclass not started
   if (c.status === "onboarding" && !c.qbo_connected) return "onboarding";
   return "needs_cleanup";
-}
-
-/** Whether the client still owes a balance-sheet cleanup (false once skipped). */
-export function needsBsCleanup(c: { bs_cleanup_skipped_at?: string | null }): boolean {
-  return !c.bs_cleanup_skipped_at;
 }
