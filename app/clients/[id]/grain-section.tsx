@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   Video, ExternalLink, Loader2, CheckSquare, Square, ChevronDown, ChevronRight,
-  CircleUser, Building2,
+  CircleUser, Building2, Unlink, Users,
 } from "lucide-react";
 
 export interface ActionItem {
@@ -25,8 +25,16 @@ interface Recording {
   duration: string | null;
   host: { name: string | null; email: string | null } | null;
   summary: string | null;
+  onboarding?: boolean;
+  group_call?: boolean;
   participants: { name: string | null; email: string | null }[];
   todos: { client: ActionItem[]; bookkeeper: ActionItem[]; unassigned: ActionItem[] };
+}
+
+/** Broadcast when a call is unlinked so the Overview to-do panel drops it too. */
+export const UNLINK_EVENT = "grain-call-unlinked";
+export function broadcastUnlink(recording_id: string) {
+  window.dispatchEvent(new CustomEvent(UNLINK_EVENT, { detail: { recording_id } }));
 }
 
 function fmtDate(iso: string | null): string {
@@ -246,7 +254,14 @@ export function GrainSection({ clientLinkId }: { clientLinkId: string }) {
       ) : (
         <ul className="space-y-3">
           {recordings.map((rec) => (
-            <RecordingCard key={rec.id} rec={rec} clientLinkId={clientLinkId} />
+            <RecordingCard
+              key={rec.id}
+              rec={rec}
+              clientLinkId={clientLinkId}
+              onUnlink={(rid) =>
+                setRecordings((prev) => prev.filter((r) => r.id !== rid))
+              }
+            />
           ))}
         </ul>
       )}
@@ -254,10 +269,34 @@ export function GrainSection({ clientLinkId }: { clientLinkId: string }) {
   );
 }
 
-function RecordingCard({ rec, clientLinkId }: { rec: Recording; clientLinkId: string }) {
+function RecordingCard({
+  rec, clientLinkId, onUnlink,
+}: {
+  rec: Recording; clientLinkId: string; onUnlink: (recordingId: string) => void;
+}) {
   const [open, setOpen] = useState(false);
+  const [unlinking, setUnlinking] = useState(false);
   const todoCount =
     rec.todos.client.length + rec.todos.bookkeeper.length + rec.todos.unassigned.length;
+
+  async function handleUnlink(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (unlinking) return;
+    if (!confirm(`Unlink "${rec.title}" from this client? It will stop showing here and won't re-attach on the next sync.`)) return;
+    setUnlinking(true);
+    try {
+      const res = await fetch(`/api/clients/${clientLinkId}/grain/unlink`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recording_id: rec.id }),
+      });
+      if (!res.ok) { setUnlinking(false); return; }
+      broadcastUnlink(rec.id); // drop its to-dos from the Overview panel
+      onUnlink(rec.id);
+    } catch {
+      setUnlinking(false);
+    }
+  }
 
   return (
     <li className="rounded-xl border border-slate-200 overflow-hidden">
@@ -267,7 +306,14 @@ function RecordingCard({ rec, clientLinkId }: { rec: Recording; clientLinkId: st
       >
         {open ? <ChevronDown size={15} className="mt-0.5 text-ink-light flex-shrink-0" /> : <ChevronRight size={15} className="mt-0.5 text-ink-light flex-shrink-0" />}
         <div className="min-w-0 flex-1">
-          <div className="font-semibold text-sm text-navy truncate">{rec.title}</div>
+          <div className="font-semibold text-sm text-navy truncate flex items-center gap-1.5">
+            {rec.title}
+            {rec.group_call && (
+              <span className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-700 bg-amber-50 border border-amber-200 rounded px-1 py-0.5">
+                <Users size={9} /> Group
+              </span>
+            )}
+          </div>
           <div className="text-[11px] text-ink-slate mt-0.5 flex flex-wrap items-center gap-x-2">
             <span>{fmtDate(rec.start_datetime)}</span>
             {rec.duration && <span>· {rec.duration}</span>}
@@ -275,17 +321,28 @@ function RecordingCard({ rec, clientLinkId }: { rec: Recording; clientLinkId: st
             {todoCount > 0 && <span className="text-teal font-semibold">· {todoCount} action item{todoCount === 1 ? "" : "s"}</span>}
           </div>
         </div>
-        {rec.url && (
-          <a
-            href={rec.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="flex-shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-teal hover:underline mt-0.5"
+        <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+          {rec.url && (
+            <a
+              href={rec.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-teal hover:underline"
+            >
+              Watch <ExternalLink size={11} />
+            </a>
+          )}
+          <button
+            onClick={handleUnlink}
+            disabled={unlinking}
+            title="Unlink this call from this client"
+            className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-light hover:text-red-600 disabled:opacity-50"
           >
-            Watch <ExternalLink size={11} />
-          </a>
-        )}
+            {unlinking ? <Loader2 size={11} className="animate-spin" /> : <Unlink size={11} />}
+            Unlink
+          </button>
+        </div>
       </button>
 
       {open && (
@@ -295,6 +352,12 @@ function RecordingCard({ rec, clientLinkId }: { rec: Recording; clientLinkId: st
               <div className="text-[10px] font-bold uppercase tracking-wider text-ink-light mb-1">Summary</div>
               {renderMarkdown(rec.summary)}
             </div>
+          )}
+
+          {rec.onboarding && (
+            <p className="text-[11px] text-ink-light italic">
+              Action items are hidden for onboarding calls (setup checklist — too noisy to track here).
+            </p>
           )}
 
           {todoCount > 0 && (

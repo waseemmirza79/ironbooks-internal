@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { normName, isIronbooks } from "@/lib/grain-matching";
+import { normName, isIronbooks, distinctiveTokens } from "@/lib/grain-matching";
 
 export const dynamic = "force-dynamic";
 
@@ -61,17 +61,50 @@ export async function GET(
     .in("id", recIds)
     .order("start_datetime", { ascending: false });
 
-  // Resolve the client's contact name(s) for the to-do split.
+  // How many clients each recording is matched to. >1 ⇒ a group/cohort call
+  // (e.g. the "FAR Program" coaching calls). For those we must attribute each
+  // action item to the ONE client it belongs to (by assignee), instead of
+  // dumping every participant's to-dos onto all matched clients.
+  const { data: allMatches } = await service
+    .from("grain_recording_matches")
+    .select("recording_id, client_link_id")
+    .in("recording_id", recIds);
+  const clientCountByRec = new Map<string, number>();
+  for (const m of ((allMatches as any[]) || [])) {
+    clientCountByRec.set(m.recording_id, (clientCountByRec.get(m.recording_id) || 0) + 1);
+  }
+
+  // Resolve the client's contact name(s) + business tokens for attribution.
   const { data: cl } = await service
     .from("client_links")
     .select("client_name, contact_first_name, contact_last_name")
     .eq("id", id)
     .single();
   const c = (cl as any) || {};
-  const clientNames = [
-    [c.contact_first_name, c.contact_last_name].filter(Boolean).join(" "),
-    c.client_name,
-  ].filter(Boolean).map((n: string) => normName(n));
+  const contactNorm = normName([c.contact_first_name, c.contact_last_name].filter(Boolean).join(" "));
+  const bizTokens = distinctiveTokens(c.client_name || "");
+
+  // Does a name (assignee) refer to THIS client — by contact name or a
+  // distinctive business-name token? Used to pull a group-call item to the
+  // right client only.
+  const isThisClient = (an: string): boolean => {
+    if (!an) return false;
+    if (contactNorm && contactNorm.length > 4 &&
+        (an === contactNorm || an.includes(contactNorm) || contactNorm.includes(an))) return true;
+    if (bizTokens.length) {
+      const anTokens = an.split(" ");
+      if (bizTokens.every((t) => anTokens.includes(t))) return true;
+    }
+    return false;
+  };
+  // Does an item's text mention this client — used to keep an Ironbooks-owned
+  // to-do on the right client in a group call ("Send Acme's P&L to …").
+  const mentionsThisClient = (text: string): boolean => {
+    const t = normName(text || "");
+    if (contactNorm && contactNorm.length > 4 && t.includes(contactNorm)) return true;
+    if (bizTokens.length && bizTokens.some((tok) => t.includes(tok))) return true;
+    return false;
+  };
 
   const payload = ((recs as any[]) || []).map((r) => {
     const participants: any[] = r.participants || [];
@@ -79,8 +112,13 @@ export async function GET(
       .filter((p) => isIronbooks(p.email))
       .map((p) => normName(p.name)).filter(Boolean);
 
+    const isGroupCall = (clientCountByRec.get(r.id) || 1) > 1;
+    // Onboarding calls carry a huge, mostly-internal setup checklist — too
+    // noisy to surface as to-dos. Show the call + summary, but no action items.
+    const isOnboarding = /onboard/i.test(r.title || "");
+
     const todos = { client: [] as any[], bookkeeper: [] as any[], unassigned: [] as any[] };
-    (r.action_items || []).forEach((a: any, index: number) => {
+    if (!isOnboarding) (r.action_items || []).forEach((a: any, index: number) => {
       const item = {
         id: `${r.id}#${index}`,        // stable id for completion toggling
         recording_id: r.id,
@@ -94,9 +132,19 @@ export async function GET(
       };
       if (!item.text) return;
       const an = normName(item.assigneeName);
-      if (!an) todos.unassigned.push(item);
-      else if (ironbooksNames.some((n) => an.includes(n) || n.includes(an))) todos.bookkeeper.push(item);
-      else todos.client.push(item);
+      const isIb = !!an && ironbooksNames.some((n) => an.includes(n) || n.includes(an));
+
+      if (isThisClient(an)) {
+        todos.client.push(item);
+      } else if (isIb) {
+        // Ironbooks-owned task. On a 1:1 call it's about this client; on a
+        // group call only keep it if the text names this client.
+        if (!isGroupCall || mentionsThisClient(item.text)) todos.bookkeeper.push(item);
+      } else if (!isGroupCall) {
+        // 1:1 call — unassigned / other names still belong to this client.
+        todos.client.push(item);
+      }
+      // else: group call, item belongs to a different participant — drop it.
     });
 
     return {
@@ -107,6 +155,8 @@ export async function GET(
       duration: r.duration,
       host: r.host_name || r.host_email ? { name: r.host_name, email: r.host_email } : null,
       summary: cleanGrainSummary(r.summary),
+      onboarding: isOnboarding,
+      group_call: isGroupCall,
       participants: participants
         .filter((p) => !isIronbooks(p.email))
         .map((p) => ({ name: p.name, email: p.email })),

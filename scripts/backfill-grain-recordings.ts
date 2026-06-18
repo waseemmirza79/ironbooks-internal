@@ -80,6 +80,17 @@ const supa = createClient(
   const { data: ruleRows } = await (supa as any).from("grain_match_rules").select("rule_type, match_value, client_link_id");
   const rules: MatchRule[] = (ruleRows as any[]) || [];
 
+  // Human-unlinked recording↔client pairs (migration 78) — never re-attach.
+  const excluded = new Set<string>(); // `${recording_id}::${client_link_id}`
+  try {
+    const { data: exRows } = await (supa as any)
+      .from("grain_match_exclusions")
+      .select("recording_id, client_link_id");
+    for (const e of (exRows as any[]) || []) excluded.add(`${e.recording_id}::${e.client_link_id}`);
+  } catch {
+    /* migration 78 not applied yet */
+  }
+
   // 3. Enrich + store + match.
   let stored = 0, matchedRecordings = 0, totalMatches = 0;
   const perClient = new Map<string, number>();
@@ -123,6 +134,7 @@ const supa = createClient(
     if (matches.size > 0) {
       matchedRecordings++;
       for (const [clientId, method] of matches) {
+        if (excluded.has(`${full.id}::${clientId}`)) continue; // human unlinked
         totalMatches++;
         perClient.set(clientId, (perClient.get(clientId) || 0) + 1);
         if (APPLY) {

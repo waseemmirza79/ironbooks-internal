@@ -58,7 +58,7 @@ export function normName(s: string | null | undefined): string {
 
 /** Tokens (length ≥ 3) of a normalized name, dropping generic trade words. */
 const GENERIC = new Set(["painting", "painters", "paint", "services", "service", "contracting", "construction", "home", "improvement", "design", "decorating", "renovations", "renovation", "pros", "pro"]);
-function distinctiveTokens(s: string): string[] {
+export function distinctiveTokens(s: string): string[] {
   return normName(s).split(" ").filter((t) => t.length >= 3 && !GENERIC.has(t));
 }
 

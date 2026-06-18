@@ -5,7 +5,7 @@ import {
   ListChecks, Loader2, Square, CircleUser, Building2, ChevronDown, ChevronRight,
 } from "lucide-react";
 import {
-  TODO_EVENT, type TodoToggle, type ActionItem,
+  TODO_EVENT, UNLINK_EVENT, type TodoToggle, type ActionItem,
   broadcastToggle, persistToggle,
 } from "./grain-section";
 
@@ -74,6 +74,17 @@ export function CallTodosPanel({ clientLinkId }: { clientLinkId: string }) {
     };
     window.addEventListener(TODO_EVENT, onToggle);
     return () => window.removeEventListener(TODO_EVENT, onToggle);
+  }, []);
+
+  // If a call is unlinked from the call list, drop its to-dos here too.
+  useEffect(() => {
+    const onUnlink = (e: Event) => {
+      const rid = (e as CustomEvent<{ recording_id: string }>).detail?.recording_id;
+      if (!rid) return;
+      setRecordings((prev) => prev.filter((r) => r.id !== rid));
+    };
+    window.addEventListener(UNLINK_EVENT, onUnlink);
+    return () => window.removeEventListener(UNLINK_EVENT, onUnlink);
   }, []);
 
   const { clientTodos, bkTodos } = useMemo(() => {
