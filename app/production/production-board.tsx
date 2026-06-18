@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  AlertCircle, CalendarCheck, ChevronLeft, ChevronRight, CircleDashed,
+  AlertCircle, CalendarCheck, CheckCircle2, ChevronLeft, ChevronRight, CircleDashed,
   Loader2, MailQuestion, OctagonAlert, PlayCircle, Send, Sparkles, X,
 } from "lucide-react";
 import {
@@ -13,11 +13,17 @@ import {
 /**
  * /production — the month-by-month board for graduated clients.
  *
- * Four columns driven by monthly_rec_runs.board_status for the selected
- * period: Not Started / In Progress / Stuck / Waiting on Client. A client
+ * Five columns: four working columns driven by monthly_rec_runs.board_status
+ * for the selected period (Not Started / In Progress / Stuck / Waiting on
+ * Client), plus a Completed column for runs with status="complete". A client
  * with no run row for the month is Not Started — which is exactly how a
- * finished month "resets": completed runs drop to the Done strip, and the
- * next month has no row yet.
+ * finished month "resets": next month has no row yet.
+ *
+ * A month reaches Completed two ways: the full SNAP close ("send" — review,
+ * attest, email statements, close QBO) OR "mark complete" for closes done
+ * outside SNAP (e.g. emailed from Double) — same Completed state, no email /
+ * no QBO close, badged "closed outside SNAP". Picking another status on a
+ * completed card reopens it.
  *
  * "Ready for manager review" is not a stored status — submitting the
  * statement review (the rec-card flow) moves the run to pending_review,
@@ -185,23 +191,32 @@ export function ProductionBoard() {
         </div>
       ) : (
         <>
-          {/* ── 4-COLUMN BOARD ── */}
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-            {COLUMNS.map((col) => {
+          {/* ── 5-COLUMN BOARD ── (4 working columns + Completed) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            {[
+              ...COLUMNS.map((col) => ({ ...col, cards: byColumn[col.id] })),
+              {
+                id: "completed" as const,
+                title: "Completed",
+                icon: CheckCircle2,
+                tone: "border-emerald-300",
+                cards: done,
+              },
+            ].map((col) => {
               const Icon = col.icon;
-              const cards = byColumn[col.id];
+              const isCompletedCol = col.id === "completed";
               return (
                 <div key={col.id} className={`bg-white rounded-2xl border-2 ${col.tone} overflow-hidden`}>
                   <div className="px-3 py-2.5 border-b border-gray-100 flex items-center gap-2">
-                    <Icon size={14} className="text-ink-slate" />
+                    <Icon size={14} className={isCompletedCol ? "text-emerald-600" : "text-ink-slate"} />
                     <span className="text-sm font-bold text-navy">{col.title}</span>
-                    <span className="text-xs text-ink-light ml-auto">{cards.length}</span>
+                    <span className="text-xs text-ink-light ml-auto">{col.cards.length}</span>
                   </div>
                   <div className="p-2 space-y-2 min-h-[80px]">
-                    {cards.length === 0 && (
+                    {col.cards.length === 0 && (
                       <div className="text-center text-[11px] text-ink-light py-4">—</div>
                     )}
-                    {cards.map((c) => (
+                    {col.cards.map((c) => (
                       <BoardCard
                         key={c.id}
                         client={c}
@@ -243,25 +258,6 @@ export function ProductionBoard() {
             </div>
           )}
 
-          {/* ── DONE STRIP ── */}
-          {done.length > 0 && (
-            <div className="bg-emerald-50/60 border border-emerald-200 rounded-2xl px-4 py-3">
-              <div className="text-xs font-bold text-emerald-800 mb-1.5">
-                Done for {periodLabel(period)} ({done.length})
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {done.map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() => setSelectedId(selectedId === c.id ? null : c.id)}
-                    className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-100"
-                  >
-                    {c.client_name} ✓{c.run?.has_concerns ? " ⚠" : ""}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </>
       )}
 
@@ -380,9 +376,78 @@ function BoardCard({
     }
   }
 
+  // Mark the month complete WITHOUT the full send flow — for closes already
+  // done & sent outside SNAP (e.g. from Double). Moves the card to Completed.
+  async function markComplete() {
+    if (
+      !confirm(
+        `Mark ${client.client_name}'s ${periodLabel(period)} month-end as COMPLETE?\n\n` +
+          `Use this when the close is already done and statements were already sent (e.g. from Double). ` +
+          `It moves them to the Completed column.\n\n` +
+          `It does NOT email the client from SNAP and does NOT change the QuickBooks closing date.`
+      )
+    )
+      return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/clients/${client.id}/monthly-rec`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "mark_complete", period }),
+      });
+      if (res.ok) onChanged();
+      else {
+        const b = await res.json().catch(() => ({}));
+        alert(b.error || "Couldn't mark complete");
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Reopen a completed month back into the active board, optionally landing
+  // it in a target column. Reopen clears the close, then sets the column.
+  async function reopenTo(target: string) {
+    if (
+      !confirm(
+        `Reopen ${client.client_name}'s ${periodLabel(period)} month-end? It moves back into the active board.`
+      )
+    )
+      return;
+    setSaving(true);
+    try {
+      const r1 = await fetch(`/api/clients/${client.id}/monthly-rec`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reopen", period }),
+      });
+      if (!r1.ok) {
+        const b = await r1.json().catch(() => ({}));
+        alert(b.error || "Couldn't reopen");
+        return;
+      }
+      if (target === "waiting_client") {
+        setEditing(true);
+        return;
+      }
+      await fetch(`/api/clients/${client.id}/monthly-rec`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "board", period, board_status: target, waiting_reasons: [] }),
+      });
+      onChanged();
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const checksOverall = run?.checks?.overall;
+  const isComplete = run?.status === "complete";
+  const closedExternally = (run as any)?.email_delivery?.via === "external";
   const currentStatus = isPending
     ? "waiting_client"
+    : isComplete
+    ? "completed"
     : ((run?.board_status as string) || "not_started");
 
   return (
@@ -407,6 +472,18 @@ function BoardCard({
               <Send size={9} />
               Ready for manager review
             </span>
+          ) : isComplete ? (
+            <>
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">
+                <CheckCircle2 size={9} />
+                Completed{run?.completed_at ? ` ${new Date(run.completed_at).toLocaleDateString()}` : ""}
+              </span>
+              {closedExternally && (
+                <span className="text-[10px] font-semibold bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">
+                  closed outside SNAP
+                </span>
+              )}
+            </>
           ) : run?.checks_ran_at ? (
             <span
               className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
@@ -443,11 +520,26 @@ function BoardCard({
         <select
           value={currentStatus}
           disabled={saving || isPending}
-          title={isPending ? "Submitted — waiting on the manager" : "Move this client"}
+          title={
+            isPending
+              ? "Submitted — waiting on the manager"
+              : isComplete
+              ? "Completed — pick another status to reopen"
+              : "Move this client"
+          }
           onChange={(e) => {
             const v = e.target.value;
-            if (v === "waiting_client") setEditing(true);
-            else saveBoard(v, { waiting_reasons: [] });
+            if (v === currentStatus) return;
+            if (v === "completed") {
+              markComplete();
+            } else if (isComplete) {
+              // Leaving the Completed column = reopen, then land the column.
+              reopenTo(v);
+            } else if (v === "waiting_client") {
+              setEditing(true);
+            } else {
+              saveBoard(v, { waiting_reasons: [] });
+            }
           }}
           className="text-[11px] px-1.5 py-1 rounded border border-gray-200 bg-white text-ink-slate flex-1 min-w-0 disabled:opacity-60"
         >
@@ -455,6 +547,7 @@ function BoardCard({
           <option value="in_progress">In progress</option>
           <option value="stuck">Stuck</option>
           <option value="waiting_client">Waiting on client</option>
+          <option value="completed">✓ Completed</option>
         </select>
         {isSenior && (
           <button

@@ -81,7 +81,7 @@ export async function POST(
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
   const action = body.action;
-  if (!["run", "statements", "spot_check", "submit", "send", "reopen", "board"].includes(action || "")) {
+  if (!["run", "statements", "spot_check", "submit", "send", "reopen", "board", "mark_complete"].includes(action || "")) {
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   }
 
@@ -196,6 +196,49 @@ export async function POST(
           board_status: boardStatus,
           waiting_reasons: boardStatus === "waiting_client" ? reasons : [],
           status_note: note,
+          created_by: user.id,
+        },
+        { onConflict: "client_link_id,period" }
+      )
+      .select("*")
+      .single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, run });
+  }
+
+  if (action === "mark_complete") {
+    // Externally-closed month. The team finished the close and sent
+    // statements OUTSIDE SNAP (e.g. emailed from Double). This marks the
+    // month complete on the board WITHOUT the side effects of the full
+    // "send" flow — no client email, no month-end package, no QBO closing
+    // date change — because all of that already happened elsewhere.
+    // (Once statements move into SNAP, use "send" instead and drop this.)
+    const now = new Date().toISOString();
+    const { data: existing } = await (service as any)
+      .from("monthly_rec_runs")
+      .select("id, status")
+      .eq("client_link_id", clientLinkId)
+      .eq("period", period)
+      .maybeSingle();
+    if (existing?.status === "complete") {
+      return NextResponse.json({ ok: true, already: true });
+    }
+    const { data: run, error } = await (service as any)
+      .from("monthly_rec_runs")
+      .upsert(
+        {
+          client_link_id: clientLinkId,
+          period,
+          period_start: periodStart,
+          period_end: periodEnd,
+          // kind matters: the board roster only reads production_me runs.
+          kind: "production_me",
+          status: "complete",
+          completed_by: user.id,
+          completed_at: now,
+          // Marker (no new column): records that the close happened outside
+          // SNAP, and prevents anything implying a SNAP email went out.
+          email_delivery: { sent: false, via: "external", note: "Closed outside SNAP" },
           created_by: user.id,
         },
         { onConflict: "client_link_id,period" }
