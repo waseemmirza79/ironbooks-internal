@@ -149,7 +149,7 @@ export function PLByMonthView({ clientLinkId }: { clientLinkId: string }) {
       </div>
       {data.start && data.end && (
         <div className="px-4 py-2 border-t border-gray-100 text-[11px] text-ink-light flex items-center gap-1.5">
-          <CalendarRange size={12} /> {data.start} → {data.end} · the current month is month-to-date
+          <CalendarRange size={12} /> {data.start} → {data.end} · last 3 complete months
         </div>
       )}
     </div>

@@ -44,11 +44,16 @@ export async function GET(
   const monthsParam = parseInt(new URL(request.url).searchParams.get("months") || "3", 10);
   const months = Math.min(Math.max(Number.isFinite(monthsParam) ? monthsParam : 3, 1), 12);
 
+  // The last N COMPLETE calendar months, ending at the previous month (the
+  // current month is excluded so partial MTD data doesn't skew the trend).
+  // e.g. on Jun 19 with months=3 → Mar 1 .. May 31. Date math normalizes
+  // month/year underflow (negative month index rolls into the prior year).
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
-  const startD = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
+  const startD = new Date(now.getFullYear(), now.getMonth() - months, 1); // first day, N months back
+  const endD = new Date(now.getFullYear(), now.getMonth(), 0); // last day of the previous month
   const start = `${startD.getFullYear()}-${pad(startD.getMonth() + 1)}-01`;
-  const end = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const end = `${endD.getFullYear()}-${pad(endD.getMonth() + 1)}-${pad(endD.getDate())}`;
 
   try {
     const accessToken = await getValidToken(clientLinkId, service as any);
