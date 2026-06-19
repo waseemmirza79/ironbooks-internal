@@ -79,10 +79,16 @@ Common mappings you must apply:
   "Bank Charges & Fees", "Bank Service Charges"  → "Accounting & Bookkeeping"
   "Coaching & Development", "Training"            → "Continuing Education / Professional Development"
   "Meals and Entertainment", "Entertainment"      → "Meals (50% deductible)"
-  "Auto - Repairs", "Car Maintenance", "Vehicle Maint" → "Vehicle Repairs – Admin/Sales"
-  "Gas", "Gasoline", "Fuel", "Gas & Oil"          → "Fuel – Admin & Sales Vehicles"
+  "Auto - Repairs", "Car Maintenance", "Vehicle Maint" → "Vehicle Repairs"
+  "Gas", "Gasoline", "Fuel", "Gas & Oil"          → "Fuel – Overhead"
+  "Vehicle Lease", "Auto Lease", "Truck Lease"    → "Vehicle Lease"
+  "Vehicle Loan Interest", "Auto Loan Interest", "Car Loan Interest" → "Vehicle Loan Interest"
+  "Gifts", "Client Gifts", "Employee Gifts"       → "Gifts"
+  "Business Taxes", "Taxes"                       → "Taxes"
+  "Business License", "Licenses", "License & Fees" → "Licenses"
+  "Workers Comp Insurance", "Workman's Comp", "WCB Insurance" → "Workman's Comp Insurance"
   "Direct Fuel", "Field Fuel"                     → "Direct Fuel Allocation"
-  "Commissions", "Sales Commission"               → "Sales Team Salaries/Commission"
+  "Commissions", "Sales Commission"               → "Sales Team Payroll/Commission"
   "Advertising", "Google Ads", "Facebook Ads"     → "Online Advertising – Google Ads / Social Media Marketing"
   "Subcontractors", "Contractors", "Subs"         → "Subcontractors – Painting"
   "Labor", "Field Labor", "Crew Labor"            → "Direct Field Labor – Painting"
@@ -90,7 +96,7 @@ Common mappings you must apply:
   "Tools", "Tool Supplies"                        → "Small Tools"
   "Rent", "Office Rent", "Studio Rent"            → "Office Rent"
   "Phone", "Cell Phone", "Internet"               → "Software Subscriptions" (if software/tech) or "Office Supplies"
-  "General Liability", "GL Insurance"             → "General Liability Insurance"
+  "General Liability", "GL Insurance", "CGL"      → "CGL Insurance"
   "Health Insurance", "Medical"                   → "Health Insurance – Owner"
   "Workers Comp", "WCB"                           → "Workers Compensation – Field" or "Workers Compensation – Admin"
   "Accounting", "Bookkeeping", "CPA"              → "Accounting & Bookkeeping"
@@ -110,6 +116,23 @@ Common mappings you must apply:
   "Retirement", "401k", "RRSP", "SEP IRA"         → "Retirement Contributions – Owner"
   "Income", "Revenue", "Sales" (painting)         → "Painting Revenue"
   "Remodel", "Renovation Revenue"                 → "Remodeling Revenue"
+  "Owner Salary", "Owner Wages", "Owner Pay", "Officer Salary", "Officer Compensation" → "Owner's Payroll"
+  "Owner Draw", "Owner's Draw", "Owner Distribution", "Distributions", "Member Draw", "Shareholder Distribution" → "Owner's Draw"
+
+═══ OWNER PAY — SPLIT DRAW FROM SALARY (CRITICAL) ═══
+Owner compensation has two completely different treatments. NEVER conflate them:
+  • Owner SALARY / WAGES (owner is on payroll) = operating EXPENSE, above the
+    net-profit line (a fixed cost). Map to "Owner's Payroll".
+  • Owner DRAW / DISTRIBUTION (owner taking profit out) = EQUITY, below the
+    net-profit line. It is NOT an expense. Map to "Owner's Draw".
+Hard rules:
+  - NEVER map a draw / distribution to an expense account.
+  - NEVER map salary / wages to equity.
+  - If an account COMBINES them (e.g. "Owner Draw / Salary", a generic "Owner Pay"),
+    OR you can see both kinds of activity in one account, OR a draw is sitting in
+    expenses / salary is sitting in equity → set action "flag" with flag_reason:
+    "Split owner draw (equity) from owner salary (expense) and reclassify the transactions."
+    This must be flagged on every cleanup so it gets reclassified going forward.
 
 ═══ DELETE — ZERO TRANSACTIONS ONLY ═══
 DELETE if ALL of these are true:
@@ -125,10 +148,13 @@ Known QBO defaults to DELETE (when 0 transactions):
 
 ═══ FLAG — NARROW LIST ONLY ═══
 Only FLAG these specific situations:
-  1. Account name contains: "Owner", "Draw", "Distribution", "Personal", "Note Payable", "Shareholder Loan"
+  1. Account name contains: "Personal", "Note Payable", "Shareholder Loan" (genuine
+     equity / related-party items). For "Owner"/"Draw"/"Distribution"/salary, apply the
+     OWNER PAY rule above (map salary→expense, draw→equity; flag only the mixed case).
   2. Account type is Equity or Liability AND CurrentBalance is not zero
   3. Account has transactions AND you genuinely cannot determine any master account mapping
   4. Account appears to be a duplicate of another client account mapping to the same master (rare — system handles this)
+  5. A combined "Taxes & Licenses" account → flag to split into "Taxes" and "Licenses" and reclassify
 
 DO NOT flag for: type/subtype mismatches, missing master equivalents, name ambiguity you can resolve with reasonable judgment.
 
@@ -551,6 +577,8 @@ ${JSON.stringify(params.recentTransactions.slice(0, 20), null, 2)}
 
 AVAILABLE MASTER ACCOUNTS:
 ${params.masterCOA.filter(m => !m.is_parent).map(m => m.account_name).join(', ')}
+
+OWNER-PAY RULE (critical): Owner salary/wages = operating EXPENSE (above net profit) → "Owner's Payroll". Owner draw/distribution = EQUITY (below net profit, NOT an expense) → "Owner's Draw". If the transactions mix both, recommend "manual_split" and note the draws must be reclassified to equity and the salary to expense.
 
 Provide your recommendation as JSON:
 {
