@@ -1,11 +1,11 @@
 -- Migration 79 — Split "Owner Draw / Salary" into two Master COA accounts
 -- =========================================================================
 -- Owner compensation has two different treatments and must not be conflated:
---   • Owner's Salary / Wages → operating EXPENSE (above net profit, a fixed cost)
+--   • Owner's Payroll → operating EXPENSE (above net profit, a fixed cost)
 --   • Owner's Draw           → EQUITY (below net profit; a distribution, NOT an expense)
 --
 -- The template previously had a single combined "Owner Draw / Salary" expense
--- account. This renames it to the salary/wages expense and adds a separate
+-- account. This renames it to the owner payroll expense and adds a separate
 -- equity "Owner's Draw" account for every jurisdiction it existed in.
 --
 -- Run in Supabase SQL editor:
@@ -13,7 +13,7 @@
 
 -- 1) Rename the combined account → the salary/wages EXPENSE (stays an expense).
 update master_coa
-set account_name = 'Owner''s Salary / Wages',
+set account_name = 'Owner''s Payroll',
     notes = 'Owner on payroll — operating expense (fixed cost), above the net-profit line. Distinct from Owner''s Draw (equity).',
     updated_at = now()
 where account_name = 'Owner Draw / Salary';
@@ -33,7 +33,7 @@ select
   'Owner taking profit out — equity distribution below the net-profit line. NOT an expense.',
   s.tax_treatment, true, s.industry
 from master_coa s
-where s.account_name = 'Owner''s Salary / Wages'
+where s.account_name = 'Owner''s Payroll'
   and not exists (
     select 1 from master_coa d
     where d.account_name = 'Owner''s Draw'

@@ -82,7 +82,7 @@ Common mappings you must apply:
   "Auto - Repairs", "Car Maintenance", "Vehicle Maint" → "Vehicle Repairs – Admin/Sales"
   "Gas", "Gasoline", "Fuel", "Gas & Oil"          → "Fuel – Admin & Sales Vehicles"
   "Direct Fuel", "Field Fuel"                     → "Direct Fuel Allocation"
-  "Commissions", "Sales Commission"               → "Sales Team Salaries/Commission"
+  "Commissions", "Sales Commission"               → "Sales Team Payroll/Commission"
   "Advertising", "Google Ads", "Facebook Ads"     → "Online Advertising – Google Ads / Social Media Marketing"
   "Subcontractors", "Contractors", "Subs"         → "Subcontractors – Painting"
   "Labor", "Field Labor", "Crew Labor"            → "Direct Field Labor – Painting"
@@ -110,13 +110,13 @@ Common mappings you must apply:
   "Retirement", "401k", "RRSP", "SEP IRA"         → "Retirement Contributions – Owner"
   "Income", "Revenue", "Sales" (painting)         → "Painting Revenue"
   "Remodel", "Renovation Revenue"                 → "Remodeling Revenue"
-  "Owner Salary", "Owner Wages", "Owner Pay", "Officer Salary", "Officer Compensation" → "Owner's Salary / Wages"
+  "Owner Salary", "Owner Wages", "Owner Pay", "Officer Salary", "Officer Compensation" → "Owner's Payroll"
   "Owner Draw", "Owner's Draw", "Owner Distribution", "Distributions", "Member Draw", "Shareholder Distribution" → "Owner's Draw"
 
 ═══ OWNER PAY — SPLIT DRAW FROM SALARY (CRITICAL) ═══
 Owner compensation has two completely different treatments. NEVER conflate them:
   • Owner SALARY / WAGES (owner is on payroll) = operating EXPENSE, above the
-    net-profit line (a fixed cost). Map to "Owner's Salary / Wages".
+    net-profit line (a fixed cost). Map to "Owner's Payroll".
   • Owner DRAW / DISTRIBUTION (owner taking profit out) = EQUITY, below the
     net-profit line. It is NOT an expense. Map to "Owner's Draw".
 Hard rules:
@@ -571,7 +571,7 @@ ${JSON.stringify(params.recentTransactions.slice(0, 20), null, 2)}
 AVAILABLE MASTER ACCOUNTS:
 ${params.masterCOA.filter(m => !m.is_parent).map(m => m.account_name).join(', ')}
 
-OWNER-PAY RULE (critical): Owner salary/wages = operating EXPENSE (above net profit) → "Owner's Salary / Wages". Owner draw/distribution = EQUITY (below net profit, NOT an expense) → "Owner's Draw". If the transactions mix both, recommend "manual_split" and note the draws must be reclassified to equity and the salary to expense.
+OWNER-PAY RULE (critical): Owner salary/wages = operating EXPENSE (above net profit) → "Owner's Payroll". Owner draw/distribution = EQUITY (below net profit, NOT an expense) → "Owner's Draw". If the transactions mix both, recommend "manual_split" and note the draws must be reclassified to equity and the salary to expense.
 
 Provide your recommendation as JSON:
 {
