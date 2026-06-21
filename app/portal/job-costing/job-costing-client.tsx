@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Briefcase, Plus, Settings2, X, Trash2, Pencil, Loader2, TrendingUp, TrendingDown,
-  Calculator, AlertCircle, Users,
+  Calculator, AlertCircle, Users, Upload, Download, ExternalLink, FileSpreadsheet, RefreshCw,
 } from "lucide-react";
 import {
   computeJob, sumJobs, groupByMonth, groupByCrew, laborFromLines,
@@ -45,6 +45,7 @@ export function JobCostingClient({
   const [view, setView] = useState<"month" | "ranked">("month");
   const [editing, setEditing] = useState<JobInput | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -143,6 +144,12 @@ export function JobCostingClient({
             Ranked
           </button>
         </div>
+        <button
+          onClick={() => { setError(null); setImportOpen(true); }}
+          className="inline-flex items-center gap-1.5 text-sm font-semibold text-ink-slate hover:text-navy px-3 py-1.5 rounded-lg border border-slate-200 hover:border-teal/40 bg-white"
+        >
+          <Upload size={14} /> Import / Connect
+        </button>
         <button
           onClick={() => setSettingsOpen((v) => !v)}
           className="inline-flex items-center gap-1.5 text-sm font-semibold text-ink-slate hover:text-navy px-3 py-1.5 rounded-lg border border-slate-200 hover:border-teal/40 bg-white"
@@ -270,6 +277,13 @@ export function JobCostingClient({
           onClose={() => setEditing(null)}
           onSaved={() => setEditing(null)}
           save={saveJob}
+        />
+      )}
+
+      {importOpen && (
+        <ImportHub
+          onClose={() => setImportOpen(false)}
+          onImported={(js) => setJobs((prev) => [...js, ...prev])}
         />
       )}
     </div>
@@ -595,5 +609,162 @@ function Field({ label, required, children }: { label: string; required?: boolea
       </span>
       <div className="mt-1">{children}</div>
     </label>
+  );
+}
+
+function ImportHub({ onClose, onImported }: { onClose: () => void; onImported: (jobs: JobInput[]) => void }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState<null | "csv" | "qbo">(null);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const now = new Date();
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  const [qStart, setQStart] = useState(`${now.getFullYear()}-01-01`);
+  const [qEnd, setQEnd] = useState(`${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}`);
+
+  async function uploadFile(file: File) {
+    setBusy("csv"); setMsg(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/portal/job-costing/import", { method: "POST", body: fd });
+      const b = await res.json();
+      if (!res.ok) throw new Error(b.error || "Import failed");
+      onImported(b.jobs || []);
+      setMsg({ kind: "ok", text: `Imported ${b.imported} job${b.imported === 1 ? "" : "s"}${b.skipped ? `, skipped ${b.skipped} blank row${b.skipped === 1 ? "" : "s"}` : ""}.` });
+    } catch (e: any) {
+      setMsg({ kind: "err", text: e?.message || "Import failed" });
+    } finally {
+      setBusy(null);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  async function pullQbo() {
+    setBusy("qbo"); setMsg(null);
+    try {
+      const res = await fetch("/api/portal/job-costing/import/quickbooks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ start: qStart, end: qEnd }),
+      });
+      const b = await res.json();
+      if (!res.ok) throw new Error(b.error || "QuickBooks pull failed");
+      onImported(b.jobs || []);
+      setMsg({ kind: "ok", text: `Pulled ${b.imported} job${b.imported === 1 ? "" : "s"} from QuickBooks (drafts — split paint vs labor as needed).` });
+    } catch (e: any) {
+      setMsg({ kind: "err", text: e?.message || "QuickBooks pull failed" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function downloadTemplate() {
+    const csv =
+      "Job Name,Crew,Date,Job Price,Sales Tax,Paint & Supplies,Labor,Budgeted Hours,Actual Hours,Notes\n" +
+      "Johnson — exterior repaint,Ryan's Crew,2026-01-15,10851,542.55,1000,4156,131,121,\n";
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "job-costing-template.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-navy/40 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between sticky top-0 bg-white">
+          <h3 className="font-bold text-navy">Import &amp; connect</h3>
+          <button onClick={onClose} className="text-ink-slate hover:text-navy"><X size={18} /></button>
+        </div>
+
+        <div className="p-5 space-y-3">
+          {msg && (
+            <div className={`rounded-lg p-2.5 text-sm flex items-start gap-2 ${msg.kind === "ok" ? "bg-emerald-50 border border-emerald-200 text-emerald-800" : "bg-red-50 border border-red-200 text-red-800"}`}>
+              <AlertCircle size={14} className="mt-0.5 flex-shrink-0" /> <div>{msg.text}</div>
+            </div>
+          )}
+
+          {/* CSV / Excel */}
+          <div className="rounded-xl border border-slate-200 p-3.5">
+            <div className="flex items-center gap-2 font-bold text-navy text-sm">
+              <FileSpreadsheet size={16} className="text-teal-dark" /> Upload CSV / Excel
+            </div>
+            <p className="text-xs text-ink-slate mt-1">
+              Import your Job Cost Tracker or any export. Needs a header row with <strong>Job Name</strong> and{" "}
+              <strong>Job Price</strong>; we map Crew, Paint &amp; Supplies, Labor, and hours automatically.
+            </p>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".csv,.xlsx,.xls"
+              className="hidden"
+              onChange={(e) => e.target.files?.[0] && uploadFile(e.target.files[0])}
+            />
+            <div className="flex items-center gap-2 mt-2.5">
+              <button
+                onClick={() => fileRef.current?.click()}
+                disabled={busy !== null}
+                className="inline-flex items-center gap-1.5 bg-teal text-white text-sm font-bold px-3 py-1.5 rounded-lg disabled:opacity-50"
+              >
+                {busy === "csv" ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} Choose file
+              </button>
+              <button onClick={downloadTemplate} className="inline-flex items-center gap-1.5 text-sm font-semibold text-teal-dark hover:text-teal">
+                <Download size={14} /> Template
+              </button>
+            </div>
+          </div>
+
+          {/* QuickBooks */}
+          <div className="rounded-xl border border-slate-200 p-3.5">
+            <div className="flex items-center gap-2 font-bold text-navy text-sm">
+              <RefreshCw size={16} className="text-teal-dark" /> Pull from QuickBooks
+            </div>
+            <p className="text-xs text-ink-slate mt-1">
+              Creates a draft job per class (or customer) — price from revenue, cost from COGS. Refine the
+              paint/labor split after.
+            </p>
+            <div className="flex items-center gap-2 mt-2.5 flex-wrap">
+              <input type="date" value={qStart} onChange={(e) => setQStart(e.target.value)} className="px-2 py-1.5 border border-slate-200 rounded-lg text-sm text-navy" />
+              <span className="text-ink-light text-sm">→</span>
+              <input type="date" value={qEnd} onChange={(e) => setQEnd(e.target.value)} className="px-2 py-1.5 border border-slate-200 rounded-lg text-sm text-navy" />
+              <button
+                onClick={pullQbo}
+                disabled={busy !== null}
+                className="inline-flex items-center gap-1.5 bg-white border border-teal/40 text-teal-dark text-sm font-bold px-3 py-1.5 rounded-lg hover:bg-teal/5 disabled:opacity-50"
+              >
+                {busy === "qbo" ? <Loader2 size={14} className="animate-spin" /> : null} Pull
+              </button>
+            </div>
+          </div>
+
+          {/* DripJobs */}
+          <div className="rounded-xl border border-slate-200 p-3.5">
+            <div className="flex items-center gap-2 font-bold text-navy text-sm">Login with DripJobs</div>
+            <p className="text-xs text-ink-slate mt-1">
+              DripJobs has no data connection yet — open it, export your jobs to CSV, then upload the file above.
+            </p>
+            <button
+              onClick={() => window.open("https://app.dripjobs.com", "_blank", "noopener")}
+              className="mt-2.5 inline-flex items-center gap-1.5 bg-white border border-slate-200 text-navy text-sm font-bold px-3 py-1.5 rounded-lg hover:border-teal/40"
+            >
+              <ExternalLink size={14} /> Open DripJobs
+            </button>
+          </div>
+
+          {/* Jobber */}
+          <div className="rounded-xl border border-slate-200 p-3.5 opacity-80">
+            <div className="flex items-center gap-2 font-bold text-navy text-sm">Login with Jobber</div>
+            <p className="text-xs text-ink-slate mt-1">
+              Direct Jobber sync is coming soon — it needs a Jobber app connection. Ask your Ironbooks team to
+              turn it on. For now, export from Jobber and upload the CSV above.
+            </p>
+            <button disabled className="mt-2.5 inline-flex items-center gap-1.5 bg-slate-100 text-ink-light text-sm font-bold px-3 py-1.5 rounded-lg cursor-not-allowed">
+              Connect Jobber · coming soon
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
