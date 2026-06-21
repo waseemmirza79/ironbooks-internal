@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
-  Home, Wallet, Receipt, MessageSquare,
-  GraduationCap, Settings, FileCheck2, Mail, BookOpen, Tags, CreditCard,
+  Home, Wallet, Receipt, Sparkles,
+  GraduationCap, Settings, FileCheck2, Mail, BookOpen, Tags, CreditCard, Briefcase,
 } from "lucide-react";
 import { MessagesNavLink } from "./messages-nav-link";
 import { FinancialStatementsNav } from "./financial-statements-nav";
@@ -135,14 +135,19 @@ export default async function PortalLayout({ children }: { children: React.React
             <div className="text-xs text-white/50 mt-0.5">via Ironbooks</div>
           </div>
 
-          <nav className="flex-1 px-2 py-3 space-y-0.5">
+          {/* Grouped so the portal reads as a few clear sections instead of a
+              flat wall of links: Overview on top, then Finances / Your books /
+              Help, with account actions (Billing, Settings) in the footer. */}
+          <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
             <NavLink href="/portal" icon={Home} label="Overview" />
+
+            <NavSection label="Finances" />
             <FinancialStatementsNav />
             <NavLink href="/portal/whos-paying" icon={Wallet} label="Who owes you" />
             <NavLink href="/portal/whats-due" icon={Receipt} label="What you owe" />
-            <NavLink href="/portal/cleanup-reports" icon={FileCheck2} label="Cleanup Reports" />
-            {/* Live: polls unread count, red pill + chime on new messages */}
-            <MessagesNavLink initialCount={unreadMessages} />
+            <NavLink href="/portal/job-costing" icon={Briefcase} label="Job Costing" badge="NEW" />
+
+            <NavSection label="Your books" />
             <NavLink
               href="/portal/categorize"
               icon={Tags}
@@ -150,13 +155,25 @@ export default async function PortalLayout({ children }: { children: React.React
               badge={openCategorize > 0 ? String(openCategorize) : undefined}
               badgeTone="alert"
             />
-            <NavLink href="/portal/ask-ai" icon={MessageSquare} label="Ask the AI" badge="NEW" />
+            <NavLink href="/portal/cleanup-reports" icon={FileCheck2} label="Cleanup Reports" />
+
+            <NavSection label="Help &amp; learning" />
+            {/* Live: polls unread count, red pill + chime on new messages */}
+            <MessagesNavLink initialCount={unreadMessages} />
+            <NavLink href="/portal/ask-ai" icon={Sparkles} label="Ask the AI" badge="NEW" ai />
             <NavLink href="/portal/knowledge-base" icon={BookOpen} label="Knowledge Base" />
             <NavLink href="/portal/learn" icon={GraduationCap} label="Learn" />
-            <NavLink href="/portal/billing" icon={CreditCard} label="Billing & Plan" />
           </nav>
 
           <div className="px-3 py-3 border-t border-white/10 space-y-1">
+            {/* Account actions live in the footer so the main nav stays focused
+                on the books, not billing/settings. */}
+            <Link
+              href="/portal/billing"
+              className="flex items-center gap-2 px-3 py-2 rounded text-sm text-white/65 hover:bg-white/5 hover:text-white"
+            >
+              <CreditCard size={14} /> Billing &amp; Plan
+            </Link>
             <Link
               href="/portal/settings"
               className="flex items-center gap-2 px-3 py-2 rounded text-sm text-white/65 hover:bg-white/5 hover:text-white"
@@ -182,13 +199,44 @@ export default async function PortalLayout({ children }: { children: React.React
   );
 }
 
+/** Small uppercase divider label that groups the nav into sections. */
+function NavSection({ label }: { label: string }) {
+  return (
+    <div className="px-3 pt-4 pb-1 text-[10px] font-bold uppercase tracking-wider text-white/30">
+      {label}
+    </div>
+  );
+}
+
 function NavLink({
-  href, icon: Icon, label, badge, badgeTone = "accent",
+  href, icon: Icon, label, badge, badgeTone = "accent", ai = false,
 }: {
   href: string; icon: any; label: string; badge?: string;
   /** accent = teal pill ("NEW"); alert = red unread-count pill */
   badgeTone?: "accent" | "alert";
+  /** Special "AI" treatment — a soft cyan→violet gradient row + gradient
+   *  label/badge so the AI feature stands out from the rest of the nav. */
+  ai?: boolean;
 }) {
+  if (ai) {
+    return (
+      <Link
+        href={href}
+        className="group flex items-center gap-3 px-3 py-2 rounded-lg text-sm bg-gradient-to-r from-cyan-500/15 via-sky-500/10 to-violet-500/15 ring-1 ring-inset ring-cyan-400/25 hover:ring-cyan-300/50 transition-all"
+      >
+        <Icon size={16} className="text-cyan-300" />
+        <span className="flex-1 font-semibold bg-gradient-to-r from-cyan-200 via-sky-100 to-violet-200 bg-clip-text text-transparent">
+          {label}
+        </span>
+        {badge && (
+          <span className="text-[9px] font-bold text-white px-1.5 py-0.5 rounded bg-gradient-to-r from-cyan-400 to-violet-500">
+            {badge}
+          </span>
+        )}
+      </Link>
+    );
+  }
+
   return (
     <Link
       href={href}
