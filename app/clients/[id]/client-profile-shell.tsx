@@ -1367,8 +1367,40 @@ function PLTab({
   const totalAccounts = allRows.length;
   const populatedAccounts = allRows.filter((r) => Math.abs(r.amount) >= 0.005).length;
 
+  // Detection: deleted/inactive accounts that still carry a balance. QBO appends
+  // "(deleted)" to an inactive account's name; if transactions landed in it
+  // (usually a memorized/recurring txn in QBO posting to an old account) it
+  // lingers on the P&L. Surface them so a bookkeeper merges/renames instead of
+  // leaving the mess. Detected by the "(deleted)" name suffix with activity.
+  const deletedWithBalance = allRows.filter(
+    (r) => /\(deleted\)/i.test(r.name) && Math.abs(r.amount) >= 0.005
+  );
+
   return (
     <div className="space-y-4">
+      {deletedWithBalance.length > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={16} className="text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-bold text-amber-900">
+                {deletedWithBalance.length} deleted account{deletedWithBalance.length === 1 ? "" : "s"} still {deletedWithBalance.length === 1 ? "has" : "have"} a balance
+              </div>
+              <p className="text-xs text-amber-800 mt-0.5 leading-relaxed">
+                These accounts were deleted in QuickBooks but transactions have posted to them since — so they show as &quot;(deleted)&quot; on the P&amp;L. Reclass their transactions into an active account (merge), then find the recurring/memorized transaction in QBO that&apos;s feeding them.
+              </p>
+              <ul className="mt-2 space-y-1">
+                {deletedWithBalance.map((r, i) => (
+                  <li key={`${r.accountId || r.name}-${i}`} className="flex items-center justify-between text-xs">
+                    <span className="text-amber-900 font-medium truncate pr-2">{r.name}</span>
+                    <span className="font-mono font-semibold text-amber-900 flex-shrink-0">{formatCurrency(r.amount)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="space-y-2">
         <RangePicker
           clientLinkId={clientLinkId}

@@ -171,6 +171,13 @@ async function executeReclass(jobId: string, portalOrigin: string) {
       .filter((a) => a.Active !== false)
       .map((a) => [a.Name.toLowerCase(), a.Id])
   );
+  // Active-account allow-list. We NEVER post a categorization to an inactive
+  // ("(deleted)") account — that's exactly what leaves "… (deleted)" rows with
+  // balances on the P&L. Any row whose target resolves to an inactive account
+  // is demoted to needs_review instead of being written to QBO.
+  const activeAccountIds = new Set(
+    allQboAccounts.filter((a) => a.Active !== false).map((a) => a.Id)
+  );
 
   // Fetch rows to process: approved/auto_approve that haven't executed yet.
   // Filtering out already-executed rows means this route is safe to call again
@@ -257,6 +264,22 @@ async function executeReclass(jobId: string, portalOrigin: string) {
           decision: "needs_review",
           status: "pending",
           error_message: "Target account required — assign in the review screen and re-run.",
+        } as any)
+        .eq("id", row.id);
+      continue;
+    }
+
+    // GUARD: never post to an inactive/deleted account. If the resolved target
+    // isn't on the active allow-list, demote to needs_review so the bookkeeper
+    // picks a live account — instead of silently re-animating a deleted one.
+    if (!activeAccountIds.has(targetId)) {
+      needsTarget++;
+      await service
+        .from("reclassifications")
+        .update({
+          decision: "needs_review",
+          status: "pending",
+          error_message: `Target account "${targetNameResolved || targetId}" is inactive/deleted in QBO — pick an active account and re-run.`,
         } as any)
         .eq("id", row.id);
       continue;
