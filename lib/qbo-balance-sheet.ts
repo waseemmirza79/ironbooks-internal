@@ -11,7 +11,7 @@
  */
 
 import { qboRateLimiter } from "./qbo";
-import { isDemoRealm, demoBalancesAsOf } from "./demo-data";
+import { isDemoRealm, demoBalancesAsOf, demoOpenInvoices } from "./demo-data";
 
 const QBO_BASE = "https://quickbooks.api.intuit.com/v3/company";
 
@@ -450,6 +450,8 @@ export async function fetchOpenInvoices(
   realmId: string,
   accessToken: string
 ): Promise<OpenInvoice[]> {
+  if (isDemoRealm(realmId)) return demoOpenInvoices();
+
   const results: OpenInvoice[] = [];
   let page = 0;
   const pageSize = 1000;

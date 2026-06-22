@@ -7,6 +7,7 @@
  */
 
 import { qboRateLimiter } from "./qbo";
+import { isDemoRealm, demoCustomers } from "./demo-data";
 
 const QBO_BASE =
   process.env.QBO_ENVIRONMENT === "production"
@@ -293,6 +294,8 @@ export async function fetchAllCustomers(
   realmId: string,
   accessToken: string
 ): Promise<QBOCustomerLite[]> {
+  if (isDemoRealm(realmId)) return demoCustomers();
+
   const results: QBOCustomerLite[] = [];
   let page = 0;
   const pageSize = 1000;

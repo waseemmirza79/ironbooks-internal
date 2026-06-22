@@ -16,6 +16,8 @@
 import type { QBOAccount } from "./qbo";
 import type { ProfitLossData } from "./qbo-reports";
 import type { ProfitLossByMonth, PLByMonthBlock } from "./qbo-pl-by-month";
+import type { OpenInvoice } from "./qbo-balance-sheet";
+import type { QBOCustomerLite } from "./qbo-stripe-recon";
 
 export const DEMO_REALM = "DEMO";
 export function isDemoRealm(realm?: string | null): boolean {
@@ -23,6 +25,69 @@ export function isDemoRealm(realm?: string | null): boolean {
 }
 
 export const DEMO_MONTH_LABELS = ["Mar 2026", "Apr 2026", "May 2026"] as const;
+
+// ─── A/R: open invoices + customers ─────────────────────────────────────────
+// Powers the "Who owes you" page for the demo client (and the AI follow-up
+// email feature). Due dates are RELATIVE to today so the aging buckets +
+// "days overdue" always read realistically whenever the demo is shown.
+
+/** A date `days` from today (negative = past), as YYYY-MM-DD. */
+function demoDateOffset(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+interface DemoARRow {
+  cid: string;
+  customer: string;
+  email: string;
+  phone: string;
+  doc: string;
+  amount: number;
+  /** Days until due — negative means overdue by that many days. */
+  dueInDays: number;
+}
+
+// A believable small-painter A/R book: a couple of slow property-management
+// clients, one badly overdue realty group, and a few recent invoices — spread
+// across the aging buckets so the page + follow-up email demo look real.
+const DEMO_AR_ROWS: DemoARRow[] = [
+  { cid: "DEMO-CUST-1", customer: "Maple Ridge Property Mgmt", email: "ap@mapleridgepm.com", phone: "(604) 555-0142", doc: "1042", amount: 4200, dueInDays: -75 },
+  { cid: "DEMO-CUST-1", customer: "Maple Ridge Property Mgmt", email: "ap@mapleridgepm.com", phone: "(604) 555-0142", doc: "1058", amount: 2800, dueInDays: -40 },
+  { cid: "DEMO-CUST-2", customer: "Westside Realty Group", email: "billing@westsiderealty.com", phone: "(604) 555-0188", doc: "0996", amount: 6500, dueInDays: -120 },
+  { cid: "DEMO-CUST-3", customer: "Bryant Custom Homes", email: "office@bryanthomes.com", phone: "(778) 555-0119", doc: "1051", amount: 3400, dueInDays: -45 },
+  { cid: "DEMO-CUST-4", customer: "Hillcrest HOA", email: "board@hillcresthoa.org", phone: "(604) 555-0163", doc: "1067", amount: 1950, dueInDays: -15 },
+  { cid: "DEMO-CUST-5", customer: "Greenfield Dental", email: "admin@greenfielddental.ca", phone: "(250) 555-0177", doc: "1071", amount: 875, dueInDays: -8 },
+  { cid: "DEMO-CUST-6", customer: "Lakeshore Café", email: "hello@lakeshorecafe.ca", phone: "(250) 555-0150", doc: "1074", amount: 1200, dueInDays: 10 },
+];
+
+/** Synthetic open A/R invoices (net-30 terms → txn_date 30d before due). */
+export function demoOpenInvoices(): OpenInvoice[] {
+  return DEMO_AR_ROWS.map((r, i) => ({
+    qbo_invoice_id: `DEMO-INV-${1000 + i}`,
+    doc_number: r.doc,
+    customer_id: r.cid,
+    customer_name: r.customer,
+    txn_date: demoDateOffset(r.dueInDays - 30),
+    due_date: demoDateOffset(r.dueInDays),
+    total_amount: r.amount,
+    balance: r.amount,
+    currency: "USD",
+  }));
+}
+
+/** Synthetic customers (email + phone) so the page shows contact info + mailto. */
+export function demoCustomers(): QBOCustomerLite[] {
+  const seen = new Map<string, DemoARRow>();
+  for (const r of DEMO_AR_ROWS) if (!seen.has(r.cid)) seen.set(r.cid, r);
+  return Array.from(seen.values()).map((r) => ({
+    id: r.cid,
+    display_name: r.customer,
+    primary_email: r.email,
+    primary_phone: r.phone,
+  }));
+}
 
 type Section = "income" | "cogs" | "expense";
 
