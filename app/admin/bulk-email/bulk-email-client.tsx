@@ -178,7 +178,7 @@ export function BulkEmailClient({ senderEmail, senderName, senderSignature }: { 
         {kind === "operational" && <p className="text-[11px] text-ink-light mt-2">Operational email reaches everyone with an address, even unsubscribed clients. Use only for must-receive notices.</p>}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(320px,380px)_1fr] gap-5 items-start">
         {/* Recipients */}
         <div className="bg-white rounded-2xl border border-gray-100 p-4">
           <div className="flex items-center gap-2 mb-3">

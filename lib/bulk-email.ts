@@ -104,6 +104,8 @@ export async function sendBulkEmails(params: {
   bodyHtml: string;
   kind: EmailKind;
   appBaseUrl: string;
+  /** From header override — "Sender Name · Ironbooks <verified@addr>". */
+  from?: string;
   onResult: (r: { clientLinkId: string; email: string; ok: boolean; error?: string }) => Promise<void>;
 }): Promise<{ sent: number; failed: number }> {
   let sent = 0, failed = 0;
@@ -127,6 +129,7 @@ export async function sendBulkEmails(params: {
         text: htmlToText(body),
         html,
         replyTo: r.replyTo || undefined,
+        from: params.from,
       });
       if (!ok) error = "Resend declined";
     } catch (e: any) {

@@ -7,6 +7,7 @@ import {
 } from "@/lib/bulk-email";
 import { sendResendEmail } from "@/lib/client-comms";
 import { renderUserSignature } from "@/lib/user-signature";
+import { resolveFromEmail } from "@/lib/email-sender";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -56,6 +57,13 @@ export async function POST(request: Request) {
     : "";
   const bodyHtml = rawBody + signature;
 
+  // From header: show the sender's name, e.g. "Mike Gore-Hickman · Ironbooks
+  // <noreply@mail.ironbooks.com>" — keeps the verified address, varies the
+  // display name so the client sees a person, not a bare inbox.
+  const baseFrom = resolveFromEmail(process.env.SUPPORT_FROM_EMAIL);
+  const fromAddr = baseFrom.match(/<([^>]+)>/)?.[1] || baseFrom;
+  const fromDisplay = `${(a.full_name || "Ironbooks").replace(/[<>]/g, "")} · Ironbooks <${fromAddr}>`;
+
   // Test send — single email, no campaign, no consent logic.
   if (body.test_email) {
     const html = wrapBrandedEmail({
@@ -67,6 +75,7 @@ export async function POST(request: Request) {
       subject: `[TEST] ${applyMergeFields(subject, { firstName: "Sample", businessName: "Sample Painting Co" })}`,
       text: htmlToText(bodyHtml),
       html,
+      from: fromDisplay,
     });
     return NextResponse.json({ test: true, ok });
   }
@@ -121,7 +130,7 @@ export async function POST(request: Request) {
   after(async () => {
     const svc = createServiceSupabase();
     const { sent, failed } = await sendBulkEmails({
-      recipients, subject, bodyHtml, kind, appBaseUrl,
+      recipients, subject, bodyHtml, kind, appBaseUrl, from: fromDisplay,
       onResult: async ({ clientLinkId, email, ok, error }) => {
         await svc.from("bulk_email_recipients")
           .update({ status: ok ? "sent" : "failed", error: error || null, sent_at: ok ? new Date().toISOString() : null } as any)

@@ -19,7 +19,7 @@ export default async function BulkEmailPage() {
   return (
     <AppShell>
       <TopBar title="Bulk email" subtitle="Email some or all clients · operational + marketing · unsubscribe-aware" />
-      <div className="px-8 py-6 max-w-6xl">
+      <div className="px-8 py-6 max-w-[1500px]">
         <BulkEmailClient
           senderEmail={a.email || ""}
           senderName={a.full_name || "Ironbooks"}

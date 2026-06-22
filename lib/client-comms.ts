@@ -135,13 +135,16 @@ export async function sendResendEmail(params: {
   text: string;
   html?: string;
   replyTo?: string;
+  /** Override the From header (e.g. "Mike · Ironbooks <noreply@mail.ironbooks.com>").
+   *  Must keep a verified-domain address — only vary the display name. */
+  from?: string;
 }): Promise<boolean> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     console.warn(`[client-comms] RESEND_API_KEY not set — skipped email "${params.subject}"`);
     return false;
   }
-  const fromEmail = resolveFromEmail(process.env.SUPPORT_FROM_EMAIL);
+  const fromEmail = params.from || resolveFromEmail(process.env.SUPPORT_FROM_EMAIL);
   try {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
