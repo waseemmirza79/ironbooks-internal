@@ -29,6 +29,22 @@ const BASE = process.env.DOUBLE_BASE_URL || DEFAULT_BASE;
  */
 const DOUBLE_REQUEST_TIMEOUT_MS = 30_000;
 
+/**
+ * Double was decommissioned (account cancelled 2026-06-22). Every API function
+ * short-circuits to a benign default — NO network call, NO thrown error, NO
+ * warning — unless Double is explicitly re-enabled. Default = OFF, so the
+ * moment this deploys the dead-API 30s timeouts and "Double sync failed"
+ * warnings on reclass/cleanup stop, with zero changes to the call sites.
+ * To re-enable later: set DOUBLE_ENABLED=true (and keep the OAuth creds).
+ */
+function doubleEnabled(): boolean {
+  return (
+    (process.env.DOUBLE_ENABLED || "").trim().toLowerCase() === "true" &&
+    !!process.env.DOUBLE_CLIENT_ID &&
+    !!process.env.DOUBLE_CLIENT_SECRET
+  );
+}
+
 // ============== TYPES ==============
 
 /** From GET /api/clients — the paginated list endpoint returns this sparse shape */
@@ -219,6 +235,11 @@ interface RequestOptions {
 }
 
 async function doubleRequest<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+  // Backstop — every public function below already short-circuits when Double
+  // is off, so this only guards a stray/future caller. Fast-fail, no network.
+  if (!doubleEnabled()) {
+    throw new Error("Double API is disabled (DOUBLE_ENABLED is not 'true').");
+  }
   await rateLimit();
   const token = await getAccessToken();
 
@@ -287,6 +308,7 @@ export async function listClients(params: {
   name?: string;             // case-insensitive partial match
   ids?: number[];            // filter to specific IDs
 } = {}): Promise<DoubleClientSummary[]> {
+  if (!doubleEnabled()) return [];
   const limit = Math.min(params.limit || 50, 100);
   return doubleRequest<DoubleClientSummary[]>("/api/clients", {
     query: {
@@ -319,7 +341,8 @@ export async function listAllClients(): Promise<DoubleClientSummary[]> {
  * GET /api/clients/{clientId}/details
  * Returns richer client info (schema not yet fully verified).
  */
-export async function getClientDetails(clientId: number): Promise<DoubleClientDetails> {
+export async function getClientDetails(clientId: number): Promise<DoubleClientDetails | null> {
+  if (!doubleEnabled()) return null;
   return doubleRequest<DoubleClientDetails>(`/api/clients/${clientId}/details`);
 }
 
@@ -331,6 +354,7 @@ export async function getClientDetails(clientId: number): Promise<DoubleClientDe
  * Used by reclass engine to skip transactions in closed periods.
  */
 export async function listEndCloses(): Promise<DoubleEndCloseSummary[]> {
+  if (!doubleEnabled()) return [];
   return doubleRequest<DoubleEndCloseSummary[]>("/api/end-closes/summary/");
 }
 
@@ -339,6 +363,7 @@ export async function listEndCloses(): Promise<DoubleEndCloseSummary[]> {
  * Returns close periods for a specific client.
  */
 export async function getClientEndCloses(clientId: number): Promise<DoubleEndCloseSummary[]> {
+  if (!doubleEnabled()) return [];
   return doubleRequest<DoubleEndCloseSummary[]>(`/api/clients/${clientId}/end-closes`);
 }
 
@@ -436,6 +461,7 @@ export async function postCleanupComplete(
     durationSeconds: number;
   }
 ): Promise<DoubleTaskResponse | null> {
+  if (!doubleEnabled()) return null;
   // Skip if no real Double client linked (e.g., during sandbox testing)
   if (!doubleClientIdStr || doubleClientIdStr.startsWith("pending_")) {
     return null;
@@ -495,6 +521,7 @@ export async function postReclassComplete(
     dateRangeEnd: string;
   }
 ): Promise<DoubleTaskResponse | null> {
+  if (!doubleEnabled()) return null;
   if (!doubleClientIdStr || doubleClientIdStr.startsWith("pending_")) {
     return null;
   }
