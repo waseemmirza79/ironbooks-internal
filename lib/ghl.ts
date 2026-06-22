@@ -84,6 +84,97 @@ export async function resendOnboardingEmail(contactId: string): Promise<void> {
   await ghlRequest(`/contacts/${contactId}/workflow/${workflowId}`, { method: "POST" });
 }
 
+/** A GHL contact, normalized to the fields we backfill onto a client profile. */
+export interface GhlContact {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  email: string | null;
+  phone: string | null;
+  companyName: string | null;
+  address1: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
+}
+
+function mapGhlContact(c: any): GhlContact | null {
+  if (!c || !c.id) return null;
+  return {
+    id: c.id,
+    firstName: c.firstName ?? null,
+    lastName: c.lastName ?? null,
+    email: c.email ?? null,
+    phone: c.phone ?? null,
+    companyName: c.companyName ?? null,
+    address1: c.address1 ?? null,
+    city: c.city ?? null,
+    state: c.state ?? null,
+    postalCode: c.postalCode ?? null,
+    country: c.country ?? null,
+  };
+}
+
+/**
+ * Find a GHL contact by EXACT email. Uses LeadConnector's duplicate-lookup
+ * (the canonical "is there already a contact with this email"), falling back
+ * to the query search if that endpoint isn't available on the plan. Returns
+ * null on no match or any error (callers treat enrichment as best-effort).
+ */
+export async function findGhlContactByEmail(email: string): Promise<GhlContact | null> {
+  const loc = process.env.GHL_LOCATION_ID;
+  const e = (email || "").trim();
+  if (!loc || !e) return null;
+  try {
+    const data = await ghlRequest<any>(
+      `/contacts/search/duplicate?locationId=${encodeURIComponent(loc)}&email=${encodeURIComponent(e)}`
+    );
+    const hit = mapGhlContact(data?.contact);
+    if (hit) return hit;
+  } catch {
+    /* fall through to query search */
+  }
+  try {
+    const data = await ghlRequest<any>(
+      `/contacts/?locationId=${encodeURIComponent(loc)}&query=${encodeURIComponent(e)}&limit=20`
+    );
+    const list: any[] = data?.contacts || [];
+    const match = list.find((c) => (c.email || "").toLowerCase() === e.toLowerCase());
+    return mapGhlContact(match);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find a GHL contact by company / business name. Prefers an exact normalized
+ * companyName match, then a contains match. Conservative — returns null when
+ * nothing clearly matches (so a fuzzy backfill never grabs the wrong contact).
+ */
+export async function findGhlContactByCompany(company: string): Promise<GhlContact | null> {
+  const loc = process.env.GHL_LOCATION_ID;
+  const q = (company || "").trim();
+  if (!loc || !q) return null;
+  const norm = (s: string) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const target = norm(q);
+  if (!target) return null;
+  try {
+    const data = await ghlRequest<any>(
+      `/contacts/?locationId=${encodeURIComponent(loc)}&query=${encodeURIComponent(q)}&limit=20`
+    );
+    const list: any[] = data?.contacts || [];
+    const exact = list.find((c) => c.companyName && norm(c.companyName) === target);
+    if (exact) return mapGhlContact(exact);
+    const contains = list.find(
+      (c) => c.companyName && (norm(c.companyName).includes(target) || target.includes(norm(c.companyName)))
+    );
+    return mapGhlContact(contains || null);
+  } catch {
+    return null;
+  }
+}
+
 export interface GhlOpportunity {
   id: string;
   contactId: string;

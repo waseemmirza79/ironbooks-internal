@@ -225,6 +225,15 @@ export interface StripeCustomerLite {
   name: string | null;
   email: string | null;
   created: number | null;
+  phone?: string | null;
+  address?: {
+    line1: string | null;
+    line2: string | null;
+    city: string | null;
+    state: string | null;
+    postal_code: string | null;
+    country: string | null;
+  } | null;
 }
 
 /**
@@ -238,7 +247,23 @@ export async function getStripeCustomer(id: string): Promise<StripeCustomerLite 
   try {
     const c = await stripeGet<any>(`/customers/${encodeURIComponent(trimmed)}`);
     if (!c || c.deleted) return null;
-    return { id: c.id, name: c.name ?? null, email: c.email ?? null, created: c.created ?? null };
+    return {
+      id: c.id,
+      name: c.name ?? null,
+      email: c.email ?? null,
+      created: c.created ?? null,
+      phone: c.phone ?? null,
+      address: c.address
+        ? {
+            line1: c.address.line1 ?? null,
+            line2: c.address.line2 ?? null,
+            city: c.address.city ?? null,
+            state: c.address.state ?? null,
+            postal_code: c.address.postal_code ?? null,
+            country: c.address.country ?? null,
+          }
+        : null,
+    };
   } catch (e: any) {
     if (/Stripe 404/.test(e?.message || "")) return null;
     throw e;
