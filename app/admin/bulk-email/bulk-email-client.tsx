@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { wrapBrandedEmail } from "@/lib/bulk-email";
 import {
   Mail, Send, Loader2, Search, Users, AlertTriangle, CheckCircle2, Save, FileText, Clock,
 } from "lucide-react";
@@ -218,12 +219,23 @@ export function BulkEmailClient({ senderEmail, senderName }: { senderEmail: stri
               <select value={replyMode} onChange={(e) => setReplyMode(e.target.value as any)} className="rounded-md border border-gray-200 px-1.5 py-0.5"><option value="bookkeeper">Assigned preparer</option><option value="support">admin@ironbooks.com</option></select>
             </label>
           </div>
-          {bodyText && (
-            <div className="rounded-lg border border-gray-100 bg-teal-lighter/40 p-3">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-ink-light mb-1">Preview (sample merge)</div>
-              <div className="text-sm text-navy" dangerouslySetInnerHTML={{ __html: textToHtml(bodyText).replace(/\{\{\s*(contact\.)?first_?name\s*\}\}/gi, "Daniel").replace(/\{\{\s*(client_?name|business_?name|company_?name)\s*\}\}/gi, "Acme Painting") }} />
-            </div>
-          )}
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wider text-ink-light mb-1">Preview · branded Ironbooks template (sample merge)</div>
+            <div className="rounded-lg border border-gray-200 overflow-auto max-h-[420px]"
+              dangerouslySetInnerHTML={{
+                __html: wrapBrandedEmail({
+                  bodyHtml: textToHtml(bodyText || "Your message goes here. The Ironbooks header, logo, and footer are added automatically.")
+                    .replace(/\{\{\s*(contact\.)?first_?name\s*\}\}/gi, "Daniel")
+                    .replace(/\{\{\s*(client_?name|business_?name|company_?name)\s*\}\}/gi, "Acme Painting"),
+                  footerHtml: kind === "normal"
+                    ? "You're receiving this because you're an Ironbooks client. <span style=\"color:#1F5D58;font-weight:600;\">Unsubscribe</span> from updates like this."
+                    : kind === "resubscribe"
+                    ? "Want our updates again? <span style=\"color:#1F5D58;font-weight:700;\">Yes, resubscribe me</span>."
+                    : null,
+                }),
+              }}
+            />
+          </div>
           {msg && <div className={`text-xs rounded px-2.5 py-1.5 ${msg.tone === "ok" ? "bg-emerald-50 text-emerald-800 border border-emerald-200" : "bg-red-50 text-red-700 border border-red-200"}`}>{msg.text}</div>}
           <div className="flex items-center gap-2 flex-wrap">
             <button onClick={send} disabled={busy !== null} className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-bold px-4 py-2 rounded-lg disabled:opacity-50">{busy === "send" ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Send to {selectedEligible.length}</button>
