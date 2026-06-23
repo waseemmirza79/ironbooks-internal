@@ -133,10 +133,11 @@ export function BankRulesFromReclassClient({
   async function handleMarkCleanupComplete() {
     if (
       !confirm(
-        `Mark ${clientName}'s cleanup complete?\n\n` +
-          `• The client moves to the Completed Accounts list.\n` +
-          `• PDF report stays available; you can reopen anytime.\n` +
-          `• Since there are no Stripe deposits in this window, the Stripe recon step is skipped.`
+        `Wrap up ${clientName}'s cleanup?\n\n` +
+          `This opens the statement sign-off. Next, on the Cleanup board you'll:\n` +
+          `• Review the P&L / Balance Sheet for the period\n` +
+          `• Attest, then approve & send the statements to the client — which closes the period.\n\n` +
+          `(No Stripe deposits in this window, so the Stripe recon step is skipped.)`
       )
     )
       return;
@@ -151,7 +152,13 @@ export function BankRulesFromReclassClient({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      router.push("/clients");
+      // complete-cleanup OPENS a statement sign-off (kind='cleanup'); it does
+      // NOT close the period on its own — that requires the attest+send step.
+      // Land the bookkeeper on the Cleanup board where the sign-off card lets
+      // them review → attest → approve & send, which closes the period and
+      // emails the client their statements. (Previously this redirected to the
+      // client LIST with no feedback, so the button looked like it did nothing.)
+      router.push(data?.already_complete ? "/clients" : "/cleanup");
     } catch (e: any) {
       setError(e.message || "Failed to mark complete");
     }
@@ -319,7 +326,7 @@ export function BankRulesFromReclassClient({
               className="w-full inline-flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
             >
               <Flag size={16} />
-              Mark {clientName}&apos;s cleanup complete
+              Finish cleanup — review &amp; send statements
               <ArrowRight size={14} />
             </button>
             <Link
