@@ -378,15 +378,16 @@ function BoardCard({
     }
   }
 
-  // Mark the month complete WITHOUT the full send flow — for closes already
-  // done & sent outside SNAP (e.g. from Double). Moves the card to Completed.
+  // Mark the month complete — this now runs the FULL close: publishes the
+  // statements to the client's portal, emails them, and sets the QuickBooks
+  // closing date. (No more no-send "closed outside SNAP" path — Double is gone.)
   async function markComplete() {
     if (
       !confirm(
-        `Mark ${client.client_name}'s ${periodLabel(period)} month-end as COMPLETE?\n\n` +
-          `Use this when the close is already done and statements were already sent (e.g. from Double). ` +
-          `It moves them to the Completed column.\n\n` +
-          `It does NOT email the client from SNAP and does NOT change the QuickBooks closing date.`
+        `Close & send ${client.client_name}'s ${periodLabel(period)} statements?\n\n` +
+          `This publishes their ${periodLabel(period)} statements to the client portal, ` +
+          `EMAILS the client that their books are ready, and closes the period in QuickBooks.\n\n` +
+          `This is client-facing — only do it when the month is truly done.`
       )
     )
       return;

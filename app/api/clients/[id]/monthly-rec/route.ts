@@ -206,48 +206,9 @@ export async function POST(
     return NextResponse.json({ ok: true, run });
   }
 
-  if (action === "mark_complete") {
-    // Externally-closed month. The team finished the close and sent
-    // statements OUTSIDE SNAP (e.g. emailed from Double). This marks the
-    // month complete on the board WITHOUT the side effects of the full
-    // "send" flow — no client email, no month-end package, no QBO closing
-    // date change — because all of that already happened elsewhere.
-    // (Once statements move into SNAP, use "send" instead and drop this.)
-    const now = new Date().toISOString();
-    const { data: existing } = await (service as any)
-      .from("monthly_rec_runs")
-      .select("id, status")
-      .eq("client_link_id", clientLinkId)
-      .eq("period", period)
-      .maybeSingle();
-    if (existing?.status === "complete") {
-      return NextResponse.json({ ok: true, already: true });
-    }
-    const { data: run, error } = await (service as any)
-      .from("monthly_rec_runs")
-      .upsert(
-        {
-          client_link_id: clientLinkId,
-          period,
-          period_start: periodStart,
-          period_end: periodEnd,
-          // kind matters: the board roster only reads production_me runs.
-          kind: "production_me",
-          status: "complete",
-          completed_by: user.id,
-          completed_at: now,
-          // Marker (no new column): records that the close happened outside
-          // SNAP, and prevents anything implying a SNAP email went out.
-          email_delivery: { sent: false, via: "external", note: "Closed outside SNAP" },
-          created_by: user.id,
-        },
-        { onConflict: "client_link_id,period" }
-      )
-      .select("*")
-      .single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    return NextResponse.json({ ok: true, run });
-  }
+  // NOTE: "mark_complete" is handled together with "send" below. Double is no
+  // longer part of the process, so completing a month always closes + sends
+  // statements through SNAP — there is no "closed outside SNAP" no-send path.
 
   if (action === "spot_check") {
     // AI second-opinion on the statements. Requires the statements snapshot
@@ -331,42 +292,84 @@ export async function POST(
     return NextResponse.json({ ok: true, run });
   }
 
-  if (action === "send") {
-    // FINAL approval — admin/lead only. JRs submit for review instead.
+  if (action === "send" || action === "mark_complete") {
+    const isMarkComplete = action === "mark_complete";
+    // Completing a month always closes + sends statements through SNAP now
+    // (Double is retired). Sending client-facing statements is admin/lead only;
+    // JRs submit for review instead.
     if (!isSenior) {
       return NextResponse.json(
-        { error: "Only an admin or lead can send statements to the client — use Submit for review instead." },
+        { error: "Only an admin or lead can close & send statements to the client — use Submit for review instead." },
         { status: 403 }
       );
     }
-    if (body.attested !== true) {
+    // The review-screen "send" carries an explicit attestation. Marking a card
+    // Completed on the board IS the sign-off, so it's treated as attested.
+    if (!isMarkComplete && body.attested !== true) {
       return NextResponse.json(
         { error: "Attestation required — review the statements and tick the approval box first." },
         { status: 400 }
       );
     }
-    // The gate: checks must have run AND statements must have been
-    // fetched (i.e. reviewed) for this period before sending.
-    const { data: existing } = await (service as any)
+    let { data: existing } = await (service as any)
       .from("monthly_rec_runs")
       .select("id, checks_ran_at, statements, status, kind, attested_by, attested_at")
       .eq("client_link_id", clientLinkId)
       .eq("period", period)
       .maybeSingle();
-    if (!existing?.checks_ran_at) {
-      return NextResponse.json(
-        { error: "Run the checks for this month before closing it." },
-        { status: 400 }
-      );
-    }
-    if (!existing?.statements) {
-      return NextResponse.json(
-        { error: "Review the financial statements before sending." },
-        { status: 400 }
-      );
-    }
-    if (existing.status === "complete") {
+    if (existing?.status === "complete") {
       return NextResponse.json({ error: "This month is already closed." }, { status: 409 });
+    }
+    if (isMarkComplete) {
+      // Completed straight from the board (no review screen opened) → build the
+      // statements snapshot on demand so the email summary + package have data.
+      if (!existing?.statements) {
+        try {
+          const accessToken = await getValidToken(clientLinkId, service as any);
+          const statements = await fetchStatementsPreview(
+            (client as any).qbo_realm_id,
+            accessToken,
+            periodStart,
+            periodEnd,
+            { includeBS }
+          );
+          const { data: up, error: upErr } = await (service as any)
+            .from("monthly_rec_runs")
+            .upsert(
+              {
+                client_link_id: clientLinkId,
+                period,
+                period_start: periodStart,
+                period_end: periodEnd,
+                kind: "production_me",
+                statements,
+                created_by: user.id,
+              },
+              { onConflict: "client_link_id,period" }
+            )
+            .select("id, checks_ran_at, statements, status, kind, attested_by, attested_at")
+            .single();
+          if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 });
+          existing = up;
+        } catch (err: any) {
+          return qboErrorResponse(err);
+        }
+      }
+    } else {
+      // The gate: checks must have run AND statements must have been
+      // fetched (i.e. reviewed) for this period before sending.
+      if (!existing?.checks_ran_at) {
+        return NextResponse.json(
+          { error: "Run the checks for this month before closing it." },
+          { status: 400 }
+        );
+      }
+      if (!existing?.statements) {
+        return NextResponse.json(
+          { error: "Review the financial statements before sending." },
+          { status: 400 }
+        );
+      }
     }
 
     const concerns = (body.concerns || "").trim().slice(0, 4000) || null;
