@@ -367,27 +367,38 @@ export function CleanupBoard() {
         </div>
       )}
 
-      {/* Inline statement sign-off flow (runs the same review the manager sees) */}
+      {/* Statement sign-off flow (the same review the manager sees), as a modal
+          overlay so it opens OVER the board — not as a block below the fold. */}
       {selectedRun && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-navy">
-              {selectedRun.client_name} — cleanup statements sign-off
-            </h3>
-            <button
-              onClick={() => setSelectedSignoff(null)}
-              className="text-ink-light hover:text-navy"
-              aria-label="Close"
-            >
-              <X size={15} />
-            </button>
+        <div
+          className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+          onClick={() => setSelectedSignoff(null)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-xl max-w-3xl w-full max-h-[90vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+              <h3 className="text-sm font-bold text-navy">
+                {selectedRun.client_name} — cleanup statements sign-off
+              </h3>
+              <button
+                onClick={() => setSelectedSignoff(null)}
+                className="text-ink-light hover:text-navy"
+                aria-label="Close"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="overflow-y-auto p-4">
+              <ClientRecCard
+                client={selectedRun}
+                period={selectedRun.run?.period || ""}
+                isSenior={isSenior}
+                onChanged={load}
+              />
+            </div>
           </div>
-          <ClientRecCard
-            client={selectedRun}
-            period={selectedRun.run?.period || ""}
-            isSenior={isSenior}
-            onChanged={load}
-          />
         </div>
       )}
     </div>
@@ -555,7 +566,7 @@ function CleanupCard({
               </span>
             )}
             <span className="ml-auto" />
-            {s.label.startsWith("6") && (hasSignoff || inReview) && (
+            {s.label.startsWith("6") && hasSignoff && (
               <button
                 onClick={onOpenSignoff}
                 className="inline-flex items-center gap-0.5 text-[10px] font-bold text-purple-700 hover:underline"
