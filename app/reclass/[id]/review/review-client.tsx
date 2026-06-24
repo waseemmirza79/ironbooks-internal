@@ -804,7 +804,7 @@ export function ReclassReview({
             ? "Already executed"
             : totalApproved === 0
             ? "Continue to next step"
-            : `Execute ${totalApproved} reclassifications in QBO`}
+            : `Approve & post ${totalApproved} to QBO →`}
         </button>
         <p className="text-xs text-ink-slate text-center mt-2">
           Skipped, flagged, and rejected transactions will NOT be executed.
