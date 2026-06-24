@@ -54,13 +54,38 @@ export async function sendAskClientQuestions(
   const clientName = client?.client_name || "your business";
 
   const n = rows.length;
-  const lines = rows.map((r: any, i: number) => {
-    const date = formatDate(r.transaction_date);
-    const amount = formatMoney(r.transaction_amount);
+
+  // Group recurring/identical transactions — same payee + source account +
+  // amount — into ONE line with a count and date range, so a long list of
+  // repeats (e.g. a weekly loan payment) doesn't overwhelm the client with
+  // dozens of near-identical rows. Distinct amounts stay separate lines.
+  type Grp = { what: string; from: string; amount: number; dates: string[] };
+  const groups = new Map<string, Grp>();
+  for (const r of rows as any[]) {
     const what = (r.vendor_name || r.description || "Unlabeled transaction").trim();
-    const from = r.from_account_name ? ` (from ${r.from_account_name})` : "";
-    return `${i + 1}. ${date} — ${amount} — ${what}${from}`;
+    const fromName = (r.from_account_name || "").trim();
+    const amount = Math.abs(Number(r.transaction_amount) || 0);
+    const key = `${what.toLowerCase()}|${fromName.toLowerCase()}|${amount.toFixed(2)}`;
+    const g: Grp = groups.get(key) || { what, from: fromName, amount, dates: [] };
+    if (r.transaction_date) g.dates.push(r.transaction_date);
+    groups.set(key, g);
+  }
+  const grouped = [...groups.values()].sort(
+    (a, b) => (a.dates[0] || "").localeCompare(b.dates[0] || "")
+  );
+
+  const lines = grouped.map((g, i) => {
+    const amount = formatMoney(g.amount);
+    const from = g.from ? ` (from ${g.from})` : "";
+    if (g.dates.length <= 1) {
+      const date = formatDate(g.dates[0] || null);
+      return `${i + 1}. ${date} — ${amount} — ${g.what}${from}`;
+    }
+    const sorted = [...g.dates].sort();
+    const span = `${formatDate(sorted[0])}–${formatDate(sorted[sorted.length - 1])}`;
+    return `${i + 1}. ${g.dates.length}× ${amount} — ${g.what}${from} (${span})`;
   });
+  const m = grouped.length; // number of question lines after grouping
 
   // Keep the body inside the same 8,000-char ceiling the messages API
   // enforces; overflow lines collapse into a count rather than a 2nd email.
@@ -80,8 +105,12 @@ export async function sendAskClientQuestions(
     n === 1
       ? "Quick question about a transaction"
       : `Quick question about ${n} transactions`;
+  const groupedNote =
+    m < n
+      ? ` We've grouped the ones that repeat, so there are only ${m} thing${m === 1 ? "" : "s"} to look at.`
+      : "";
   const body = [
-    `Hi! While categorizing your books we found ${n === 1 ? "a transaction" : `${n} transactions`} we couldn't identify with certainty. Could you tell us what ${n === 1 ? "it was" : "each of these was"} for?`,
+    `Hi! While categorizing your books we found ${n === 1 ? "a transaction" : `${n} transactions`} we couldn't identify with certainty.${groupedNote} Could you tell us what ${n === 1 ? "it was" : "each of these was"} for?`,
     ``,
     ...list,
     ``,
