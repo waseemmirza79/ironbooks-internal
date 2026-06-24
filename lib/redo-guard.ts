@@ -24,6 +24,12 @@ export interface RedoStatus {
    *  rule_discovery_jobs has no range.) */
   lastRangeStart: string | null;
   lastRangeEnd: string | null;
+  /** Whether this client actually has Stripe activity to reconcile. When false
+   *  the workflow can skip the Stripe Recon step entirely and hand off straight
+   *  to the Balance Sheet. Connected OR known-payouts ⇒ true; flagged
+   *  "doesn't use Stripe" ⇒ false; no signal ⇒ null (treat as "maybe", don't
+   *  auto-skip). */
+  usesStripe: boolean | null;
 }
 
 export async function getRedoStatus(
@@ -33,7 +39,9 @@ export async function getRedoStatus(
 ): Promise<RedoStatus> {
   const { data: client } = await service
     .from("client_links")
-    .select("cleanup_completed_at")
+    .select(
+      "cleanup_completed_at, stripe_connection_status, stripe_has_payouts, stripe_not_required"
+    )
     .eq("id", clientLinkId)
     .single();
 
@@ -65,12 +73,24 @@ export async function getRedoStatus(
     /* table/shape varies — fail open (no warning) */
   }
 
+  const c = client as any;
+  let usesStripe: boolean | null = null;
+  if (c?.stripe_not_required === true) {
+    usesStripe = false;
+  } else if (c?.stripe_connection_status === "connected" || c?.stripe_has_payouts === true) {
+    usesStripe = true;
+  } else if (c?.stripe_has_payouts === false) {
+    // checked and found zero payouts, not connected ⇒ nothing to reconcile
+    usesStripe = false;
+  }
+
   return {
-    alreadyCleanedUp: !!(client as any)?.cleanup_completed_at,
-    cleanupCompletedAt: (client as any)?.cleanup_completed_at || null,
+    alreadyCleanedUp: !!c?.cleanup_completed_at,
+    cleanupCompletedAt: c?.cleanup_completed_at || null,
     hasCompletedJobOfType,
     lastCompletedAt,
     lastRangeStart,
     lastRangeEnd,
+    usesStripe,
   };
 }

@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import {
-  Loader2, AlertCircle, Calendar, CreditCard, ArrowRight,
+  Loader2, AlertCircle, Calendar, CreditCard, ArrowRight, CheckCircle2, MapPin,
 } from "lucide-react";
 
 interface ClientLink {
@@ -465,19 +466,72 @@ export function NewStripeReconForm({
         {/* Client */}
         <div>
           <label className="block text-sm font-semibold text-navy mb-2">Client</label>
-          <select
-            value={clientLinkId}
-            onChange={(e) => setClientLinkId(e.target.value)}
-            className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-teal focus:outline-none"
-          >
-            <option value="">Select a client...</option>
-            {clientLinks.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.client_name} ({c.jurisdiction}{c.state_province ? ` · ${c.state_province}` : ""}){c.stripe_connection_status === "connected" ? " · Stripe connected" : ""}{c.cleanup_completed_at ? " · Cleanup complete" : ""}
-              </option>
-            ))}
-          </select>
+          {selectedClient ? (
+            // Carried over from the prior step (or picked) — show it plainly so
+            // it's obvious which client we're on, instead of an unselected-
+            // looking dropdown that reads as "no client".
+            <div className="flex items-center gap-3 rounded-lg bg-teal-lighter border-2 border-teal px-3 py-2.5">
+              <div className="rounded-md flex items-center justify-center font-bold text-xs flex-shrink-0 w-8 h-8 bg-teal-light text-teal">
+                {selectedClient.client_name.charAt(0)}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-sm text-navy">{selectedClient.client_name}</div>
+                <div className="text-xs text-ink-slate flex items-center gap-1">
+                  <MapPin size={11} /> {selectedClient.jurisdiction}
+                  {selectedClient.state_province ? ` · ${selectedClient.state_province}` : ""}
+                  {isStripeConnected ? " · Stripe connected" : ""}
+                  {selectedClient.cleanup_completed_at ? " · Cleanup complete" : ""}
+                </div>
+              </div>
+              <CheckCircle2 size={18} className="text-teal flex-shrink-0" />
+              <button
+                type="button"
+                onClick={() => setClientLinkId("")}
+                className="text-xs font-semibold text-teal hover:text-teal-dark whitespace-nowrap"
+              >
+                Change
+              </button>
+            </div>
+          ) : (
+            <select
+              value={clientLinkId}
+              onChange={(e) => setClientLinkId(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-teal focus:outline-none"
+            >
+              <option value="">Select a client...</option>
+              {clientLinks.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.client_name} ({c.jurisdiction}{c.state_province ? ` · ${c.state_province}` : ""}){c.stripe_connection_status === "connected" ? " · Stripe connected" : ""}{c.cleanup_completed_at ? " · Cleanup complete" : ""}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
+
+        {/* No Stripe activity → recommend skipping straight to the Balance
+            Sheet. Not connected and no known payouts, or checked and found
+            zero — either way this recon has nothing to do. */}
+        {selectedClient &&
+          (effectiveHasPayouts === false ||
+            (!isStripeConnected && effectiveHasPayouts == null)) && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+              <div className="font-semibold text-sm text-amber-900">
+                No Stripe deposits found for this client
+              </div>
+              <p className="text-xs text-amber-800 mt-1 leading-snug">
+                {isStripeConnected
+                  ? "Stripe is connected but we found no payouts in the recon window — there's nothing to reconcile here."
+                  : "This client doesn't have Stripe connected and has no payout history. You can skip Stripe Recon and move on."}
+              </p>
+              <Link
+                href={`/balance-sheet/${clientLinkId}`}
+                className="mt-2.5 inline-flex items-center gap-1.5 text-[13px] font-bold bg-teal text-white px-3 py-1.5 rounded-lg hover:bg-teal-dark"
+              >
+                Skip to Balance Sheet
+                <ArrowRight size={14} />
+              </Link>
+            </div>
+          )}
 
         {/* Matching method — only meaningful once a client is selected */}
         {clientLinkId && (

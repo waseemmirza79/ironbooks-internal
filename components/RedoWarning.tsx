@@ -34,6 +34,7 @@ export function RedoWarning({
     lastCompletedAt: string | null;
     lastRangeStart: string | null;
     lastRangeEnd: string | null;
+    usesStripe: boolean | null;
   } | null>(null);
   const [override, setOverride] = useState(false);
 
@@ -68,10 +69,20 @@ export function RedoWarning({
   const date = status.cleanupCompletedAt || status.lastCompletedAt;
   const dateStr = date ? ` on ${new Date(date).toLocaleDateString()}` : "";
 
+  // Where this step hands off next. Bank Rules normally → Stripe Recon, but if
+  // the client has no Stripe activity (usesStripe === false) we skip Stripe
+  // entirely and jump straight to the Balance Sheet. usesStripe null ⇒ unknown,
+  // keep the default Stripe hop.
+  const nextStep =
+    kind === "rules" && status.usesStripe === false
+      ? { label: "Balance Sheet", path: `/balance-sheet/${clientId}`, isPath: true }
+      : { ...NEXT_STEP[kind], isPath: false };
+
   // Carry the upstream period into the next step so it doesn't ask again. Pass
   // the actual reclass start date — Bank Rules shows/uses "looking back to
-  // <date>" rather than a generic month count.
-  let skipHref = `${NEXT_STEP[kind].path}?client=${clientId}`;
+  // <date>" rather than a generic month count. (Balance Sheet takes the client
+  // in the path, so no ?client query there.)
+  let skipHref = nextStep.isPath ? nextStep.path : `${nextStep.path}?client=${clientId}`;
   if (kind === "reclass" && status.lastRangeStart) {
     skipHref += `&start=${status.lastRangeStart}`;
   }
@@ -95,7 +106,7 @@ export function RedoWarning({
             href={skipHref}
             className="inline-flex items-center gap-1.5 text-[13px] font-bold bg-teal text-white px-3 py-1.5 rounded-lg hover:bg-teal-dark"
           >
-            It&apos;s done — skip to {NEXT_STEP[kind].label}
+            It&apos;s done — skip to {nextStep.label}
             <ArrowRight size={14} />
           </Link>
         )}
