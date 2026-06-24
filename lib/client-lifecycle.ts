@@ -14,6 +14,7 @@ export type LifecycleStatus =
   | "coa_cleanup"       // COA cleanup in flight
   | "reclassify"        // reclassification in flight (or COA done, reclass not started)
   | "bs_cleanup"        // reclass done, balance-sheet cleanup outstanding
+  | "manual_cleanup"    // flagged: needs manual fixes in QBO before sign-off
   | "ready_to_close"    // pipeline done (BS skipped/finished), not yet submitted for review
   | "ready_for_review"  // cleanup submitted, awaiting manager approval (cleanup_review_state='in_review')
   | "waiting_on_client" // blocked waiting on the client
@@ -26,6 +27,7 @@ export interface LifecycleInput {
   qbo_connected?: boolean | null;
   cleanup_completed_at?: string | null;
   cleanup_review_state?: string | null;     // 'in_review' when submitted
+  manual_cleanup_needed?: boolean | null;    // flagged: needs manual fixes in QBO
   daily_recon_enabled?: boolean | null;
   /** BS cleanup deferred (client_links.bs_enabled === false / P&L-only). */
   bs_deferred?: boolean | null;
@@ -45,12 +47,13 @@ export const LIFECYCLE_META: Record<LifecycleStatus, { label: string; tone: stri
   coa_cleanup:       { label: "COA cleanup",       tone: "bg-blue-50 text-blue-700",        order: 2,  group: "Pipeline" },
   reclassify:        { label: "Reclassify",        tone: "bg-indigo-50 text-indigo-700",    order: 3,  group: "Pipeline" },
   bs_cleanup:        { label: "BS cleanup",        tone: "bg-cyan-50 text-cyan-700",        order: 4,  group: "Pipeline" },
-  ready_to_close:    { label: "Ready to close",    tone: "bg-fuchsia-50 text-fuchsia-700",  order: 5,  group: "Review" },
-  waiting_on_client: { label: "Waiting on client", tone: "bg-amber-50 text-amber-700",      order: 6,  group: "Review" },
-  ready_for_review:  { label: "Ready for review",  tone: "bg-violet-50 text-violet-700",    order: 7,  group: "Review" },
-  completed:         { label: "Completed",         tone: "bg-emerald-50 text-emerald-700",  order: 8,  group: "Live" },
-  in_production:     { label: "In production",     tone: "bg-teal/10 text-teal",            order: 9,  group: "Live" },
-  done:              { label: "Done",              tone: "bg-emerald-100 text-emerald-800", order: 10, group: "Live" },
+  manual_cleanup:    { label: "Manual cleanup (QBO)", tone: "bg-orange-50 text-orange-700", order: 5,  group: "Pipeline" },
+  ready_to_close:    { label: "Ready to close",    tone: "bg-fuchsia-50 text-fuchsia-700",  order: 6,  group: "Review" },
+  waiting_on_client: { label: "Waiting on client", tone: "bg-amber-50 text-amber-700",      order: 7,  group: "Review" },
+  ready_for_review:  { label: "Ready for review",  tone: "bg-violet-50 text-violet-700",    order: 8,  group: "Review" },
+  completed:         { label: "Completed",         tone: "bg-emerald-50 text-emerald-700",  order: 9,  group: "Live" },
+  in_production:     { label: "In production",     tone: "bg-teal/10 text-teal",            order: 10, group: "Live" },
+  done:              { label: "Done",              tone: "bg-emerald-100 text-emerald-800", order: 11, group: "Live" },
 };
 
 /**
@@ -71,6 +74,9 @@ export function deriveLifecycleStatus(c: LifecycleInput): LifecycleStatus {
   // ── Manager-actionable ──
   if (c.cleanup_review_state === "in_review") return "ready_for_review";
   if (c.open_ask_client) return "waiting_on_client";
+  // Flagged for manual QBO work — blocking hand-work before sign-off, so it
+  // surfaces as its own stage rather than hiding in a pipeline phase.
+  if (c.manual_cleanup_needed) return "manual_cleanup";
 
   // ── Pipeline (cleanup phases), furthest-along first ──
   if (c.has_active_reclass) return "reclassify";

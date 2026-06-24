@@ -1475,6 +1475,25 @@ export async function executeJob(jobId: string): Promise<{
       manual_cleanup_items: manualCleanupItems as any,
     }).eq("id", jobId);
 
+    // Auto-flag the client for the "Manual cleanup (QBO)" stage when this job
+    // left hand-work behind. Only flips false→true, so it won't churn an
+    // already-flagged client or wipe a bookkeeper's notes. Best-effort —
+    // tolerates the column not existing yet (migration 92 not applied).
+    if (manualCleanupItems.length > 0) {
+      try {
+        await supabase
+          .from("client_links")
+          .update({
+            manual_cleanup_needed: true,
+            manual_cleanup_set_at: new Date().toISOString(),
+          } as any)
+          .eq("id", ctx.clientLinkId)
+          .eq("manual_cleanup_needed", false);
+      } catch {
+        /* non-fatal */
+      }
+    }
+
     await logProgress(ctx, "job_complete",
       `Job complete in ${stats.duration_seconds}s` +
       (manualCleanupItems.length > 0 ? ` (${manualCleanupItems.length} items need manual cleanup)` : ""),
