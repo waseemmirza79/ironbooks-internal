@@ -5,14 +5,13 @@ import { usePathname } from "next/navigation";
 import {
   Home, Sparkles, Flag, Users, LogOut, BookOpen, Clock,
   Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight, Receipt, KanbanSquare, Sun,
-  FileSpreadsheet, Wallet, Volume2, VolumeX, HeartPulse, Gauge, CalendarCheck,
+  FileSpreadsheet, Wallet, HeartPulse, Gauge, CalendarCheck,
   ClipboardCheck, ListChecks, UserPlus, Video, GraduationCap, Settings as SettingsIcon, Mail, Inbox, ListTodo, LifeBuoy,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
 import type { Database } from "@/lib/database.types";
 import { StripeConnectModal } from "./StripeConnectModal";
-import { isMuted, setMuted, onMutedChange, playSound } from "@/lib/sounds";
 import { isV2For } from "@/lib/feature-flags";
 
 /** Daily work surface — the whole job in five stops. */
@@ -136,7 +135,6 @@ export function Sidebar() {
         if (!res.ok || stopped) return;
         const { count } = await res.json();
         if (typeof count !== "number") return;
-        if (prev !== null && count > prev) playSound("message_received");
         prev = count;
         setUnreadComms(count);
       } catch {
@@ -312,7 +310,6 @@ export function Sidebar() {
               {userRole}
             </div>
           </div>
-          <SoundToggle />
           <Link href="/settings" className="text-white/40 hover:text-white transition-colors" title="Settings · email signature">
             <SettingsIcon size={15} />
           </Link>
@@ -331,27 +328,6 @@ function NavSection({ label, className = "" }: { label: string; className?: stri
     <div className={`mb-1.5 px-3 text-[10px] font-bold uppercase tracking-wider text-white/30 ${className}`}>
       {label}
     </div>
-  );
-}
-
-function SoundToggle() {
-  const [muted, setMutedState] = useState(false);
-
-  useEffect(() => {
-    setMutedState(isMuted());
-    const off = onMutedChange(setMutedState);
-    return off;
-  }, []);
-
-  return (
-    <button
-      onClick={() => setMuted(!muted)}
-      className="text-white/40 hover:text-white transition-colors"
-      title={muted ? "Sounds muted — click to unmute" : "Sounds on — click to mute"}
-      aria-label={muted ? "Unmute sounds" : "Mute sounds"}
-    >
-      {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
-    </button>
   );
 }
 
