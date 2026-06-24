@@ -103,6 +103,15 @@ export function StripeConnectModal({
 
   const selected = clients.find((c) => c.id === selectedId);
 
+  // Rendered preview of the exact branded email we'll send (same builder).
+  const emailPreview = generated
+    ? buildStripeConnectEmail(
+        generated.client_name.split(" ")[0] || "there",
+        generated.url,
+        generated.client_name
+      )
+    : null;
+
   async function handleGenerate() {
     if (!selectedId) return;
     setGenerating(true);
@@ -230,8 +239,9 @@ export function StripeConnectModal({
               Stripe Connect Link
             </h3>
             <p className="text-xs text-ink-slate mt-1">
-              Generate a one-time link for a client to connect their Stripe account.
-              Valid for 7 days. Copy and send via Double or any other channel.
+              A one-time link for the client to connect their Stripe account (valid 7
+              days). We email it directly and log it to their history — or copy it to
+              send another way.
             </p>
           </div>
           <button onClick={onClose} className="text-ink-slate hover:text-navy">
@@ -408,6 +418,24 @@ export function StripeConnectModal({
                   </button>
                 </div>
               </div>
+
+              {/* Live preview of the exact email the client will receive */}
+              {emailPreview && (
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
+                    Email preview
+                  </label>
+                  <p className="text-xs text-ink-slate mb-2">
+                    This is exactly what {generated.client_name} will receive.
+                  </p>
+                  <iframe
+                    title="Email preview"
+                    srcDoc={emailPreview.html}
+                    sandbox=""
+                    className="w-full h-80 rounded-lg border border-gray-200 bg-white"
+                  />
+                </div>
+              )}
 
               {/* Direct send (default) — email the client straight from SNAP */}
               <div>
