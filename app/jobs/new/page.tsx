@@ -1,32 +1,36 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
-import { createServerSupabase } from "@/lib/supabase";
+import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
+import { redirect } from "next/navigation";
 import { NewJobForm } from "./form";
+import { buildCleanupRoster } from "@/lib/cleanup-roster";
+
+export const dynamic = "force-dynamic";
 
 export default async function NewJobPage() {
   const supabase = await createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/auth/login");
 
-  // Hide cleanup-completed AND in-review clients from the select-client
-  // list. Completed = closed cycle, shown in /clients Completed Accounts
-  // with a Reopen button. In Review = bookkeeper submitted, awaiting
-  // senior — withdraw from /clients In Review section if more work
-  // needed.
-  const { data: clientLinks } = await supabase
-    .from("client_links")
-    .select("*")
-    .eq("is_active", true)
-    .is("cleanup_completed_at", null)
-    .is("cleanup_review_state", null)
-    .order("client_name");
+  // The launcher buckets every active client into 5 sections. "New cleanup"
+  // (nothing started) drives the existing pick → setup flow; the other four
+  // (Continue / Stripe recon / Balance Sheet / completed) are link lists.
+  const service = createServiceSupabase();
+  const roster = await buildCleanupRoster(service);
 
   return (
     <AppShell>
-      <TopBar
-        title="Account Cleanup"
-        subtitle="Step 1 of 5 · Chart of accounts"
-      />
+      <TopBar title="Account Cleanup" subtitle="Pick up where each client left off" />
       <div className="px-8 py-6 max-w-3xl">
-        <NewJobForm clientLinks={clientLinks || []} />
+        <NewJobForm
+          clientLinks={roster.newCleanup}
+          sections={{
+            continueCleanup: roster.continueCleanup,
+            completed: roster.completed,
+            stripeRecon: roster.stripeRecon,
+            bsCleanup: roster.bsCleanup,
+          }}
+        />
       </div>
     </AppShell>
   );
