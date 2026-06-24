@@ -28,7 +28,9 @@ import {
   Building2,
   AlertTriangle,
   CreditCard,
+  ClipboardCheck,
 } from "lucide-react";
+import { CleanupTab } from "./cleanup-tab";
 import type {
   OutstandingWork,
   ActivityEvent,
@@ -157,10 +159,11 @@ interface Props {
   bsCleanupOwed?: boolean;
 }
 
-type TabId = "overview" | "profile" | "billing" | "pl" | "bs" | "bank" | "activity";
+type TabId = "overview" | "cleanup" | "profile" | "billing" | "pl" | "bs" | "bank" | "activity";
 
 const TABS: { id: TabId; label: string; icon: any }[] = [
   { id: "overview", label: "Overview", icon: Activity },
+  { id: "cleanup", label: "Cleanup", icon: ClipboardCheck },
   { id: "profile", label: "Profile", icon: Building2 },
   { id: "billing", label: "Billing", icon: CreditCard },
   { id: "pl", label: "P&L", icon: FileText },
@@ -249,6 +252,9 @@ export function ClientProfileShell({ clientLink, actorRole, overview, financials
           bsCleanupOwed={bsCleanupOwed}
           canSendMessages={actorRole !== "viewer"}
         />
+      )}
+      {activeTab === "cleanup" && (
+        <CleanupTab clientLinkId={clientLink.id} clientName={clientLink.client_name} />
       )}
       {activeTab === "profile" && (
         <ProfileTab clientLink={clientLink} onboarding={onboarding} />
