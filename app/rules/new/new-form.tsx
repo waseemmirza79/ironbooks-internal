@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { RedoWarning } from "@/components/RedoWarning";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Search, ArrowRight, Loader2, MapPin, CheckCircle2, Clock, Zap } from "lucide-react";
@@ -33,6 +34,7 @@ export function NewRulesForm({
   }, [searchParams, clientLinks]);
   const [months, setMonths] = useState(6);
   const [starting, setStarting] = useState(false);
+  const [redoAllowed, setRedoAllowed] = useState(true);
 
   const filtered = clientLinks.filter((c) =>
     c.client_name.toLowerCase().includes(search.toLowerCase())
@@ -185,10 +187,12 @@ export function NewRulesForm({
         </div>
       </div>
 
+      <RedoWarning clientId={selected?.id ?? null} kind="rules" onAllowChange={setRedoAllowed} />
+
       <div className="flex justify-end">
         <button
           onClick={startDiscovery}
-          disabled={!selected || starting}
+          disabled={!selected || starting || !redoAllowed}
           className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
         >
           {starting ? <Loader2 className="animate-spin" size={16} /> : <Zap size={16} />}

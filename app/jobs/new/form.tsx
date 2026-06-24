@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { RedoWarning } from "@/components/RedoWarning";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import {
@@ -121,6 +122,7 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
 
   const provinceTax = getProvinceTax(province);
   const needsProvince = country === "CA";
+  const [redoAllowed, setRedoAllowed] = useState(true);
   const canStart = !!selected && (!needsProvince || !!province);
 
   async function startJob() {
@@ -473,6 +475,8 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
         </div>
       </div>
 
+      <RedoWarning clientId={selected?.id ?? null} kind="coa" onAllowChange={setRedoAllowed} />
+
       <div className="flex items-center justify-between gap-3">
         <button
           onClick={() => router.push(`/reclass/new?client=${selected!.id}`)}
@@ -484,7 +488,7 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
         </button>
         <button
           onClick={startJob}
-          disabled={!canStart || creating || !selectedPreset}
+          disabled={!canStart || creating || !selectedPreset || !redoAllowed}
           className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors"
         >
           {creating ? <Loader2 className="animate-spin" size={16} /> : <ArrowRight size={16} />}

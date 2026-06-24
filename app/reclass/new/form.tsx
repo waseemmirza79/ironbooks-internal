@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { RedoWarning } from "@/components/RedoWarning";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Loader2, AlertCircle, Sparkles, GitMerge, ChevronRight, Layers,
@@ -76,6 +77,7 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
   const [submitError, setSubmitError] = useState<string>("");
   const [blockingJobId, setBlockingJobId] = useState<string>("");
   const [cancelling, setCancelling] = useState(false);
+  const [redoAllowed, setRedoAllowed] = useState(true);
 
   const selectedClient = clientLinks.find((c) => c.id === clientLinkId);
   const sourceAccount = accounts.find((a) => a.id === sourceAccountId);
@@ -811,9 +813,10 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
 
         {clientLinkId && (
           <>
+            <RedoWarning clientId={clientLinkId} kind="reclass" onAllowChange={setRedoAllowed} />
             <button
               onClick={handleSubmit}
-              disabled={!canSubmit || preflightChecking || !!preflightWarning}
+              disabled={!canSubmit || preflightChecking || !!preflightWarning || !redoAllowed}
               className="w-full bg-teal hover:bg-teal-dark text-white font-semibold px-6 py-3 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {(submitting || preflightChecking) && <Loader2 className="animate-spin" size={18} />}
