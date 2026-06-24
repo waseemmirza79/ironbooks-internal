@@ -24,43 +24,15 @@ function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-export async function sendStatementRequestEmail(
-  service: any,
-  params: {
-    clientLinkId: string;
-    clientName: string;
-    /** statement labels, e.g. "Bank statement — Chase Checking ****1234" */
-    labels: string[];
-    createdByUserId: string | null;
-    overrideEmail?: string | null;
-  }
-): Promise<StatementRequestEmailResult> {
-  const { clientLinkId, clientName, labels, createdByUserId, overrideEmail } = params;
-
-  let addresses: string[] = [];
-  const override = (overrideEmail || "").trim().toLowerCase();
-  if (override) {
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(override)) {
-      return { ok: false, sent: false, recipients: 0, addresses: [], noAddress: true, error: "That doesn't look like a valid email address." };
-    }
-    addresses = [override];
-    await service.from("client_links").update({ client_email: override } as any).eq("id", clientLinkId);
-  } else {
-    const { data: cl } = await service
-      .from("client_links")
-      .select("email_hard_bounced")
-      .eq("id", clientLinkId)
-      .single();
-    if (cl?.email_hard_bounced) {
-      return { ok: false, sent: false, recipients: 0, addresses: [], noAddress: true, error: "The email on file previously bounced — enter a new address." };
-    }
-    addresses = await resolveClientContactEmails(service, clientLinkId);
-  }
-
-  if (addresses.length === 0) {
-    return { ok: false, sent: false, recipients: 0, addresses: [], noAddress: true };
-  }
-
+/**
+ * Pure branded statement-request email builder — shared by the send path and
+ * the preview endpoint so the preview is byte-identical to what's sent. Uses
+ * only NEXT_PUBLIC_ envs so it's safe to import client-side.
+ */
+export function buildStatementRequestEmail(
+  clientName: string,
+  labels: string[]
+): { html: string; text: string; subject: string } {
   const portalUrl =
     process.env.NEXT_PUBLIC_PORTAL_URL ||
     process.env.NEXT_PUBLIC_BASE_URL ||
@@ -104,6 +76,48 @@ export async function sendStatementRequestEmail(
     `Ironbooks`,
   ].join("\n");
 
+  return { html, text, subject };
+}
+
+export async function sendStatementRequestEmail(
+  service: any,
+  params: {
+    clientLinkId: string;
+    clientName: string;
+    /** statement labels, e.g. "Bank statement — Chase Checking ****1234" */
+    labels: string[];
+    createdByUserId: string | null;
+    overrideEmail?: string | null;
+  }
+): Promise<StatementRequestEmailResult> {
+  const { clientLinkId, clientName, labels, createdByUserId, overrideEmail } = params;
+
+  let addresses: string[] = [];
+  const override = (overrideEmail || "").trim().toLowerCase();
+  if (override) {
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(override)) {
+      return { ok: false, sent: false, recipients: 0, addresses: [], noAddress: true, error: "That doesn't look like a valid email address." };
+    }
+    addresses = [override];
+    await service.from("client_links").update({ client_email: override } as any).eq("id", clientLinkId);
+  } else {
+    const { data: cl } = await service
+      .from("client_links")
+      .select("email_hard_bounced")
+      .eq("id", clientLinkId)
+      .single();
+    if (cl?.email_hard_bounced) {
+      return { ok: false, sent: false, recipients: 0, addresses: [], noAddress: true, error: "The email on file previously bounced — enter a new address." };
+    }
+    addresses = await resolveClientContactEmails(service, clientLinkId);
+  }
+
+  if (addresses.length === 0) {
+    return { ok: false, sent: false, recipients: 0, addresses: [], noAddress: true };
+  }
+
+  const { html, text, subject } = buildStatementRequestEmail(clientName, labels);
+
   let okCount = 0;
   for (const addr of addresses) {
     const r = await sendResendEmailTracked({
@@ -124,6 +138,26 @@ export async function sendStatementRequestEmail(
       error: r.ok ? null : r.error ?? null,
       created_by: createdByUserId,
     } as any);
+  }
+
+  // Also drop a notification into the client's portal inbox (only if the email
+  // actually went out) so they see it there too — no second email (the branded
+  // request already notified them).
+  if (okCount > 0) {
+    try {
+      await service.from("client_communications").insert({
+        client_link_id: clientLinkId,
+        sender_user_id: createdByUserId,
+        direction: "to_client",
+        kind: "notification",
+        subject: `Statements requested for ${clientName}`.slice(0, 200),
+        body: `To finish reconciling your books, please upload these statements:\n${labels
+          .map((l) => `• ${l}`)
+          .join("\n")}\n\nYou can upload them right here in your portal under Messages.`,
+      } as any);
+    } catch (e: any) {
+      console.warn(`[statement-request] portal message insert failed: ${e?.message}`);
+    }
   }
 
   await service

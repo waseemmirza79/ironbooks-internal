@@ -7,6 +7,7 @@ import {
 import { BalanceSheetLanding } from "./landing-client";
 import { PLByMonthView } from "../../clients/[id]/pl-by-month-view";
 import { MarkCleanupCompleteButton } from "../../stripe-recon/[id]/review/mark-complete-button";
+import { EmailPreviewModal } from "@/components/EmailPreviewModal";
 
 type SubStep = "statements_needed" | "request" | "pl_attest" | "submit";
 const SUBSTEPS: { key: SubStep; label: string }[] = [
@@ -58,11 +59,8 @@ export function BalanceSheetStage({
   const [acctError, setAcctError] = useState<string>("");
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [sending, setSending] = useState(false);
-  const [sendResult, setSendResult] = useState<
-    { kind: "sent"; to: string[] } | { kind: "no_address" } | { kind: "error"; msg: string } | null
-  >(null);
-  const [overrideEmail, setOverrideEmail] = useState("");
+  const [sendResult, setSendResult] = useState<{ kind: "sent"; to: string[] } | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   const [attestedAt, setAttestedAt] = useState<string | null>(initialAttestedAt);
   const [attestChecked, setAttestChecked] = useState(false);
@@ -131,54 +129,47 @@ export function BalanceSheetStage({
     });
   }
 
-  async function sendStatementRequest() {
-    if (!accounts) return;
-    const chosen = accounts.filter((a) => selected.has(a.qbo_account_id));
-    if (chosen.length === 0) return;
-    setSending(true);
-    setSendResult(null);
-    try {
-      // 1. Create the open statement_requests rows (client sees them in the portal).
-      await fetch(`/api/clients/${clientLinkId}/statement-requests`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          items: chosen.map((a) => ({
-            label: labelFor(a),
-            account_name: a.name,
-            account_kind: a.kind,
-            qbo_account_id: a.qbo_account_id,
-          })),
-        }),
-      });
-      // 2. Email the client the branded request.
-      const res = await fetch(`/api/clients/${clientLinkId}/request-statements-email`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          labels: chosen.map(labelFor),
-          client_name: clientName,
-          override_email: overrideEmail.trim() || undefined,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok && !data.no_address) throw new Error(data.error || "Could not send");
-      if (data.no_address) setSendResult({ kind: "no_address" });
-      else if (data.sent) {
-        setSendResult({ kind: "sent", to: data.addresses || [] });
-        setOverrideEmail("");
-        // Flip chosen accounts to "requested" locally.
-        setStatusByAcct((prev) => {
-          const next = { ...prev };
-          for (const a of chosen) next[a.qbo_account_id] = "requested";
-          return next;
-        });
-      } else setSendResult({ kind: "error", msg: data.error || "Email could not be sent" });
-    } catch (e: any) {
-      setSendResult({ kind: "error", msg: e.message });
-    } finally {
-      setSending(false);
-    }
+  const chosenAccounts = accounts ? accounts.filter((a) => selected.has(a.qbo_account_id)) : [];
+  const chosenLabels = chosenAccounts.map(labelFor);
+
+  // Runs on the preview modal's Confirm — creates the request rows + emails the
+  // client (with whatever override address they entered in the modal). Throws on
+  // failure so the modal surfaces the error and stays open.
+  async function confirmSendStatements(override: string | null) {
+    if (chosenAccounts.length === 0) throw new Error("Select at least one statement.");
+    // 1. Create the open statement_requests rows (client sees them in the portal).
+    await fetch(`/api/clients/${clientLinkId}/statement-requests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        items: chosenAccounts.map((a) => ({
+          label: labelFor(a),
+          account_name: a.name,
+          account_kind: a.kind,
+          qbo_account_id: a.qbo_account_id,
+        })),
+      }),
+    });
+    // 2. Email the client the branded request.
+    const res = await fetch(`/api/clients/${clientLinkId}/request-statements-email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        labels: chosenLabels,
+        client_name: clientName,
+        override_email: override || undefined,
+      }),
+    });
+    const data = await res.json();
+    if (data.no_address) throw new Error("No email on file — enter an address in the preview.");
+    if (!res.ok || !data.sent) throw new Error(data.error || "Email could not be sent");
+    setSendResult({ kind: "sent", to: data.addresses || [] });
+    setStatusByAcct((prev) => {
+      const next = { ...prev };
+      for (const a of chosenAccounts) next[a.qbo_account_id] = "requested";
+      return next;
+    });
+    setPreviewOpen(false);
   }
 
   async function attestPL() {
@@ -312,28 +303,17 @@ export function BalanceSheetStage({
               </div>
 
               {sendResult?.kind === "sent" && (
-                <div className="rounded-lg bg-green-50 border border-green-200 p-2.5 text-[12px] text-green-800">✓ Request emailed to {sendResult.to.join(", ")}.</div>
-              )}
-              {sendResult?.kind === "error" && (
-                <div className="rounded-lg bg-red-50 border border-red-200 p-2.5 text-[12px] text-red-800">{sendResult.msg}</div>
-              )}
-              {sendResult?.kind === "no_address" && (
-                <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 space-y-2">
-                  <div className="text-[12px] font-semibold text-amber-900">No email on file for this client</div>
-                  <p className="text-[11px] text-amber-800">Enter the client&apos;s email — we&apos;ll send the request and save it to their profile.</p>
-                  <div className="flex gap-2">
-                    <input type="email" value={overrideEmail} onChange={(e) => setOverrideEmail(e.target.value)} placeholder="owner@client.com" className="flex-1 px-3 py-2 rounded-lg border border-amber-300 text-sm text-navy outline-none focus:border-amber-500" />
-                    <button onClick={sendStatementRequest} disabled={sending || !overrideEmail.trim()} className="inline-flex items-center gap-1.5 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-[13px] font-semibold px-3 py-2 rounded-lg whitespace-nowrap">Save &amp; send</button>
-                  </div>
-                </div>
+                <div className="rounded-lg bg-green-50 border border-green-200 p-2.5 text-[12px] text-green-800">✓ Request emailed to {sendResult.to.join(", ")} and posted to their portal.</div>
               )}
 
-              {!sendResult?.no_address && (
-                <button onClick={sendStatementRequest} disabled={sending || selected.size === 0} className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-4 py-2.5 rounded-lg">
-                  {sending ? <Loader2 className="animate-spin" size={15} /> : <Send size={15} />}
-                  {sending ? "Sending…" : `Email request (${selected.size})`}
-                </button>
-              )}
+              <button
+                onClick={() => setPreviewOpen(true)}
+                disabled={selected.size === 0}
+                className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-4 py-2.5 rounded-lg"
+              >
+                <Send size={15} />
+                Preview &amp; email request ({selected.size})
+              </button>
             </>
           )}
           <div className="flex items-center justify-between pt-2">
@@ -385,6 +365,18 @@ export function BalanceSheetStage({
           />
           <button onClick={() => setSubStep("pl_attest")} className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-ink-slate hover:text-navy"><ArrowLeft size={14} /> Back to P&amp;L</button>
         </div>
+      )}
+
+      {previewOpen && (
+        <EmailPreviewModal
+          title={`Statement request — ${clientName}`}
+          previewUrl={`/api/clients/${clientLinkId}/preview-email?type=bs_statements&labels=${encodeURIComponent(
+            JSON.stringify(chosenLabels)
+          )}`}
+          confirmLabel="Confirm & send"
+          onConfirm={confirmSendStatements}
+          onClose={() => setPreviewOpen(false)}
+        />
       )}
     </div>
   );

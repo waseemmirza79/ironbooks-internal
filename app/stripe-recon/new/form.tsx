@@ -6,6 +6,7 @@ import Link from "next/link";
 import {
   Loader2, AlertCircle, Calendar, CreditCard, ArrowRight, CheckCircle2, MapPin, Send,
 } from "lucide-react";
+import { EmailPreviewModal } from "@/components/EmailPreviewModal";
 
 interface ClientLink {
   id: string;
@@ -112,16 +113,14 @@ export function NewStripeReconForm({
   } | null>(null);
   const [depositChecking, setDepositChecking] = useState(false);
 
-  // Branch 2: sending the Stripe connection-request email.
-  const [sendingRequest, setSendingRequest] = useState(false);
+  // Branch 2: the Stripe connection-request email (preview-then-send).
   const [requestResult, setRequestResult] = useState<{
     sent: boolean;
     recipients: number;
     addresses: string[];
-    no_address: boolean;
-    error?: string;
   } | null>(null);
-  const [overrideEmail, setOverrideEmail] = useState("");
+  const [connectPreviewOpen, setConnectPreviewOpen] = useState(false);
+  const [connectIsReminder, setConnectIsReminder] = useState(false);
 
   const selectedClient = clientLinks.find((c) => c.id === clientLinkId);
   const isStripeConnected =
@@ -333,29 +332,20 @@ export function NewStripeReconForm({
     return () => { cancelled = true; };
   }, [clientLinkId, dateRangeStart, dateRangeEnd]);
 
-  async function sendConnectRequest(isReminder: boolean) {
+  // Runs on the preview modal's Confirm. Throws on failure so the modal shows
+  // the error + stays open; closes + records the result on success.
+  async function sendConnectRequest(override: string | null) {
     if (!clientLinkId) return;
-    setSendingRequest(true);
-    try {
-      const res = await fetch(`/api/clients/${clientLinkId}/send-stripe-request`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isReminder, override_email: overrideEmail.trim() || undefined }),
-      });
-      const data = await res.json();
-      setRequestResult({
-        sent: !!data.sent,
-        recipients: data.recipients ?? 0,
-        addresses: data.addresses ?? [],
-        no_address: !!data.no_address,
-        error: data.error,
-      });
-      if (data.sent) setOverrideEmail("");
-    } catch (e: any) {
-      setRequestResult({ sent: false, recipients: 0, addresses: [], no_address: false, error: e?.message });
-    } finally {
-      setSendingRequest(false);
-    }
+    const res = await fetch(`/api/clients/${clientLinkId}/send-stripe-request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isReminder: connectIsReminder, override_email: override || undefined }),
+    });
+    const data = await res.json();
+    if (data.no_address) throw new Error("No email on file — enter an address in the preview.");
+    if (!res.ok || !data.sent) throw new Error(data.error || "Could not send connection request");
+    setRequestResult({ sent: true, recipients: data.recipients ?? 0, addresses: data.addresses ?? [] });
+    setConnectPreviewOpen(false);
   }
 
   // Disable submit if the pre-check (or a prior 409) has identified an
@@ -766,69 +756,28 @@ export function NewStripeReconForm({
 
             {requestResult?.sent && (
               <div className="rounded-lg bg-green-50 border border-green-200 p-2.5 text-[12px] text-green-900">
-                ✓ Connection request emailed to {requestResult.addresses.join(", ")}. We&apos;ll remind
-                them every 3 days; if they haven&apos;t connected within 9 days, a &ldquo;call the
-                client&rdquo; task lands on your Today list.
-              </div>
-            )}
-            {requestResult && !requestResult.sent && !requestResult.no_address && requestResult.error && (
-              <div className="rounded-lg bg-red-50 border border-red-200 p-2.5 text-[12px] text-red-800">
-                {requestResult.error}
-              </div>
-            )}
-
-            {/* No address on file → let the bookkeeper find + enter one. It's
-                sent there AND saved back to the client profile. */}
-            {requestResult?.no_address && (
-              <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 space-y-2">
-                <div className="text-[12px] font-semibold text-amber-900">
-                  No email on file for this client
-                </div>
-                <p className="text-[11px] text-amber-800 leading-snug">
-                  Find the client&apos;s email and enter it below — we&apos;ll send the request there and
-                  save it to their profile for next time.
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    type="email"
-                    value={overrideEmail}
-                    onChange={(e) => setOverrideEmail(e.target.value)}
-                    placeholder="owner@client.com"
-                    className="flex-1 px-3 py-2 rounded-lg border border-amber-300 text-sm text-navy outline-none focus:border-amber-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => sendConnectRequest(false)}
-                    disabled={sendingRequest || !overrideEmail.trim()}
-                    className="inline-flex items-center gap-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-[13px] font-semibold px-3 py-2 rounded-lg whitespace-nowrap"
-                  >
-                    {sendingRequest ? <Loader2 className="animate-spin" size={14} /> : <Send size={14} />}
-                    Save &amp; send
-                  </button>
-                </div>
+                ✓ Connection request emailed to {requestResult.addresses.join(", ")} and posted to their
+                portal. We&apos;ll remind them every 3 days; if they haven&apos;t connected within 9 days, a
+                &ldquo;call the client&rdquo; task lands on your Today list.
               </div>
             )}
 
             <div className="flex flex-wrap items-center gap-3">
-              {!requestResult?.no_address && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    sendConnectRequest(
-                      !!selectedClient?.stripe_connect_requested_at || !!requestResult?.sent
-                    )
-                  }
-                  disabled={sendingRequest}
-                  className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2.5 rounded-lg"
-                >
-                  {sendingRequest ? <Loader2 className="animate-spin" size={15} /> : <Send size={15} />}
-                  {sendingRequest
-                    ? "Sending…"
-                    : selectedClient?.stripe_connect_requested_at || requestResult?.sent
-                    ? "Resend connection request"
-                    : "Send connection request"}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setConnectIsReminder(
+                    !!selectedClient?.stripe_connect_requested_at || !!requestResult?.sent
+                  );
+                  setConnectPreviewOpen(true);
+                }}
+                className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-4 py-2.5 rounded-lg"
+              >
+                <Send size={15} />
+                {selectedClient?.stripe_connect_requested_at || requestResult?.sent
+                  ? "Preview & resend connection request"
+                  : "Preview & send connection request"}
+              </button>
               <Link
                 href={balanceSheetHref}
                 className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-teal hover:text-teal-dark"
@@ -837,6 +786,18 @@ export function NewStripeReconForm({
               </Link>
             </div>
           </div>
+        )}
+
+        {connectPreviewOpen && clientLinkId && (
+          <EmailPreviewModal
+            title={`Stripe connect request — ${selectedClient?.client_name || "client"}`}
+            previewUrl={`/api/clients/${clientLinkId}/preview-email?type=stripe_connect${
+              connectIsReminder ? "&isReminder=1" : ""
+            }`}
+            confirmLabel="Confirm & send"
+            onConfirm={sendConnectRequest}
+            onClose={() => setConnectPreviewOpen(false)}
+          />
         )}
 
         {/* Actionable conflict panel for the 409 same-client guard. The

@@ -124,6 +124,23 @@ export async function sendStripeConnectionRequest(
     } as any);
   }
 
+  // Also drop a notification into the client's portal inbox (only if the email
+  // actually went out) so the ask shows up there too. No second email.
+  if (okCount > 0) {
+    try {
+      await service.from("client_communications").insert({
+        client_link_id: clientLinkId,
+        sender_user_id: createdByUserId,
+        direction: "to_client",
+        kind: "notification",
+        subject: `Connect Stripe for ${cl.client_name}`.slice(0, 200),
+        body: `To finish reconciling your books, please connect your Stripe account using the secure link we just emailed you. It only takes about 30 seconds. If you can't find the email, just reply here and we'll resend it.`,
+      } as any);
+    } catch (e: any) {
+      console.warn(`[stripe-connection-request] portal message insert failed: ${e?.message}`);
+    }
+  }
+
   // Stamp the automated-reminder clock. First send seeds requested_at; reminders
   // bump the counter. last_reminder_at always = now so the cron's 3-day cadence
   // counts from the most recent email.
