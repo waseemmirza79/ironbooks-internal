@@ -125,6 +125,14 @@ export function ProfitLossClient({
         </div>
       </div>
 
+      {/* Notice to Reader — cash-basis framing so clients read the numbers right */}
+      <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-ink-slate leading-relaxed">
+        <span className="font-semibold text-navy">Notice to Reader:</span> These figures are prepared on a
+        cash basis from your QuickBooks data — they don&apos;t reflect accounts receivable, accounts payable,
+        or your full cash-flow cycle, and haven&apos;t been audited or reviewed. For a true read on your
+        business, look at trends over at least a 90-day period rather than any single month.
+      </div>
+
       {/* In-progress warning */}
       {isThisMonth && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 flex items-start gap-2">

@@ -61,7 +61,10 @@ export async function sendMonthEndEmail(
         ${summaryHtml}
       </div>
       <a href="${params.portalUrl}" style="display:inline-block;background:#1A9B8F;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;padding:11px 22px;border-radius:8px;">View your full statements →</a>
-      <p style="color:#8A94A0;font-size:12px;margin:24px 0 0;line-height:1.5;">
+      <div style="background:#FCFCFD;border:1px solid #EEF0F2;border-radius:8px;padding:12px 14px;margin:22px 0 0;color:#8A94A0;font-size:11px;line-height:1.6;">
+        <strong style="color:#5B6770;">Notice to Reader:</strong> These statements are prepared on a cash basis from your QuickBooks data — they don't reflect accounts receivable, accounts payable, or your full cash-flow cycle, and haven't been audited or reviewed. For a true read on your business, look at trends over at least a 90-day period rather than any single month.
+      </div>
+      <p style="color:#8A94A0;font-size:12px;margin:18px 0 0;line-height:1.5;">
         Questions? Just reply to this email, or use <strong>Ask AI</strong> in your portal.
       </p>
     </div>
