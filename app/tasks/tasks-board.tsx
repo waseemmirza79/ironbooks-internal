@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Plus, Loader2, Trash2, CalendarClock, User, Building2 } from "lucide-react";
+import { Plus, Loader2, Trash2, CalendarClock, User, Building2, Send, CheckCircle2 } from "lucide-react";
 
 export type TaskStatus = "todo" | "in_progress" | "done";
 export type TaskPriority = "low" | "normal" | "high";
@@ -66,6 +66,24 @@ export function TasksBoard({
   const [newPriority, setNewPriority] = useState<TaskPriority>("normal");
   const [adding, setAdding] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [resentId, setResentId] = useState<string | null>(null);
+
+  // For Stripe call-tasks: re-email the client a fresh connect link in one click.
+  async function resendStripe(task: Task) {
+    if (!task.client_link_id) return;
+    setBusyId(task.id); setErr(null);
+    try {
+      const res = await fetch(`/api/clients/${task.client_link_id}/send-stripe-request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isReminder: true }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.no_address) throw new Error(d.error || (d.no_address ? "No email on file — open the client profile to add one." : "Couldn't resend"));
+      setResentId(task.id);
+      setTimeout(() => setResentId((id) => (id === task.id ? null : id)), 3000);
+    } catch (e: any) { setErr(e.message); } finally { setBusyId(null); }
+  }
 
   const staffById = useMemo(() => new Map(staff.map((s) => [s.id, s.name])), [staff]);
   const clientById = useMemo(() => new Map(clients.map((c) => [c.id, c.name])), [clients]);
@@ -233,6 +251,16 @@ export function TasksBoard({
                           {COLUMNS.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
                         </select>
                       </div>
+                      {t.client_link_id && /stripe/i.test(t.title) && (
+                        <button
+                          onClick={() => resendStripe(t)}
+                          disabled={busyId === t.id}
+                          className="mt-2 w-full inline-flex items-center justify-center gap-1.5 text-[11px] font-semibold rounded-md border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 px-2 py-1.5 disabled:opacity-50"
+                        >
+                          {resentId === t.id ? <CheckCircle2 size={12} /> : <Send size={12} />}
+                          {resentId === t.id ? "Connect link re-sent" : "Resend connect link"}
+                        </button>
+                      )}
                     </div>
                   );
                 })}

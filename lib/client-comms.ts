@@ -173,6 +173,52 @@ export async function sendResendEmail(params: {
 }
 
 /**
+ * Same send as sendResendEmail, but RETURNS the Resend message id + error
+ * instead of a bare boolean, so callers can log delivery status to
+ * client_email_log and let the Resend webhook flip it to delivered/bounced
+ * later (matched on the message id). Single recipient — callers that fan out
+ * to multiple addresses call this per address so each gets its own log row.
+ */
+export async function sendResendEmailTracked(params: {
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+  replyTo?: string;
+  from?: string;
+}): Promise<{ ok: boolean; messageId?: string; error?: string }> {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    return { ok: false, error: "RESEND_API_KEY not set" };
+  }
+  const fromEmail = params.from || resolveFromEmail(process.env.SUPPORT_FROM_EMAIL);
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: fromEmail,
+        to: [params.to],
+        reply_to: params.replyTo,
+        subject: params.subject,
+        text: params.text,
+        html: params.html,
+      }),
+    });
+    if (!res.ok) {
+      return { ok: false, error: `Resend ${res.status}: ${await res.text()}` };
+    }
+    const body = await res.json();
+    return { ok: true, messageId: body?.id as string | undefined };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || "Resend network error" };
+  }
+}
+
+/**
  * Branded portal-invite / magic-link email.
  *
  * The portal invite used to ride Supabase's built-in auth email (the bare

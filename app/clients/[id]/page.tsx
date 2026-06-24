@@ -8,6 +8,7 @@ import {
   fetchRecentActivity,
   fetchInternalSummary,
   fetchClientProgress,
+  fetchClientEmailHistory,
 } from "@/lib/internal-client-profile";
 import { getValidToken, QBOReauthRequiredError } from "@/lib/qbo";
 import { extractFormAnswers } from "@/lib/onboarding";
@@ -259,7 +260,7 @@ export default async function ClientProfilePage({
       })
     : Promise.resolve(null);
 
-  const [outstanding, activity, summary, progress, accessToken] = await Promise.all([
+  const [outstanding, activity, summary, progress, emailHistory, accessToken] = await Promise.all([
     fetchOutstandingWork(service, id).catch((e) => {
       console.warn(`[client-profile ${id}] outstanding work failed:`, e?.message);
       return null;
@@ -275,6 +276,10 @@ export default async function ClientProfilePage({
     fetchClientProgress(service, id, clientLink).catch((e) => {
       console.warn(`[client-profile ${id}] progress failed:`, e?.message);
       return null;
+    }),
+    fetchClientEmailHistory(service, id).catch((e) => {
+      console.warn(`[client-profile ${id}] email history failed:`, e?.message);
+      return [];
     }),
     tokenPromise,
   ]);
@@ -357,6 +362,7 @@ export default async function ClientProfilePage({
           summary,
           progress,
         }}
+        emailHistory={emailHistory}
         financials={{
           overview,
           balanceSheet,

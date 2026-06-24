@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
-  Loader2, AlertCircle, Calendar, CreditCard, ArrowRight, CheckCircle2, MapPin,
+  Loader2, AlertCircle, Calendar, CreditCard, ArrowRight, CheckCircle2, MapPin, Send,
 } from "lucide-react";
 
 interface ClientLink {
@@ -26,6 +26,12 @@ interface ClientLink {
   stripe_has_payouts?: boolean | null;
   stripe_last_payout_at?: string | null;
   stripe_payouts_checked_at?: string | null;
+  stripe_account_id?: string | null;
+  client_email?: string | null;
+  // Automated connect-request lifecycle (migration 94).
+  stripe_connect_requested_at?: string | null;
+  stripe_connect_reminder_count?: number | null;
+  stripe_connect_last_reminder_at?: string | null;
 }
 
 interface DateRangePreset {
@@ -93,6 +99,29 @@ export function NewStripeReconForm({
     jobId: string;
     status: string;
   } | null>(null);
+
+  // The deposit gate: does this client actually have Stripe deposits in the
+  // selected window? Drives which of the three branches the form renders.
+  // count === 0 -> skip; count > 0 + not connected -> connect request;
+  // count > 0 + connected (or count === null/unknown) -> run the recon.
+  const [depositCheck, setDepositCheck] = useState<{
+    count: number | null;
+    total_amount: number | null;
+    sample?: { date: string; amount: number; memo: string }[];
+    stripe_not_required?: boolean;
+  } | null>(null);
+  const [depositChecking, setDepositChecking] = useState(false);
+
+  // Branch 2: sending the Stripe connection-request email.
+  const [sendingRequest, setSendingRequest] = useState(false);
+  const [requestResult, setRequestResult] = useState<{
+    sent: boolean;
+    recipients: number;
+    addresses: string[];
+    no_address: boolean;
+    error?: string;
+  } | null>(null);
+  const [overrideEmail, setOverrideEmail] = useState("");
 
   const selectedClient = clientLinks.find((c) => c.id === clientLinkId);
   const isStripeConnected =
@@ -282,6 +311,53 @@ export function NewStripeReconForm({
     if (p) { setDateRangeStart(p.start); setDateRangeEnd(p.end); }
   }, [datePresetId, datePresets]);
 
+  // Deposit gate — re-run whenever the client or window changes. Fail-open:
+  // a null count (QBO unreachable) falls through to the normal recon flow.
+  useEffect(() => {
+    if (!clientLinkId || !dateRangeStart || !dateRangeEnd) {
+      setDepositCheck(null);
+      return;
+    }
+    let cancelled = false;
+    setDepositChecking(true);
+    setDepositCheck(null);
+    setRequestResult(null);
+    fetch(
+      `/api/clients/${clientLinkId}/stripe-deposits-check?start=${dateRangeStart}&end=${dateRangeEnd}`,
+      { cache: "no-store" }
+    )
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled) setDepositCheck(d ?? { count: null, total_amount: null }); })
+      .catch(() => { if (!cancelled) setDepositCheck({ count: null, total_amount: null }); })
+      .finally(() => { if (!cancelled) setDepositChecking(false); });
+    return () => { cancelled = true; };
+  }, [clientLinkId, dateRangeStart, dateRangeEnd]);
+
+  async function sendConnectRequest(isReminder: boolean) {
+    if (!clientLinkId) return;
+    setSendingRequest(true);
+    try {
+      const res = await fetch(`/api/clients/${clientLinkId}/send-stripe-request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isReminder, override_email: overrideEmail.trim() || undefined }),
+      });
+      const data = await res.json();
+      setRequestResult({
+        sent: !!data.sent,
+        recipients: data.recipients ?? 0,
+        addresses: data.addresses ?? [],
+        no_address: !!data.no_address,
+        error: data.error,
+      });
+      if (data.sent) setOverrideEmail("");
+    } catch (e: any) {
+      setRequestResult({ sent: false, recipients: 0, addresses: [], no_address: false, error: e?.message });
+    } finally {
+      setSendingRequest(false);
+    }
+  }
+
   // Disable submit if the pre-check (or a prior 409) has identified an
   // active recon on this client. Belt-and-suspenders: the server guard
   // still rejects the submit if someone bypasses this, so safety isn't
@@ -336,6 +412,28 @@ export function NewStripeReconForm({
       setSubmitError(e.message);
       setSubmitting(false);
     }
+  }
+
+  // Which of the three gate branches to render once a client + window are set.
+  //   'checking' — still resolving the deposit count
+  //   'none'     — zero Stripe deposits in this window → skip to Balance Sheet
+  //   'connect'  — deposits exist but Stripe isn't connected → request connection
+  //   'recon'    — deposits exist + connected (or count unknown) → run the recon
+  const depositCount = depositCheck?.count;
+  const balanceSheetHref = clientLinkId ? `/balance-sheet/${clientLinkId}` : "/clients";
+  let branch: "checking" | "none" | "connect" | "recon" = "recon";
+  if (!clientLinkId || !dateRangeStart || !dateRangeEnd) {
+    branch = "checking";
+  } else if (depositChecking || depositCheck === null) {
+    branch = "checking";
+  } else if (depositCount === 0) {
+    branch = "none";
+  } else if (depositCount == null) {
+    branch = "recon"; // QBO unreachable — fall through to the normal flow
+  } else if (!isStripeConnected) {
+    branch = "connect";
+  } else {
+    branch = "recon";
   }
 
   return (
@@ -508,32 +606,9 @@ export function NewStripeReconForm({
           )}
         </div>
 
-        {/* No Stripe to reconcile → recommend skipping straight to the Balance
-            Sheet. Keyed off the connection status (the payout-health columns
-            don't exist in the DB): if Stripe isn't connected, this step has
-            nothing to do. It's a recommendation, not a block — the form below
-            still works if they pick a connected client. */}
-        {selectedClient && !isStripeConnected && (
-          <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
-            <div className="font-semibold text-sm text-amber-900">
-              No Stripe connected for this client
-            </div>
-            <p className="text-xs text-amber-800 mt-1 leading-snug">
-              {selectedClient.client_name} doesn&apos;t have Stripe connected, so there&apos;s
-              nothing to reconcile here. Skip ahead to the Balance Sheet.
-            </p>
-            <Link
-              href={`/balance-sheet/${clientLinkId}`}
-              className="mt-2.5 inline-flex items-center gap-1.5 text-[13px] font-bold bg-teal text-white px-3 py-1.5 rounded-lg hover:bg-teal-dark"
-            >
-              Skip to Balance Sheet
-              <ArrowRight size={14} />
-            </Link>
-          </div>
-        )}
 
         {/* Matching method — only meaningful once a client is selected */}
-        {clientLinkId && (
+        {clientLinkId && branch === "recon" && (
           <div>
             <label className="block text-sm font-semibold text-navy mb-2">
               Matching method
@@ -624,6 +699,146 @@ export function NewStripeReconForm({
           </>
         )}
 
+        {/* ── Deposit gate ───────────────────────────────────────────────
+            The whole step keys off whether this client actually has Stripe
+            deposits in the selected window, not whether Stripe is connected. */}
+        {clientLinkId && branch === "checking" && (
+          <div className="flex items-center gap-2 text-sm text-ink-slate">
+            <Loader2 className="animate-spin" size={16} />
+            Checking for Stripe deposits in this period…
+          </div>
+        )}
+
+        {clientLinkId && branch === "none" && (
+          <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+            <div className="font-semibold text-sm text-navy">No Stripe deposits detected</div>
+            <p className="text-xs text-ink-slate mt-1 leading-snug">
+              No Stripe-pattern deposits for {selectedClient?.client_name} between{" "}
+              <strong>{dateRangeStart}</strong> and <strong>{dateRangeEnd}</strong>. There&apos;s
+              nothing to reconcile here. If you expected deposits, widen the date range above and
+              we&apos;ll re-check.
+            </p>
+            <Link
+              href={balanceSheetHref}
+              className="mt-2.5 inline-flex items-center gap-1.5 text-[13px] font-bold bg-teal text-white px-3 py-1.5 rounded-lg hover:bg-teal-dark"
+            >
+              Skip to Balance Sheet <ArrowRight size={14} />
+            </Link>
+          </div>
+        )}
+
+        {clientLinkId && branch === "connect" && (
+          <div className="rounded-xl border border-purple-200 bg-purple-50 p-4 space-y-3">
+            <div>
+              <div className="font-semibold text-sm text-navy">
+                Stripe deposits found — but Stripe isn&apos;t connected
+              </div>
+              <p className="text-xs text-ink-slate mt-1 leading-snug">
+                We found <strong>{depositCheck?.count}</strong> Stripe deposit
+                {depositCheck?.count === 1 ? "" : "s"}
+                {typeof depositCheck?.total_amount === "number" && (
+                  <>
+                    {" "}totaling{" "}
+                    <strong>
+                      {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
+                        depositCheck.total_amount
+                      )}
+                    </strong>
+                  </>
+                )}
+                , but {selectedClient?.client_name} hasn&apos;t connected Stripe. Connecting it lets the
+                recon pull exact charges, fees, and customers directly from Stripe — no QBO invoices
+                required.
+              </p>
+            </div>
+
+            {/* Prior-request status (when nothing's been sent yet this session) */}
+            {selectedClient?.stripe_connect_requested_at && !requestResult && (
+              <div className="text-[12px] text-ink-slate">
+                Connection request already sent{" "}
+                {new Date(selectedClient.stripe_connect_requested_at).toLocaleDateString()}
+                {selectedClient.stripe_connect_reminder_count
+                  ? ` · ${selectedClient.stripe_connect_reminder_count} reminder(s)`
+                  : ""}
+                . We remind the client every 3 days until they connect.
+              </div>
+            )}
+
+            {requestResult?.sent && (
+              <div className="rounded-lg bg-green-50 border border-green-200 p-2.5 text-[12px] text-green-900">
+                ✓ Connection request emailed to {requestResult.addresses.join(", ")}. We&apos;ll remind
+                them every 3 days; if they haven&apos;t connected within 9 days, a &ldquo;call the
+                client&rdquo; task lands on your Today list.
+              </div>
+            )}
+            {requestResult && !requestResult.sent && !requestResult.no_address && requestResult.error && (
+              <div className="rounded-lg bg-red-50 border border-red-200 p-2.5 text-[12px] text-red-800">
+                {requestResult.error}
+              </div>
+            )}
+
+            {/* No address on file → let the bookkeeper find + enter one. It's
+                sent there AND saved back to the client profile. */}
+            {requestResult?.no_address && (
+              <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 space-y-2">
+                <div className="text-[12px] font-semibold text-amber-900">
+                  No email on file for this client
+                </div>
+                <p className="text-[11px] text-amber-800 leading-snug">
+                  Find the client&apos;s email and enter it below — we&apos;ll send the request there and
+                  save it to their profile for next time.
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    value={overrideEmail}
+                    onChange={(e) => setOverrideEmail(e.target.value)}
+                    placeholder="owner@client.com"
+                    className="flex-1 px-3 py-2 rounded-lg border border-amber-300 text-sm text-navy outline-none focus:border-amber-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => sendConnectRequest(false)}
+                    disabled={sendingRequest || !overrideEmail.trim()}
+                    className="inline-flex items-center gap-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-[13px] font-semibold px-3 py-2 rounded-lg whitespace-nowrap"
+                  >
+                    {sendingRequest ? <Loader2 className="animate-spin" size={14} /> : <Send size={14} />}
+                    Save &amp; send
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-3">
+              {!requestResult?.no_address && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    sendConnectRequest(
+                      !!selectedClient?.stripe_connect_requested_at || !!requestResult?.sent
+                    )
+                  }
+                  disabled={sendingRequest}
+                  className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2.5 rounded-lg"
+                >
+                  {sendingRequest ? <Loader2 className="animate-spin" size={15} /> : <Send size={15} />}
+                  {sendingRequest
+                    ? "Sending…"
+                    : selectedClient?.stripe_connect_requested_at || requestResult?.sent
+                    ? "Resend connection request"
+                    : "Send connection request"}
+                </button>
+              )}
+              <Link
+                href={balanceSheetHref}
+                className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-teal hover:text-teal-dark"
+              >
+                Continue to Balance Sheet <ArrowRight size={14} />
+              </Link>
+            </div>
+          </div>
+        )}
+
         {/* Actionable conflict panel for the 409 same-client guard. The
             previous behavior dumped the prose error into the red block
             and made the bookkeeper hunt down the job by ID. Now the
@@ -701,7 +916,7 @@ export function NewStripeReconForm({
           </div>
         )}
 
-        {clientLinkId && (
+        {clientLinkId && branch === "recon" && (
           <button
             onClick={handleSubmit}
             disabled={!canSubmit}

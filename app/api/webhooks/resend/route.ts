@@ -6,15 +6,46 @@ export const dynamic = "force-dynamic";
 /**
  * POST /api/webhooks/resend — Resend event webhook.
  *
- * On a hard bounce or spam complaint we suppress that address: flag the
- * matching client so future bulk sends skip it. Configure the endpoint in the
- * Resend dashboard for the email.bounced + email.complained events.
+ * Two jobs:
+ *  1. Update the client_email_log row's delivery status (matched on the Resend
+ *     message id) for email.delivered / .bounced / .complained.
+ *  2. On a hard bounce or spam complaint, suppress that address so future bulk
+ *     sends skip it.
+ * Configure the endpoint in the Resend dashboard for email.delivered,
+ * email.bounced, email.complained. (Note: this endpoint does not yet verify the
+ * Svix signature — set RESEND_WEBHOOK_SECRET + add verification before relying
+ * on it for anything security-sensitive.)
  */
 export async function POST(request: Request) {
   const evt = await request.json().catch(() => ({} as any));
   const type = evt?.type as string | undefined;
+
+  // 1. Reflect delivery status onto the email-log row (matched by message id).
+  const LOG_STATUS: Record<string, string> = {
+    "email.delivered": "delivered",
+    "email.bounced": "bounced",
+    "email.complained": "complained",
+  };
+  const logStatus = type ? LOG_STATUS[type] : undefined;
+  const emailId = evt?.data?.email_id as string | undefined;
+  if (logStatus && emailId) {
+    try {
+      const svc = createServiceSupabase();
+      await svc
+        .from("client_email_log")
+        .update({
+          status: logStatus,
+          error: type === "email.bounced" ? evt?.data?.bounce?.message ?? "hard bounce" : null,
+          updated_at: new Date().toISOString(),
+        } as any)
+        .eq("provider_message_id", emailId);
+    } catch {
+      /* log table may not exist yet (migration 93) — best-effort */
+    }
+  }
+
   if (!type || !/bounced|complained/.test(type)) {
-    return NextResponse.json({ ok: true, ignored: type || "unknown" });
+    return NextResponse.json({ ok: true, status_logged: logStatus || null, ignored: type || "unknown" });
   }
   // Resend payloads put the recipient(s) under data.to (array or string).
   const toRaw = evt?.data?.to;

@@ -7,6 +7,7 @@ import {
   X, Loader2, CreditCard, Copy, CheckCircle2, Search, Send, Mail, Unplug,
 } from "lucide-react";
 import type { Database } from "@/lib/database.types";
+import { buildStripeConnectEmail } from "@/lib/stripe-connect-email";
 
 interface ClientLite {
   id: string;
@@ -41,6 +42,12 @@ export function StripeConnectModal({
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [disconnectMessage, setDisconnectMessage] = useState<string>("");
   const [mounted, setMounted] = useState(false);
+  // Direct send (the default now) — emails the client the branded connect
+  // request via Resend + logs it, instead of copy/paste into Double.
+  const [sendingDirect, setSendingDirect] = useState(false);
+  const [sendResult, setSendResult] = useState<
+    { kind: "sent"; to: string[] } | { kind: "no_address" } | { kind: "error"; msg: string } | null
+  >(null);
 
   // Portal target only exists on the client — wait for hydration before rendering
   useEffect(() => {
@@ -144,6 +151,29 @@ export function StripeConnectModal({
     }
   }
 
+  async function sendDirect() {
+    if (!selectedId) return;
+    setSendingDirect(true);
+    setSendResult(null);
+    setError("");
+    try {
+      const res = await fetch(`/api/clients/${selectedId}/send-stripe-request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok && !data.no_address) throw new Error(data.error || "Could not send");
+      if (data.no_address) setSendResult({ kind: "no_address" });
+      else if (data.sent) setSendResult({ kind: "sent", to: data.addresses || [] });
+      else setSendResult({ kind: "error", msg: data.error || "Email could not be sent" });
+    } catch (e: any) {
+      setSendResult({ kind: "error", msg: e.message });
+    } finally {
+      setSendingDirect(false);
+    }
+  }
+
   async function copyUrl() {
     if (!generated) return;
     await navigator.clipboard.writeText(generated.url);
@@ -154,8 +184,7 @@ export function StripeConnectModal({
   async function copyEmail() {
     if (!generated) return;
     const firstName = generated.client_name.split(" ")[0] || "there";
-    const html = buildEmailHtml(firstName, generated.url, generated.client_name);
-    const plain = buildEmailPlainText(firstName, generated.url, generated.client_name);
+    const { html, text: plain } = buildStripeConnectEmail(firstName, generated.url, generated.client_name);
     try {
       if (typeof ClipboardItem !== "undefined") {
         await navigator.clipboard.write([
@@ -364,20 +393,52 @@ export function StripeConnectModal({
                 </div>
               </div>
 
-              {/* Email composer (copy/paste into Double) */}
+              {/* Direct send (default) — email the client straight from SNAP */}
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
-                  Or copy a full email to send
+                  Send the email to the client
                 </label>
                 <p className="text-xs text-ink-slate mb-2">
-                  Includes the link with branded styling. Paste into the Double client portal email or any rich-text editor.
+                  Emails {generated.client_name} the branded connect request directly and logs it to
+                  their Email History. Reminders go out automatically until they connect.
                 </p>
+                {sendResult?.kind === "sent" && (
+                  <div className="mb-2 p-2.5 rounded-lg bg-green-50 border border-green-200 text-xs text-green-800">
+                    ✓ Sent to {sendResult.to.join(", ")}.
+                  </div>
+                )}
+                {sendResult?.kind === "no_address" && (
+                  <div className="mb-2 p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800">
+                    No email on file for this client. Add one on the client profile (or use the
+                    Stripe Recon step, which lets you enter an address inline), then try again.
+                  </div>
+                )}
+                {sendResult?.kind === "error" && (
+                  <div className="mb-2 p-2.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800">
+                    {sendResult.msg}
+                  </div>
+                )}
+                <button
+                  onClick={sendDirect}
+                  disabled={sendingDirect}
+                  className="w-full inline-flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
+                >
+                  {sendingDirect ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                  {sendingDirect ? "Sending…" : "Send email to client"}
+                </button>
+              </div>
+
+              {/* Fallback: copy a branded email to send manually elsewhere */}
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
+                  Or copy it to send manually
+                </label>
                 <button
                   onClick={copyEmail}
-                  className="w-full inline-flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
+                  className="w-full inline-flex items-center justify-center gap-2 bg-white border border-gray-200 hover:bg-gray-50 text-navy text-sm font-semibold px-5 py-2.5 rounded-lg"
                 >
                   {copied === "email" ? <CheckCircle2 size={15} /> : <Mail size={15} />}
-                  {copied === "email" ? "Copied — paste into Double!" : "Copy Branded Email to Clipboard"}
+                  {copied === "email" ? "Copied to clipboard!" : "Copy branded email"}
                 </button>
               </div>
             </div>
@@ -408,74 +469,4 @@ export function StripeConnectModal({
   );
 
   return createPortal(modalContent, document.body);
-}
-
-// ─── Branded email content for clipboard ───
-
-function buildEmailHtml(firstName: string, url: string, clientName: string) {
-  const BRAND = {
-    teal: "#2D7A75",
-    tealDark: "#1F5D58",
-    tealLighter: "#F4F9F8",
-    navy: "#0F1F2E",
-    slate: "#475569",
-    lightSlate: "#94A3B8",
-    border: "#CBD5E1",
-    white: "#FFFFFF",
-    stripe: "#635BFF",
-  };
-  return `<div style="font-family:'Figtree','Helvetica Neue',Helvetica,Arial,sans-serif;color:${BRAND.navy};max-width:640px;margin:0 auto;background:${BRAND.white};">
-  <div style="background:${BRAND.navy};color:${BRAND.white};padding:18px 22px;border-radius:10px 10px 0 0;">
-    <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-      <tr>
-        <td style="vertical-align:middle;width:54px;padding-right:14px;">
-          <img src="https://internal.ironbooks.com/logo.png" alt="Ironbooks" width="44" height="44" style="display:block;width:44px;height:auto;" />
-        </td>
-        <td style="vertical-align:middle;color:${BRAND.white};">
-          <div style="font-size:20px;font-weight:700;letter-spacing:-0.01em;line-height:1.1;color:${BRAND.white};">Ironbooks</div>
-          <div style="font-size:11px;color:rgba(255,255,255,0.65);margin-top:3px;letter-spacing:0.06em;text-transform:uppercase;">Bookkeeping &middot; Cleanup</div>
-        </td>
-      </tr>
-    </table>
-  </div>
-  <div style="border:1px solid ${BRAND.border};border-top:none;padding:24px 22px;border-radius:0 0 10px 10px;background:${BRAND.white};">
-    <p style="margin:0 0 14px 0;color:${BRAND.navy};line-height:1.55;">Hi ${firstName},</p>
-    <p style="margin:0 0 14px 0;color:${BRAND.navy};line-height:1.55;">As we clean up your books for ${clientName}, we'd like to connect to your Stripe account so we can match your Stripe deposits directly to the invoices in QuickBooks. This makes the books significantly more accurate and saves us hours of guesswork.</p>
-    <p style="margin:0 0 18px 0;color:${BRAND.navy};line-height:1.55;">Click the button below to connect — it'll take about 30 seconds:</p>
-    <div style="text-align:center;margin:24px 0;">
-      <a href="${url}" style="display:inline-block;background:${BRAND.stripe};color:${BRAND.white};font-weight:600;font-size:15px;padding:14px 28px;border-radius:8px;text-decoration:none;">Connect Stripe to Ironbooks &rarr;</a>
-    </div>
-    <div style="background:${BRAND.tealLighter};border:1px solid ${BRAND.border};border-radius:8px;padding:14px 16px;margin:18px 0;">
-      <div style="font-size:13px;font-weight:600;color:${BRAND.teal};margin-bottom:8px;">What this gives us</div>
-      <ul style="margin:0;padding-left:18px;color:${BRAND.slate};font-size:13px;line-height:1.6;">
-        <li><strong style="color:${BRAND.navy};">Just for reconciliation</strong> — we look at your payouts, charges, and balance transactions to match them to invoices</li>
-        <li><strong style="color:${BRAND.navy};">No charges, no transfers</strong> — Ironbooks won't issue refunds, move money, or charge your customers</li>
-        <li><strong style="color:${BRAND.navy};">Disconnect anytime</strong> — from your Stripe Dashboard (Settings &rarr; Connected applications), or just ask us</li>
-      </ul>
-    </div>
-    <p style="margin:18px 0 0 0;color:${BRAND.navy};line-height:1.55;">The link expires in 7 days. If you have questions or want a walkthrough, just reply to this email.</p>
-    <p style="margin:14px 0 0 0;color:${BRAND.navy};line-height:1.55;">Kindly,<br>Ironbooks</p>
-    <div style="border-top:2px solid ${BRAND.teal};margin:24px 0 12px 0;width:60px;"></div>
-    <div style="color:${BRAND.lightSlate};font-size:11px;line-height:1.5;">If the button above doesn't work, copy and paste this URL into your browser:<br><span style="color:${BRAND.teal};word-break:break-all;">${url}</span></div>
-  </div>
-</div>`;
-}
-
-function buildEmailPlainText(firstName: string, url: string, clientName: string) {
-  return `Hi ${firstName},
-
-As we clean up your books for ${clientName}, we'd like to connect to your Stripe account so we can match your Stripe deposits directly to the invoices in QuickBooks.
-
-Click here to connect (takes about 30 seconds):
-${url}
-
-What this gives us:
-  • Just for reconciliation — we look at your payouts, charges, and balance transactions to match them to invoices
-  • No charges, no transfers — Ironbooks won't issue refunds, move money, or charge your customers
-  • Disconnect anytime — from your Stripe Dashboard (Settings → Connected applications), or just ask us
-
-The link expires in 7 days.
-
-Kindly,
-Ironbooks`;
 }

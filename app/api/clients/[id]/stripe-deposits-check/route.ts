@@ -84,6 +84,20 @@ export async function GET(
   }
 
   const total = deposits.reduce((s, d) => s + Number(d.amount || 0), 0);
+
+  // Cache the result so the reminder cron + the form can read a shared signal
+  // without re-hitting QBO. Best-effort — never blocks the response.
+  service
+    .from("client_links")
+    .update({
+      stripe_deposits_detected: deposits.length > 0,
+      stripe_deposits_detected_at: new Date().toISOString(),
+    } as any)
+    .eq("id", clientLinkId)
+    .then(undefined, (e: any) =>
+      console.warn(`[stripe-deposits-check] could not cache result: ${e?.message}`)
+    );
+
   return NextResponse.json({
     count: deposits.length,
     total_amount: total,

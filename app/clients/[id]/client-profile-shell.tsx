@@ -37,7 +37,9 @@ import type {
   InternalSummary,
   ClientProgress,
   ProgressStage,
+  EmailHistoryRow,
 } from "@/lib/internal-client-profile";
+import { EmailsTab } from "./emails-tab";
 import type { OverviewData, BalanceSheetSummary } from "@/lib/portal-data";
 import { ClientDetailsCard } from "./client-details-card";
 import { GrainSection } from "./grain-section";
@@ -157,9 +159,11 @@ interface Props {
   onboarding?: OnboardingProfile | null;
   /** BS cleanup deferred → still owed (amber banner on Overview). */
   bsCleanupOwed?: boolean;
+  /** Outbound email audit trail for this client (client_email_log). */
+  emailHistory?: EmailHistoryRow[];
 }
 
-type TabId = "overview" | "cleanup" | "profile" | "billing" | "pl" | "bs" | "bank" | "activity";
+type TabId = "overview" | "cleanup" | "profile" | "billing" | "pl" | "bs" | "bank" | "activity" | "emails";
 
 const TABS: { id: TabId; label: string; icon: any }[] = [
   { id: "overview", label: "Overview", icon: Activity },
@@ -170,9 +174,10 @@ const TABS: { id: TabId; label: string; icon: any }[] = [
   { id: "bs", label: "Balance Sheet", icon: Scale },
   { id: "bank", label: "Bank Balances", icon: Banknote },
   { id: "activity", label: "Activity", icon: Clock },
+  { id: "emails", label: "Emails", icon: Mail },
 ];
 
-export function ClientProfileShell({ clientLink, actorRole, overview, financials, onboarding, bsCleanupOwed }: Props) {
+export function ClientProfileShell({ clientLink, actorRole, overview, financials, onboarding, bsCleanupOwed, emailHistory }: Props) {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const canImpersonate = actorRole === "admin" || actorRole === "lead";
 
@@ -296,6 +301,10 @@ export function ClientProfileShell({ clientLink, actorRole, overview, financials
       {activeTab === "bank" && <BankTab financials={financials} clientLinkId={clientLink.id} />}
       {activeTab === "activity" && (
         <ActivityTab activity={overview.activity} />
+      )}
+
+      {activeTab === "emails" && (
+        <EmailsTab emails={emailHistory || []} />
       )}
 
       {drill && (

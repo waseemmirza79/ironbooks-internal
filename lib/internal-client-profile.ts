@@ -241,6 +241,51 @@ export async function fetchRecentActivity(
   }));
 }
 
+export interface EmailHistoryRow {
+  id: string;
+  toAddress: string;
+  emailType: string;
+  subject: string | null;
+  status: string;
+  providerMessageId: string | null;
+  error: string | null;
+  createdAt: string;
+}
+
+/**
+ * Outbound email history for this client (client_email_log) — recipient, type,
+ * time, and delivery status. Internal/bookkeeper-only. Best-effort: if the
+ * table doesn't exist yet (migration 93 not applied), returns [] rather than
+ * throwing, so the profile still renders.
+ */
+export async function fetchClientEmailHistory(
+  service: SupabaseClient,
+  clientLinkId: string,
+  limit = 50
+): Promise<EmailHistoryRow[]> {
+  try {
+    const { data, error } = await service
+      .from("client_email_log")
+      .select("id, to_address, email_type, subject, status, provider_message_id, error, created_at")
+      .eq("client_link_id", clientLinkId)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    if (error) return [];
+    return ((data || []) as any[]).map((r) => ({
+      id: r.id,
+      toAddress: r.to_address,
+      emailType: r.email_type,
+      subject: r.subject,
+      status: r.status,
+      providerMessageId: r.provider_message_id,
+      error: r.error,
+      createdAt: r.created_at,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 function humanizeEventType(t: string): string {
   // event_type values are snake_case. Split + title-case for display.
   if (!t) return "Activity";
