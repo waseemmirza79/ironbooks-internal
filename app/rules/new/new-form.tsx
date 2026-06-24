@@ -35,13 +35,34 @@ export function NewRulesForm({
   const [months, setMonths] = useState(6);
   const [starting, setStarting] = useState(false);
   const [redoAllowed, setRedoAllowed] = useState(true);
+  // The actual start date carried from the upstream step (?start=YYYY-MM-DD),
+  // so we can show "looking back to <date>" instead of a bare month count.
+  const [windowStart, setWindowStart] = useState<string | null>(null);
 
-  // Reuse the analysis window carried from the upstream reclass step
-  // (?months=), so the bookkeeper doesn't re-pick the period.
+  // Reuse the analysis window carried from the upstream reclass step. Prefer
+  // the real start date (?start) — derive the months span the engine needs from
+  // it — and fall back to a carried ?months, then the 6-month default.
   useEffect(() => {
+    const start = searchParams.get("start");
+    if (start && /^\d{4}-\d{2}-\d{2}$/.test(start)) {
+      setWindowStart(start);
+      const mo = Math.round((Date.now() - new Date(`${start}T00:00:00`).getTime()) / 86_400_000 / 30.44);
+      setMonths(Math.max(1, mo));
+      return;
+    }
     const m = Number(searchParams.get("months"));
     if ([3, 6, 12].includes(m)) setMonths(m);
   }, [searchParams]);
+
+  // Date the analysis reaches back to — the carried start, else today − months.
+  const lookbackDate = windowStart
+    ? new Date(`${windowStart}T00:00:00`)
+    : new Date(Date.now() - months * 30.44 * 86_400_000);
+  const lookbackLabel = lookbackDate.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 
   const filtered = clientLinks.filter((c) =>
     c.client_name.toLowerCase().includes(search.toLowerCase())
@@ -191,8 +212,8 @@ export function NewRulesForm({
         <div>
           <h3 className="font-bold text-sm text-navy">Analysis window</h3>
           <p className="text-xs text-ink-slate">
-            Looking back <strong className="text-navy">{months} months</strong> of transactions —
-            the same period as the previous step.
+            Looking back to <strong className="text-navy">{lookbackLabel}</strong>
+            {windowStart ? " — the same period as the previous step." : "."}
           </p>
         </div>
       </div>
