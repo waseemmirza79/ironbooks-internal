@@ -10,10 +10,23 @@ import {
 import type { Database } from "@/lib/database.types";
 import { CANADIAN_PROVINCES, getProvinceTax } from "@/lib/canadian-tax";
 import { INDUSTRIES, getIndustry, suggestIndustryFromName, type IndustryKey } from "@/lib/industries";
+import { CleanupSections } from "./cleanup-sections";
+import type { RosterClient } from "@/lib/cleanup-roster";
 
 type ClientLink = Database["public"]["Tables"]["client_links"]["Row"];
 
-export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
+export function NewJobForm({
+  clientLinks,
+  sections,
+}: {
+  clientLinks: ClientLink[];
+  sections?: {
+    continueCleanup: RosterClient[];
+    completed: RosterClient[];
+    stripeRecon: RosterClient[];
+    bsCleanup: RosterClient[];
+  };
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [search, setSearch] = useState("");
@@ -234,10 +247,10 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
 
         <StepIndicator current="client" />
 
-        <div className="rounded-xl bg-white border border-gray-200 mb-6">
+        <div className="rounded-xl bg-white border border-gray-200 mb-5">
           <div className="px-5 py-4 border-b border-gray-200">
-            <h3 className="font-bold text-base text-navy">Select client</h3>
-            <p className="text-xs text-ink-slate">Connected QuickBooks companies</p>
+            <h3 className="font-bold text-base text-navy">New cleanup</h3>
+            <p className="text-xs text-ink-slate">Connected clients with no cleanup started yet</p>
           </div>
 
           <div className="p-5">
@@ -253,6 +266,9 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
             </div>
 
             <div className="space-y-1.5 max-h-96 overflow-y-auto">
+              {filtered.length === 0 && search === "" && (
+                <p className="text-sm text-ink-slate py-4 text-center">No clients waiting to start — check the sections below.</p>
+              )}
               {filtered.map((client) => (
                 <button
                   key={client.id}
@@ -271,12 +287,21 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
                   <ArrowRight size={16} className="text-ink-light" />
                 </button>
               ))}
-              {filtered.length === 0 && (
+              {filtered.length === 0 && search !== "" && (
                 <p className="text-sm text-ink-slate py-4 text-center">No clients match your search.</p>
               )}
             </div>
           </div>
         </div>
+
+        {sections && (
+          <CleanupSections
+            continueCleanup={sections.continueCleanup}
+            completed={sections.completed}
+            stripeRecon={sections.stripeRecon}
+            bsCleanup={sections.bsCleanup}
+          />
+        )}
       </div>
     );
   }
