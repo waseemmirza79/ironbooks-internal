@@ -8,9 +8,9 @@
  *   4. continue  — finished ≥1 cleanup step, still before P&L send / close
  *   5. new       — never finished a step yet
  *
- * "Finished a step" = a COA / reclass / bank-rules job reached 'complete', or the
- * cleanup was submitted for review, or Stripe got connected. A client who only
- * has a draft/in-progress job (nothing finished) is still "new".
+ * Continue rows resume at the exact outstanding step (COA → reclass → bank
+ * rules → stripe), and say which step that is. Completed rows open the closed
+ * COA job file.
  */
 
 export type CleanupBucket = "new" | "continue" | "completed" | "stripe" | "bs";
@@ -23,16 +23,12 @@ export interface RosterClient {
   qbo_connected: boolean;
   bucket: CleanupBucket;
   subLabel: string;
-  /** pulled to the top + tinted (BS: statements received). */
   highlight: boolean;
-  /** where a row click goes (null for "new" — handled by the setup form). */
   routeTarget: string | null;
-  /** Stripe: when the connect request went out (for "waiting N days" + resend). */
   requestedAt: string | null;
 }
 
 export interface CleanupRoster {
-  /** full client_links rows — the New-cleanup setup form needs jurisdiction/industry. */
   newCleanup: any[];
   continueCleanup: RosterClient[];
   completed: RosterClient[];
@@ -40,7 +36,49 @@ export interface CleanupRoster {
   bsCleanup: RosterClient[];
 }
 
-const RESUMABLE = new Set(["in_review", "executing", "failed", "draft", "pending_lisa", "approved"]);
+const COA_RESUMABLE = new Set(["in_review", "executing", "failed", "draft", "pending_lisa", "approved"]);
+const byCreatedDesc = (a: any, b: any) =>
+  (b.updated_at || b.created_at || "").localeCompare(a.updated_at || a.created_at || "");
+
+/**
+ * The next outstanding cleanup step for an in-progress client, with where to
+ * resume it. Walks COA → reclass → bank rules → stripe; the first step that's
+ * unfinished (or mid-flight) is where the client picks up.
+ */
+function outstandingStep(
+  c: any,
+  coaJobs: any[],
+  reclassJobs: any[],
+  rulesJobs: any[]
+): { label: string; route: string } {
+  if (c.cleanup_review_state === "in_review") {
+    return { label: "Submitted — in senior review", route: `/balance-sheet/${c.id}` };
+  }
+
+  // COA
+  const coaResume = coaJobs.filter((j) => COA_RESUMABLE.has(j.status)).sort(byCreatedDesc)[0];
+  if (coaResume) return { label: `COA cleanup — ${String(coaResume.status).replace(/_/g, " ")}`, route: `/jobs/${coaResume.id}/review` };
+  const coaComplete = coaJobs.some((j) => j.status === "complete");
+  if (!coaComplete) return { label: "COA cleanup — not started", route: "/jobs/new" };
+
+  // Reclass
+  const reclassResume = reclassJobs.filter((j) => !["complete", "cancelled"].includes(j.status)).sort(byCreatedDesc)[0];
+  if (reclassResume) return { label: "Reclass — in progress", route: `/reclass/${reclassResume.id}/review` };
+  const reclassComplete = reclassJobs.some((j) => j.status === "complete");
+  if (!reclassComplete) return { label: "Reclass — not started", route: `/reclass/new?client=${c.id}&workflow=full_categorization` };
+
+  // Bank rules
+  const rulesResume = rulesJobs.filter((j) => !["complete", "cancelled"].includes(j.status)).sort(byCreatedDesc)[0];
+  if (rulesResume) return { label: "Bank rules — in progress", route: `/rules/${rulesResume.id}/review` };
+  const rulesComplete = rulesJobs.some((j) => j.status === "complete");
+  if (!rulesComplete) return { label: "Bank rules — not started", route: `/rules/new?client=${c.id}` };
+
+  // Stripe recon (then BS)
+  if (c.stripe_connection_status === "connected") {
+    return { label: "Stripe recon — ready to reconcile", route: `/stripe-recon/new?client=${c.id}` };
+  }
+  return { label: "Stripe recon", route: `/stripe-recon/new?client=${c.id}` };
+}
 
 export async function buildCleanupRoster(service: any): Promise<CleanupRoster> {
   const { data: clients } = await service
@@ -56,24 +94,30 @@ export async function buildCleanupRoster(service: any): Promise<CleanupRoster> {
 
   const safe = async (p: Promise<any>) => { try { return await p; } catch { return { data: [] }; } };
   const [coaRes, reclassRes, rulesRes, stmtRes] = await Promise.all([
-    safe(service.from("coa_jobs").select("id, client_link_id, status, updated_at").in("client_link_id", ids)),
-    safe(service.from("reclass_jobs").select("client_link_id, status").in("client_link_id", ids)),
-    safe(service.from("rule_discovery_jobs").select("client_link_id, status").in("client_link_id", ids)),
+    safe(service.from("coa_jobs").select("id, client_link_id, status, updated_at, created_at").in("client_link_id", ids)),
+    safe(service.from("reclass_jobs").select("id, client_link_id, status, created_at").in("client_link_id", ids)),
+    safe(service.from("rule_discovery_jobs").select("id, client_link_id, status, created_at").in("client_link_id", ids)),
     safe(service.from("statement_requests").select("client_link_id, status").in("client_link_id", ids)),
   ]);
 
-  const coaByClient = new Map<string, any[]>();
-  for (const j of ((coaRes.data as any[]) || [])) {
-    const arr = coaByClient.get(j.client_link_id) || [];
-    arr.push(j);
-    coaByClient.set(j.client_link_id, arr);
-  }
+  const group = (rows: any[]) => {
+    const m = new Map<string, any[]>();
+    for (const j of rows || []) {
+      const arr = m.get(j.client_link_id) || [];
+      arr.push(j);
+      m.set(j.client_link_id, arr);
+    }
+    return m;
+  };
+  const coaByClient = group((coaRes.data as any[]) || []);
+  const reclassByClient = group((reclassRes.data as any[]) || []);
+  const rulesByClient = group((rulesRes.data as any[]) || []);
+
   const completedStepClients = new Set<string>();
   for (const j of ((coaRes.data as any[]) || [])) if (j.status === "complete") completedStepClients.add(j.client_link_id);
   for (const j of ((reclassRes.data as any[]) || [])) if (j.status === "complete") completedStepClients.add(j.client_link_id);
   for (const j of ((rulesRes.data as any[]) || [])) if (j.status === "complete") completedStepClients.add(j.client_link_id);
 
-  // statements: any fulfilled = received; any open = requested-and-waiting.
   const stmtReceived = new Set<string>();
   const stmtRequested = new Set<string>();
   for (const r of ((stmtRes.data as any[]) || [])) {
@@ -99,9 +143,8 @@ export async function buildCleanupRoster(service: any): Promise<CleanupRoster> {
       stripeConnected;
 
     const coaJobs = coaByClient.get(c.id) || [];
-    const resumable = coaJobs
-      .filter((j) => RESUMABLE.has(j.status))
-      .sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""))[0];
+    const reclassJobs = reclassByClient.get(c.id) || [];
+    const rulesJobs = rulesByClient.get(c.id) || [];
 
     const base = {
       id: c.id,
@@ -112,7 +155,7 @@ export async function buildCleanupRoster(service: any): Promise<CleanupRoster> {
       requestedAt: null as string | null,
     };
 
-    // 1. BS Cleanup — in production, Balance Sheet still owed.
+    // 1. BS Cleanup
     if (bsOwed) {
       const received = stmtReceived.has(c.id);
       out.bsCleanup.push({
@@ -129,21 +172,20 @@ export async function buildCleanupRoster(service: any): Promise<CleanupRoster> {
       continue;
     }
 
-    // 2. Completed — done + in production (or fully closed).
+    // 2. Completed — open the closed COA job file.
     if (inProduction || completedAt) {
+      const lastCoa = [...coaJobs].sort(byCreatedDesc)[0];
       out.completed.push({
         ...base,
         bucket: "completed",
         highlight: false,
-        subLabel: completedAt
-          ? `Completed ${new Date(completedAt).toLocaleDateString()}`
-          : "In production",
-        routeTarget: `/clients/${c.id}`,
+        subLabel: completedAt ? `Completed ${new Date(completedAt).toLocaleDateString()}` : "In production",
+        routeTarget: lastCoa ? `/jobs/${lastCoa.id}/review` : `/clients/${c.id}`,
       });
       continue;
     }
 
-    // 3. Stripe recon — request sent, still waiting to connect.
+    // 3. Stripe recon — waiting to connect.
     if (stripeWaiting) {
       out.stripeRecon.push({
         ...base,
@@ -156,29 +198,20 @@ export async function buildCleanupRoster(service: any): Promise<CleanupRoster> {
       continue;
     }
 
-    // 4. Continue cleanup — finished ≥1 step, still before P&L/close.
+    // 4. Continue cleanup — resume the outstanding step.
     if (finishedStep) {
+      const step = outstandingStep(c, coaJobs, reclassJobs, rulesJobs);
       out.continueCleanup.push({
         ...base,
         bucket: "continue",
         highlight: false,
-        subLabel: stripeConnected
-          ? "Stripe connected — ready to reconcile"
-          : c.cleanup_review_state === "in_review"
-          ? "Submitted — in senior review"
-          : resumable
-          ? `In progress — ${String(resumable.status).replace("_", " ")}`
-          : "Cleanup in progress",
-        routeTarget: stripeConnected
-          ? `/stripe-recon/new?client=${c.id}`
-          : resumable
-          ? `/jobs/${resumable.id}/review`
-          : `/clients/${c.id}`,
+        subLabel: step.label,
+        routeTarget: step.route,
       });
       continue;
     }
 
-    // 5. New cleanup — nothing finished yet. Full row for the setup form.
+    // 5. New cleanup — nothing finished yet.
     out.newCleanup.push(c);
   }
 
