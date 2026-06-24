@@ -273,20 +273,24 @@ export async function TodayContent({
   try {
     let cq = service
       .from("client_links")
-      .select("id, client_name, due_date, assigned_bookkeeper_id, daily_recon_enabled, cleanup_review_state")
+      .select("id, client_name, due_date, assigned_bookkeeper_id, daily_recon_enabled, cleanup_review_state, latest_closed_period")
       .eq("is_active", true)
       .is("cleanup_completed_at", null)
       .not("assigned_bookkeeper_id", "is", null);
     if (scopeUserId) cq = cq.eq("assigned_bookkeeper_id", scopeUserId);
     const { data: cleanupClients } = await cq.order("due_date", { ascending: true, nullsFirst: false });
     // A client only counts as an OPEN cleanup assignment if it's still actually
-    // in cleanup. Drop ones that have graduated to production (daily recon on)
-    // or are already submitted/approved for manager sign-off — they're no
-    // longer the bookkeeper's to-do, even if cleanup_completed_at was never
-    // stamped (e.g. promoted via a non-signoff path). Done in JS to handle nulls.
+    // in cleanup. Drop ones that are no longer the bookkeeper's to-do even if
+    // cleanup_completed_at was never stamped (promoted via a non-signoff path,
+    // or statements already delivered):
+    //   • daily_recon_enabled  → graduated to production
+    //   • latest_closed_period → statements have been SENT to the client
+    //                            (the auto-dismiss-on-send signal)
+    //   • cleanup_review_state in_review/complete → in/past manager sign-off
     const raw = ((cleanupClients as any[]) || []).filter(
       (c) =>
         c.daily_recon_enabled !== true &&
+        !c.latest_closed_period &&
         c.cleanup_review_state !== "in_review" &&
         c.cleanup_review_state !== "complete"
     );
