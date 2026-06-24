@@ -186,28 +186,14 @@ export function NewRulesForm({
         </div>
       </div>
 
-      <div className="rounded-xl bg-white border border-gray-200 mb-6">
-        <div className="px-5 py-4 border-b border-gray-200">
-          <h3 className="font-bold text-base text-navy">How Many Months to Analyze?</h3>
+      <div className="rounded-xl bg-white border border-gray-200 mb-6 px-5 py-4 flex items-center gap-3">
+        <Clock size={16} className="text-ink-slate flex-shrink-0" />
+        <div>
+          <h3 className="font-bold text-sm text-navy">Analysis window</h3>
           <p className="text-xs text-ink-slate">
-            More history = smarter rules. 6 months is standard. Use 3 for fast results, 12 for very
-            mature accounts.
+            Looking back <strong className="text-navy">{months} months</strong> of transactions —
+            the same period as the previous step.
           </p>
-        </div>
-        <div className="p-5 grid grid-cols-3 gap-3">
-          {[3, 6, 12].map((m) => (
-            <button
-              key={m}
-              onClick={() => setMonths(m)}
-              className={`px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${
-                months === m
-                  ? "bg-teal text-white border-2 border-teal"
-                  : "bg-white text-navy border-2 border-gray-100 hover:border-teal"
-              }`}
-            >
-              {m} months
-            </button>
-          ))}
         </div>
       </div>
 
