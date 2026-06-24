@@ -40,7 +40,7 @@ export async function getRedoStatus(
   const { data: client } = await service
     .from("client_links")
     .select(
-      "cleanup_completed_at, stripe_connection_status, stripe_has_payouts, stripe_not_required"
+      "cleanup_completed_at, stripe_connection_status, stripe_not_required, stripe_account_id"
     )
     .eq("id", clientLinkId)
     .single();
@@ -73,15 +73,21 @@ export async function getRedoStatus(
     /* table/shape varies — fail open (no warning) */
   }
 
+  // Does this client actually have Stripe to reconcile? Based only on columns
+  // that exist: flagged "doesn't use Stripe" ⇒ false; connected or has a stored
+  // Stripe account ⇒ true; otherwise never connected ⇒ false (most painting
+  // contractors don't use Stripe, so Bank Rules hands off straight to the
+  // Balance Sheet). A missing client row leaves it null (unknown).
   const c = client as any;
   let usesStripe: boolean | null = null;
-  if (c?.stripe_not_required === true) {
-    usesStripe = false;
-  } else if (c?.stripe_connection_status === "connected" || c?.stripe_has_payouts === true) {
-    usesStripe = true;
-  } else if (c?.stripe_has_payouts === false) {
-    // checked and found zero payouts, not connected ⇒ nothing to reconcile
-    usesStripe = false;
+  if (c) {
+    if (c.stripe_not_required === true) {
+      usesStripe = false;
+    } else if (c.stripe_connection_status === "connected" || c.stripe_account_id) {
+      usesStripe = true;
+    } else {
+      usesStripe = false;
+    }
   }
 
   return {

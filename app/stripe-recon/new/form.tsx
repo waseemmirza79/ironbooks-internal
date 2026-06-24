@@ -508,30 +508,29 @@ export function NewStripeReconForm({
           )}
         </div>
 
-        {/* No Stripe activity → recommend skipping straight to the Balance
-            Sheet. Not connected and no known payouts, or checked and found
-            zero — either way this recon has nothing to do. */}
-        {selectedClient &&
-          (effectiveHasPayouts === false ||
-            (!isStripeConnected && effectiveHasPayouts == null)) && (
-            <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
-              <div className="font-semibold text-sm text-amber-900">
-                No Stripe deposits found for this client
-              </div>
-              <p className="text-xs text-amber-800 mt-1 leading-snug">
-                {isStripeConnected
-                  ? "Stripe is connected but we found no payouts in the recon window — there's nothing to reconcile here."
-                  : "This client doesn't have Stripe connected and has no payout history. You can skip Stripe Recon and move on."}
-              </p>
-              <Link
-                href={`/balance-sheet/${clientLinkId}`}
-                className="mt-2.5 inline-flex items-center gap-1.5 text-[13px] font-bold bg-teal text-white px-3 py-1.5 rounded-lg hover:bg-teal-dark"
-              >
-                Skip to Balance Sheet
-                <ArrowRight size={14} />
-              </Link>
+        {/* No Stripe to reconcile → recommend skipping straight to the Balance
+            Sheet. Keyed off the connection status (the payout-health columns
+            don't exist in the DB): if Stripe isn't connected, this step has
+            nothing to do. It's a recommendation, not a block — the form below
+            still works if they pick a connected client. */}
+        {selectedClient && !isStripeConnected && (
+          <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+            <div className="font-semibold text-sm text-amber-900">
+              No Stripe connected for this client
             </div>
-          )}
+            <p className="text-xs text-amber-800 mt-1 leading-snug">
+              {selectedClient.client_name} doesn&apos;t have Stripe connected, so there&apos;s
+              nothing to reconcile here. Skip ahead to the Balance Sheet.
+            </p>
+            <Link
+              href={`/balance-sheet/${clientLinkId}`}
+              className="mt-2.5 inline-flex items-center gap-1.5 text-[13px] font-bold bg-teal text-white px-3 py-1.5 rounded-lg hover:bg-teal-dark"
+            >
+              Skip to Balance Sheet
+              <ArrowRight size={14} />
+            </Link>
+          </div>
+        )}
 
         {/* Matching method — only meaningful once a client is selected */}
         {clientLinkId && (

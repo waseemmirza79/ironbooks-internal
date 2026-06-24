@@ -1,14 +1,11 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
-import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
+import { createServerSupabase } from "@/lib/supabase";
 import { redirect } from "next/navigation";
 import { NewStripeReconForm } from "./form";
 
 export const dynamic = "force-dynamic";
-
-const PICKER_COLS =
-  "id, client_name, jurisdiction, state_province, qbo_realm_id, double_client_id, double_client_name, stripe_connection_status, cleanup_completed_at, stripe_has_payouts, stripe_last_payout_at, stripe_payouts_checked_at";
 
 export default async function NewStripeReconPage({
   searchParams,
@@ -22,27 +19,22 @@ export default async function NewStripeReconPage({
   const sp = (await searchParams) || {};
   const preselectId = sp.client || null;
 
-  const service = createServiceSupabase();
-  // Cleanup-completed clients are normally hidden from the picker — they
-  // live in the Completed Accounts table on /clients with a Reopen
-  // button. BUT for the Stripe-recon flow specifically they remain
-  // selectable, because a "secondary" Stripe-API recon is a valid
-  // post-completion delta op once a client connects Stripe: the execute
-  // step is idempotent (strips prior [Ironbooks] lines and rewrites
-  // deterministic ones), so re-running on a completed client doesn't
-  // break their close-out. The form annotates completed clients in the
-  // dropdown so it's obvious.
-  // Exclude clients flagged as "doesn't use Stripe" — the entire
-  // recon flow is suppressed for them. (Bookkeepers can re-enable from
-  // the comms-tracker on the client card if circumstances change.)
-  // Filter: include clients where stripe_not_required is false OR null.
-  // The .eq("stripe_not_required", false) variant excludes NULL rows in
-  // Postgres, which silently dropped any client created before that column
-  // existed (Power Painting, May 2026 — Stripe connected, but stripe_not_required
-  // was NULL, so the client never showed up in this picker).
-  const { data: clientLinks, error: pickerError } = await service
+  // Picker source. Use the auth-scoped client + select("*") — exactly like
+  // the COA / Reclass / Bank-Rules pages. Naming explicit columns here was
+  // the bug: the old PICKER_COLS list referenced Stripe payout-health columns
+  // (stripe_has_payouts / stripe_last_payout_at / stripe_payouts_checked_at)
+  // that don't exist in the DB, so the query 400'd and the dropdown came back
+  // EMPTY on every environment. select("*") returns whatever columns exist and
+  // never errors on a missing one.
+  //
+  // Cleanup-completed clients stay selectable here (a secondary Stripe-API
+  // recon is a valid post-completion delta op; execute is idempotent). The
+  // form annotates them. Exclude only clients flagged "doesn't use Stripe"
+  // (stripe_not_required) — using .or() so NULL rows are kept (.eq(false)
+  // would silently drop clients created before the column existed).
+  const { data: clientLinks, error: pickerError } = await supabase
     .from("client_links")
-    .select(PICKER_COLS)
+    .select("*")
     .eq("is_active", true)
     .or("stripe_not_required.is.null,stripe_not_required.eq.false" as any)
     .order("client_name");
@@ -58,9 +50,9 @@ export default async function NewStripeReconPage({
   // the roster query failed or a flag filtered it out — the handoff must
   // never dead-end on the page you were just sent to.
   if (preselectId && !list.some((c) => c.id === preselectId)) {
-    const { data: one } = await service
+    const { data: one } = await supabase
       .from("client_links")
-      .select(PICKER_COLS)
+      .select("*")
       .eq("id", preselectId)
       .maybeSingle();
     if (one) list = [one as any, ...list];
