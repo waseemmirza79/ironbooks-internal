@@ -273,6 +273,22 @@ const ETRANSFER_PATTERNS = [
   /interac\s+e[\s\-]?transfer/i,    // "Interac e-Transfer" (the peer payment product)
 ];
 
+// Loan / credit-line activity. These must NEVER be auto-categorized as an
+// expense — a loan payment splits into principal (balance-sheet liability) and
+// interest, and a draw is a liability increase, so they go to the client/
+// bookkeeper to match against the right loan account. Matched against the
+// vendor/description/memo AND the account the txn currently sits in (a txn
+// already booked to "Loan - Fundbox" / "Short-term business loans" is a loan).
+const LOAN_PATTERNS = [
+  /\bloan\b/i,
+  /\bline of credit\b/i,
+  /\bL\.?O\.?C\.?\b/,
+  /\bnote[\s\-]?payable\b/i,
+  /\bterm loan\b/i,
+  /\bfundbox\b|\bondeck\b|\bkabbage\b|\bbluevine\b|\bclearco\b|\bclearbanc\b|\blendified\b|thinking capital|merchant growth|\bforwardly\b|\bdriven\b/i,
+  /\bBDC\b/,                          // Business Development Bank of Canada
+];
+
 export interface FullCategorizationLine {
   /** Stable identifier the caller uses to correlate back to its source row */
   ref_id: string;
@@ -580,6 +596,24 @@ export async function categorizeAllTransactions(params: {
       });
       continue;
     }
+
+    // Loan / credit-line activity → ask client. A loan payment splits into
+    // principal (liability) + interest and must be matched to the right loan
+    // account; never auto-book it as an expense.
+    const loanHaystack = `${line.vendor_name} ${line.description} ${line.private_note} ${line.current_account_name}`;
+    if (LOAN_PATTERNS.some((re) => re.test(loanHaystack))) {
+      allDecisions.push({
+        ref_id: line.ref_id,
+        target_account_id: null,
+        target_account_name: null,
+        confidence: 0,
+        reasoning: "Loan / credit-line payment — match to the right loan account (principal vs interest).",
+        decision: "ask_client",
+        flagged_reason: "Loan payment — confirm the loan account and principal/interest split",
+      });
+      continue;
+    }
+
     linesToClassify.push(line);
   }
 
