@@ -15,7 +15,7 @@ import type { VendorGroup } from "./qbo-reclass";
 import { lookupVendor, normalizeVendorForLookup } from "./vendor-knowledge";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = "claude-opus-4-7";
+const MODEL = "claude-opus-4-8";
 
 async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   let lastErr: any;
@@ -294,24 +294,27 @@ export interface FullCategorizationDecision {
   flagged_reason?: string;
 }
 
-const FULL_CAT_SYSTEM_PROMPT = `You are the Ironbooks AI Bookkeeper categorizing transactions for a residential painting contractor. Your job is to be DECISIVE — most transactions have an obvious home; you should auto-approve them at high confidence. Flagging should be rare.
+const FULL_CAT_SYSTEM_PROMPT = `You are the Ironbooks AI Bookkeeper categorizing transactions for a residential painting contractor. Pick the BEST target account for each line and an HONEST, calibrated confidence score. Accuracy matters far more than decisiveness: a wrong category that auto-approves is worse than a correct one sent for a quick human review. When in doubt, score lower and let the bookkeeper confirm.
 
 You'll receive transaction lines (vendor, amount, date, description, current account) and the full list of valid target accounts. For each line, pick the BEST target account and a confidence score.
 
-═══ DECISIVENESS ═══
-Aim for 80%+ of lines at auto-approve confidence (0.92+). Well-known vendors like gas stations, paint suppliers, hardware stores, and telecom companies are unambiguous — classify them at high confidence without second-guessing.
+═══ HOW TO SCORE CONFIDENCE — this drives auto-approve, so be honest ═══
+Only 0.95+ auto-approves; everything below goes to a human. Reserve 0.95+ for when the VENDOR IDENTITY makes the account UNAMBIGUOUS — you're not guessing, you KNOW (Sherwin-Williams/Benjamin Moore → Paint & Materials; Esso/Shell/Petro-Canada → Fuel; Rogers/Bell/Telus → Phone/Utilities).
 
-When a vendor matches a well-known business pattern, you have HIGH confidence (0.92+). Don't second-guess yourself on Esso, Home Depot, Sherwin-Williams, etc. These are unambiguous.
+Score BELOW 0.95 (→ human review, NOT auto-approved) whenever you are INFERRING the purpose rather than recognizing the vendor:
+- Guessing from the AMOUNT ("small Costco likely food court → Meals", "Costco $128 likely job supplies") → 0.55–0.8.
+- A vendor that sells many things, where the purpose is unclear (Costco, Amazon, Walmart, Home Depot → could be Job Supplies, Small Tools, Meals, Office…) → 0.7–0.85.
+- Anything where your reasoning would contain "likely", "probably", "could be", "maybe", or a "?" — that BY DEFINITION means <0.95.
+- Tax-sensitive items (payroll, taxes, owner draws/distributions, subcontractor labor) when not certain → low.
+- A vague descriptor like "spa detailing", "gift baskets", "stationery" where the business purpose is assumed → low; do NOT confidently map to Vehicle/Marketing/etc.
+A confident-sounding guess is still a guess. Recognizing the STORE (e.g. "Costco") is not the same as knowing WHAT was bought — that gap is always sub-0.95.
 
 ═══ CRITICAL RULES ═══
 1. target_account_id MUST be from available_accounts. Never invent.
-2. Confidence 0.92+ for known vendor patterns (gas stations, paint suppliers, telcos, etc.).
-3. Confidence 0.75-0.91 for plausible but slightly ambiguous (Home Depot could be Job Supplies OR Small Tools).
-4. Confidence <0.75 means real ambiguity — return your best guess but acknowledge it.
-5. Use vendor + description + amount together. A $5 charge from Esso is fuel; a $5000 charge is not.
-6. Reasoning is short (≤12 words), specific to this vendor.
+2. Use vendor + description + amount together — but identifying the merchant ≠ knowing the category.
+3. Reasoning ≤12 words, specific to this vendor. If it contains "likely/probably/could be/?", confidence MUST be <0.95.
 
-═══ PAINTER-SPECIFIC VENDOR MAP (use confidence 0.92+) ═══
+═══ PAINTER-SPECIFIC VENDOR MAP (identity-certain → use confidence 0.96+) ═══
 
 PAINT SUPPLIERS → Paint & Materials
   Sherwin-Williams, SW Paint, Benjamin Moore, BM, Dunn-Edwards, PPG, Para Paints,
@@ -499,7 +502,8 @@ const ROUND_DEADLINE_MS = 90_000;
 
 /**
  * Classify every transaction line against the new COA.
- * Auto-approve rule: confidence >= 0.80 AND |amount| < threshold AND not e-transfer.
+ * Auto-approve rule: a matched target AND confidence >= AUTO_APPROVE_THRESHOLD
+ * (0.95). Matched-but-lower-confidence → needs_review (bookkeeper confirms).
  * E-transfer/Venmo/Zelle without clear vendor → forced to "flagged".
  */
 export async function categorizeAllTransactions(params: {
@@ -698,12 +702,15 @@ Classify each line. Return JSON only.`;
         decision = "flagged";
         target_id = null;
         target_name = null;
-      } else {
-        // AI matched a target — pre-approve it. The bookkeeper reviews ONE list
-        // and can change any row before posting, rather than wading through a
-        // confidence/$-threshold-gated "needs review" pile. Genuinely
-        // unmatchable rows stay flagged above for a manual pick.
+      } else if (confidence >= AUTO_APPROVE_THRESHOLD) {
+        // ONLY genuinely-confident picks (≥0.95) auto-approve. A medium/low
+        // confidence match is a guess, not a decision — it goes to Needs Review
+        // so the bookkeeper confirms it. (Previously ANY matched target was
+        // auto-approved regardless of confidence, which auto-approved 60-80%
+        // guesses like "Costco → Meals, likely food court".)
         decision = "auto_approve";
+      } else {
+        decision = "needs_review";
       }
 
       localDecisions.push({
