@@ -211,12 +211,26 @@ export function ReclassReview({
     const effectiveSender = extractSender(row.vendor_name, row.description, (row as any).original_memo);
     const normalized = normalizeSender(effectiveSender);
 
-    const unresolvedStates = new Set(["needs_review", "flagged", "ask_client"]);
+    // "Uncategorized" is the explicit ESCALATION choice — the bookkeeper is
+    // saying "I can't place this, a senior needs to look." It becomes a
+    // human-flagged row (decision=flagged + bookkeeper_override=true) — NOT an
+    // approved reclass to a meaningless target, and never a bank rule.
+    const isEscalation = targetAccountName === "Uncategorized";
+
+    // Vendor cascade: apply this choice to every other row with the same sender
+    // (matched by vendor, regardless of amount). For a normal category we only
+    // touch UNRESOLVED rows so we don't stomp a category already set. For an
+    // escalation we touch ALL of that vendor's rows — including ones already
+    // auto-approved — because if one transaction from a vendor needs senior
+    // eyes, every transaction from that vendor does too.
+    const matchStates = isEscalation
+      ? new Set(["needs_review", "flagged", "ask_client", "auto_approve", "approved"])
+      : new Set(["needs_review", "flagged", "ask_client"]);
     const propagateIds = new Set<string>([rowId]);
     if (normalized) {
       for (const r of rows) {
         if (r.id === rowId) continue;
-        if (!unresolvedStates.has(r.decision)) continue;
+        if (!matchStates.has(r.decision)) continue;
         const rSender = extractSender(r.vendor_name, r.description, (r as any).original_memo);
         if (normalizeSender(rSender) === normalized) {
           propagateIds.add(r.id);
@@ -224,12 +238,6 @@ export function ReclassReview({
       }
     }
 
-    // "Uncategorized" is the explicit ESCALATION choice — the bookkeeper is
-    // saying "I can't place this, a senior needs to look". It becomes a
-    // human-flagged row (decision=flagged + bookkeeper_override=true, the
-    // exact combination the /flagged queue shows) — NOT an approved reclass
-    // to a meaningless target, and never a bank rule.
-    const isEscalation = targetAccountName === "Uncategorized";
     const newDecision = isEscalation ? "flagged" : "approved";
 
     // Optimistic local update for all affected rows
