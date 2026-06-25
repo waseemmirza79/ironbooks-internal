@@ -2,27 +2,60 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Check, X, Flag, Loader2, ArrowRight, AlertTriangle, Zap, DollarSign, Download } from "lucide-react";
+import { Check, X, Flag, Loader2, ArrowRight, AlertTriangle, Zap, DollarSign, Download, Undo2 } from "lucide-react";
 import type { Database } from "@/lib/database.types";
 
 type Rule = Database["public"]["Tables"]["bank_rules"]["Row"];
 type ClientLink = Database["public"]["Tables"]["client_links"]["Row"];
+
+type CoaAccount = {
+  id: string;
+  name: string;
+  fullyQualifiedName: string;
+  accountType: string;
+};
 
 export function RulesReviewClient({
   jobId,
   clientLink,
   initialRules,
   jobStatus,
+  reclassByVendor = {},
 }: {
   jobId: string;
   clientLink: ClientLink;
   initialRules: Rule[];
   jobStatus: string;
+  reclassByVendor?: Record<string, string>;
 }) {
   const router = useRouter();
   const [rules, setRules] = useState(initialRules);
   const [executing, setExecuting] = useState(false);
   const [filter, setFilter] = useState<"all" | "pending" | "approved" | "rejected" | "flagged">("all");
+
+  // Full chart of accounts for this client — powers the per-rule target
+  // account picker so the bookkeeper can retarget a rule to ANY account, not
+  // just the AI/reclass default. Fetched once on mount; the picker degrades to
+  // plain text until it loads (or if QBO is unreachable).
+  const [accounts, setAccounts] = useState<CoaAccount[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAccountsLoading(true);
+    fetch(`/api/clients/${clientLink.id}/qbo-accounts`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d?.accounts) setAccounts(d.accounts as CoaAccount[]);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setAccountsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clientLink.id]);
 
   const counts = {
     pending: rules.filter((r) => r.status === "pending").length,
@@ -263,6 +296,9 @@ export function RulesReviewClient({
             key={rule.id}
             rule={rule}
             disabled={isComplete}
+            accounts={accounts}
+            accountsLoading={accountsLoading}
+            reclassAccount={reclassByVendor[rule.vendor_pattern] || null}
             onUpdate={(updates) => updateRule(rule.id, updates)}
           />
         ))}
@@ -305,10 +341,16 @@ export function RulesReviewClient({
 function RuleRow({
   rule,
   disabled,
+  accounts,
+  accountsLoading,
+  reclassAccount,
   onUpdate,
 }: {
   rule: Rule;
   disabled: boolean;
+  accounts: CoaAccount[];
+  accountsLoading: boolean;
+  reclassAccount: string | null;
   onUpdate: (updates: Partial<Rule>) => void;
 }) {
   const confidencePct = Math.round((rule.ai_confidence || 0) * 100);
@@ -341,8 +383,31 @@ function RuleRow({
           </div>
         )}
       </div>
-      <div className="text-sm">
-        <div className="font-semibold text-navy">{rule.target_account_name}</div>
+      <div className="text-sm pr-3">
+        {disabled ? (
+          <div className="font-semibold text-navy">{rule.target_account_name}</div>
+        ) : (
+          <TargetAccountPicker
+            value={rule.target_account_name}
+            accounts={accounts}
+            loading={accountsLoading}
+            onChange={(name) => onUpdate({ target_account_name: name })}
+          />
+        )}
+        {!disabled && reclassAccount &&
+          (reclassAccount.toLowerCase() === (rule.target_account_name || "").toLowerCase() ? (
+            <div className="text-[11px] mt-1 font-semibold text-teal flex items-center gap-1">
+              <Undo2 size={11} /> From your reclass categorization
+            </div>
+          ) : (
+            <button
+              onClick={() => onUpdate({ target_account_name: reclassAccount })}
+              className="text-[11px] mt-1 font-semibold text-teal hover:text-teal-dark flex items-center gap-1"
+              title="Use the account you reclassed this vendor to in Step 2"
+            >
+              <Undo2 size={11} /> Reclass: {reclassAccount} — use it
+            </button>
+          ))}
         {rule.ai_reasoning && (
           <div className="text-xs italic mt-0.5 text-ink-slate line-clamp-1">{rule.ai_reasoning}</div>
         )}
@@ -415,6 +480,48 @@ function RuleRow({
         )}
       </div>
     </div>
+  );
+}
+
+function TargetAccountPicker({
+  value,
+  accounts,
+  loading,
+  onChange,
+}: {
+  value: string;
+  accounts: CoaAccount[];
+  loading: boolean;
+  onChange: (name: string) => void;
+}) {
+  // Store the account NAME (not id): bank rules are matched by name at apply
+  // time (lib/daily-recon.ts → accountByName), and reclass stores the same.
+  // The saved value is always shown — even before the COA loads, or if the AI
+  // picked a name that doesn't exactly match a live account — so the bookkeeper
+  // never sees the target silently blanked.
+  const hasMatch = accounts.some((a) => a.name === value);
+
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={loading && accounts.length === 0}
+      className="w-full bg-white border border-gray-200 rounded-md px-2 py-1.5 text-sm font-semibold text-navy outline-none focus:border-teal focus:ring-1 focus:ring-teal disabled:opacity-60"
+      title="Change the account this rule categorizes matching transactions to"
+    >
+      {(!hasMatch || (loading && accounts.length === 0)) && value && (
+        <option value={value}>
+          {value}
+          {loading && accounts.length === 0 ? "  (loading accounts…)" : ""}
+        </option>
+      )}
+      {accounts.map((a) => (
+        <option key={a.id} value={a.name}>
+          {a.fullyQualifiedName}
+          {a.accountType ? ` · ${a.accountType}` : ""}
+        </option>
+      ))}
+    </select>
   );
 }
 

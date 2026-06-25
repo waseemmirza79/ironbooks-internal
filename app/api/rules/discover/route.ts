@@ -2,6 +2,7 @@ import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { getValidToken } from "@/lib/qbo";
 import { fetchRecentTransactions, groupByVendor } from "@/lib/qbo-rules";
 import { analyzeBankRules } from "@/lib/claude-rules";
+import { buildReclassTargetMap } from "@/lib/reclass-rule-defaults";
 import { NextResponse, after } from "next/server";
 
 /**
@@ -173,18 +174,32 @@ async function runDiscovery(jobId: string, clientLinkId: string, months: number)
     .single();
   const createdBy = (jobRow as any)?.bookkeeper_id || null;
 
+  // Overlay the bookkeeper's reclass decisions: if this client already
+  // reclassed the same vendor in Step 2, default the rule's target to that
+  // account instead of the fresh AI guess. `vendor_pattern` (this map's lookup)
+  // and `reclassifications.vendor_pattern_normalized` are produced by the same
+  // normalizer, so the join is exact. The bookkeeper can still override any
+  // target in the review screen's account picker.
+  const reclassTargets = await buildReclassTargetMap(service as any, clientLinkId);
+
   const rules = analysis.suggestions.map((s) => {
     const vendor = vendorGroups.find((v) => v.vendor_pattern === s.vendor_pattern);
+    const reclassed = reclassTargets.get(s.vendor_pattern);
+    const fromReclass = !!reclassed && reclassed.name.toLowerCase() !== s.target_account_name.toLowerCase();
     return {
       client_link_id: clientLinkId,
       discovery_job_id: jobId,
       vendor_pattern: s.vendor_pattern,
       match_type: s.suggested_match_type.toLowerCase(),
-      target_account_name: s.target_account_name,
+      target_account_name: reclassed?.name || s.target_account_name,
       status: "pending",
-      ai_confidence: s.confidence,
-      ai_reasoning: s.reasoning,
-      requires_approval: s.requires_approval,
+      // A reclass match is the bookkeeper's own decision — treat it as
+      // high-confidence and note the source so the review row can flag it.
+      ai_confidence: fromReclass ? 1 : s.confidence,
+      ai_reasoning: fromReclass
+        ? `Matches your reclass categorization for this vendor (was: ${s.target_account_name}).`
+        : s.reasoning,
+      requires_approval: fromReclass ? false : s.requires_approval,
       sample_descriptions: vendor?.sample_descriptions || [],
       transaction_count: vendor?.transaction_count || 0,
       total_amount: vendor?.total_amount || 0,

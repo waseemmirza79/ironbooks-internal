@@ -1,9 +1,10 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { WorkflowStepper } from "@/components/WorkflowStepper";
-import { createServerSupabase } from "@/lib/supabase";
+import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { notFound } from "next/navigation";
 import { Loader2 } from "lucide-react";
+import { buildReclassTargetMap } from "@/lib/reclass-rule-defaults";
 import { RulesReviewClient } from "./review-client";
 
 export default async function RulesReviewPage({
@@ -29,6 +30,23 @@ export default async function RulesReviewPage({
     .order("transaction_count", { ascending: false });
 
   const clientLink = (job as any).client_links;
+
+  // The account each vendor was reclassed to in Step 2 — used to mark which
+  // rule targets came from the bookkeeper's own reclass decision (vs. a fresh
+  // AI guess) and to offer a one-click "use reclass account" on older jobs.
+  // Read-only here; the persisted default is seeded at discovery time.
+  let reclassByVendor: Record<string, string> = {};
+  if (clientLink?.id) {
+    try {
+      const map = await buildReclassTargetMap(createServiceSupabase() as any, clientLink.id);
+      const vendorsOnPage = new Set((rules || []).map((r: any) => r.vendor_pattern));
+      for (const [vendor, target] of map.entries()) {
+        if (vendorsOnPage.has(vendor)) reclassByVendor[vendor] = target.name;
+      }
+    } catch {
+      // Non-critical — the picker still works without the reclass markers.
+    }
+  }
 
   // If still analyzing
   if (!job.ai_completed_at && job.status !== "failed") {
@@ -64,7 +82,7 @@ export default async function RulesReviewPage({
         clientLinkId={clientLink?.id}
       />
       <div className="px-8 py-6">
-        <RulesReviewClient jobId={id} clientLink={clientLink} initialRules={rules || []} jobStatus={job.status} />
+        <RulesReviewClient jobId={id} clientLink={clientLink} initialRules={rules || []} jobStatus={job.status} reclassByVendor={reclassByVendor} />
       </div>
     </AppShell>
   );
