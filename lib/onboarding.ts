@@ -8,6 +8,7 @@
  * and the board always reflects the true furthest-along state.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { findExistingClientForLead } from "./onboarding-match";
 
 export type OnboardingStage =
   | "new_sale" // won, neither form nor call done
@@ -354,18 +355,76 @@ export async function upsertLeadFromWebhook(
     ...fields,
   };
 
+  let leadId: string | undefined;
   if (existing) {
     const { error } = await (service as any)
       .from("onboarding_leads")
       .update(merged)
       .eq("id", existing.id);
-    return error ? { ok: false, error: error.message } : { ok: true, id: existing.id };
+    if (error) return { ok: false, error: error.message };
+    leadId = existing.id;
+  } else {
+    const { data, error } = await (service as any)
+      .from("onboarding_leads")
+      .insert({ source: "webhook", ...merged })
+      .select("id")
+      .single();
+    if (error) return { ok: false, error: error.message };
+    leadId = data?.id;
   }
 
-  const { data, error } = await (service as any)
+  // Self-heal: if this won opportunity is already a client (re-sale, upsell, or
+  // a backfill of historical wins), link the lead to the existing client and
+  // mark it converted so it never sits in "New sale" behind a client that's
+  // already in cleanup/production. Exact email/name match only — see
+  // findExistingClientForLead. Best-effort: a miss here must not fail the upsert.
+  if (leadId) {
+    try {
+      await autoLinkExistingClient(service, leadId);
+    } catch {
+      /* non-critical */
+    }
+  }
+
+  return { ok: true, id: leadId };
+}
+
+/**
+ * If the (active, unlinked) lead clearly matches an existing client, convert +
+ * link it. No-op otherwise. Idempotent — safe to call on every webhook event.
+ */
+async function autoLinkExistingClient(
+  service: SupabaseClient,
+  leadId: string
+): Promise<void> {
+  const { data: lead } = await (service as any)
     .from("onboarding_leads")
-    .insert({ source: "webhook", ...merged })
-    .select("id")
-    .single();
-  return error ? { ok: false, error: error.message } : { ok: true, id: data?.id };
+    .select("id, status, client_link_id, email, business_name, full_name")
+    .eq("id", leadId)
+    .maybeSingle();
+  if (!lead || lead.status !== "active" || lead.client_link_id) return;
+
+  const match = await findExistingClientForLead(service, lead);
+  if (!match) return;
+
+  await (service as any)
+    .from("onboarding_leads")
+    .update({
+      status: "converted",
+      client_link_id: match.id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", leadId)
+    .eq("status", "active");
+
+  await (service as any).from("audit_log").insert({
+    event_type: "onboarding_lead_linked_existing",
+    request_payload: {
+      lead_id: leadId,
+      client_link_id: match.id,
+      client_name: match.client_name,
+      match_method: match.method,
+      source: "auto",
+    },
+  });
 }
