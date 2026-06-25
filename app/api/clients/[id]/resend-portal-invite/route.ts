@@ -1,5 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { sendPortalInviteEmail } from "@/lib/client-comms";
+import { createActivationLink } from "@/lib/portal-invite";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -53,32 +54,24 @@ export async function POST(
     .select("id, email, full_name")
     .in("id", maps.map((m: any) => m.user_id));
 
-  const redirectTo = `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/auth/callback`;
   const sent: string[] = [];
   const failed: string[] = [];
 
   for (const u of (users || []) as any[]) {
     if (!u.email) continue;
     try {
-      // Confirm the email so the magic-link / OTP sign-in works even if they
-      // never clicked the original invite (root cause of "can't log in").
+      // Confirm the email so sign-in works even if they never clicked the
+      // original invite (root cause of "can't log in").
       await service.auth.admin.updateUserById(u.id, { email_confirm: true });
 
-      // Fresh sign-in link (magiclink for confirmed users; invite as fallback).
-      const ml = await (service as any).auth.admin.generateLink({
-        type: "magiclink",
+      // 7-day activation link (mints a fresh Supabase link at click time), so
+      // the emailed link works for a week instead of ≤24h.
+      const link = await createActivationLink(service, {
+        userId: u.id,
+        clientLinkId,
         email: u.email,
-        options: { redirectTo },
+        createdBy: user.id,
       });
-      let link: string | null = ml?.data?.properties?.action_link || null;
-      if (!link) {
-        const inv = await (service as any).auth.admin.generateLink({
-          type: "invite",
-          email: u.email,
-          options: { data: { full_name: u.full_name, role: "client" }, redirectTo },
-        });
-        link = inv?.data?.properties?.action_link || null;
-      }
       if (!link) { failed.push(u.email); continue; }
 
       const ok = await sendPortalInviteEmail({
