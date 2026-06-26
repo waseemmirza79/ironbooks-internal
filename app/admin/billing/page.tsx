@@ -22,7 +22,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
 
   const [{ data: clients }, { data: subs }, { data: pays }] = await Promise.all([
     service.from("client_links")
-      .select("id, client_name, legal_business_name, contact_first_name, contact_last_name")
+      .select("id, client_name, legal_business_name, contact_first_name, contact_last_name, client_email")
       .eq("is_active", true)
       .order("client_name"),
     (service as any).from("billing_subscriptions").select("*"),
@@ -51,9 +51,11 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
       clientLinkId: c.id,
       company: c.legal_business_name || c.client_name || "—",
       contact: [c.contact_first_name, c.contact_last_name].filter(Boolean).join(" ") || "—",
+      email: c.client_email || null,
       mrrCents,
       subStatus: sub?.subscription_status || "none",
       matchMethod: sub?.match_method || null,
+      stripeCustomerId: sub?.stripe_customer_id || null,
       months,
     };
   });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, RefreshCw, Plus, X } from "lucide-react";
 
@@ -9,9 +9,11 @@ type Row = {
   clientLinkId: string;
   company: string;
   contact: string;
+  email: string | null;
   mrrCents: number;
   subStatus: string;
   matchMethod: string | null;
+  stripeCustomerId: string | null;
   months: Record<number, Cell>;
 };
 
@@ -23,6 +25,7 @@ export function BillingTable({ year, rows }: { year: number; rows: Row[] }) {
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [modal, setModal] = useState<{ row: Row; month: number } | null>(null);
+  const [matchRow, setMatchRow] = useState<Row | null>(null);
 
   const now = new Date();
   const curYear = now.getUTCFullYear();
@@ -102,7 +105,18 @@ export function BillingTable({ year, rows }: { year: number; rows: Row[] }) {
           <tbody>
             {rows.map((r) => (
               <tr key={r.clientLinkId} className="hover:bg-gray-50/50">
-                <td className="sticky left-0 bg-white px-3 py-1.5 border-b border-gray-100 font-medium text-navy truncate max-w-[220px]" title={r.company}>{r.company}</td>
+                <td className="sticky left-0 bg-white px-3 py-1.5 border-b border-gray-100 max-w-[240px]">
+                  <div className="font-medium text-navy truncate" title={r.company}>{r.company}</div>
+                  <button
+                    onClick={() => setMatchRow(r)}
+                    className="text-[11px] text-teal-dark hover:underline truncate max-w-[220px] block"
+                    title="Click to match a Stripe customer"
+                  >
+                    {r.stripeCustomerId
+                      ? <span className="text-emerald-600">✓ Stripe matched{r.matchMethod ? ` (${r.matchMethod})` : ""} — change</span>
+                      : (r.email || "no email — match Stripe")}
+                  </button>
+                </td>
                 <td className="px-3 py-1.5 border-b border-gray-100 text-ink-slate truncate max-w-[160px]">{r.contact}</td>
                 <td className="px-3 py-1.5 border-b border-gray-100 text-right text-navy font-semibold">{r.mrrCents > 0 ? money(r.mrrCents) : "—"}</td>
                 {MONTHS.map((_, i) => {
@@ -125,6 +139,70 @@ export function BillingTable({ year, rows }: { year: number; rows: Row[] }) {
       </div>
 
       {modal && <ManualModal row={modal.row} month={modal.month} year={year} onClose={() => setModal(null)} onSaved={() => { setModal(null); router.refresh(); }} />}
+      {matchRow && <StripeMatchModal row={matchRow} year={year} onClose={() => setMatchRow(null)} onSaved={() => { setMatchRow(null); router.refresh(); }} />}
+    </div>
+  );
+}
+
+function StripeMatchModal({ row, year, onClose, onSaved }: { row: Row; year: number; onClose: () => void; onSaved: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [candidates, setCandidates] = useState<{ id: string; name: string | null; email: string | null; matched_on: string }[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [assigning, setAssigning] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/admin/billing/stripe-candidates?client_link_id=${row.clientLinkId}`)
+      .then((r) => r.json())
+      .then((j) => { if (j.error) setErr(j.error); else setCandidates(j.candidates || []); })
+      .catch((e) => setErr(e?.message || "Couldn't load candidates"))
+      .finally(() => setLoading(false));
+  }, [row.clientLinkId]);
+
+  async function assign(stripeCustomerId: string) {
+    setAssigning(stripeCustomerId); setErr(null);
+    try {
+      const res = await fetch("/api/admin/billing/match", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_link_id: row.clientLinkId, stripe_customer_id: stripeCustomerId, year }),
+      });
+      const j = await res.json();
+      if (!res.ok) { setErr(j.error || "Match failed"); return; }
+      onSaved();
+    } catch (e: any) { setErr(e?.message || "Network error"); }
+    finally { setAssigning(null); }
+  }
+
+  return (
+    <div style={{ minHeight: "100vh" }} className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="font-bold text-navy">Match Stripe customer</h3>
+          <button onClick={onClose} className="p-1 text-ink-light hover:text-navy"><X size={16} /></button>
+        </div>
+        <p className="text-xs text-ink-slate mb-3">{row.company}{row.email ? ` · ${row.email}` : ""}</p>
+        {loading && <div className="flex items-center gap-2 text-sm text-ink-light py-4"><Loader2 size={14} className="animate-spin" /> Searching Stripe…</div>}
+        {err && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-2">{err}</div>}
+        {!loading && candidates.length === 0 && !err && (
+          <p className="text-sm text-ink-slate py-2">No close Stripe customers found by email or name. Try the Sync, or this client may pay off-Stripe (use a manual payment on a cell).</p>
+        )}
+        <ul className="space-y-2 max-h-[50vh] overflow-y-auto">
+          {candidates.map((c) => (
+            <li key={c.id} className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-navy truncate">{c.name || "(no name)"}</div>
+                <div className="text-xs text-ink-slate truncate">{c.email || "(no email)"} · matched on {c.matched_on}</div>
+              </div>
+              <button
+                onClick={() => assign(c.id)}
+                disabled={!!assigning}
+                className="inline-flex items-center gap-1.5 bg-teal hover:bg-teal-dark text-white text-xs font-semibold px-3 py-1.5 rounded-lg disabled:opacity-60 flex-shrink-0"
+              >
+                {assigning === c.id ? <Loader2 size={12} className="animate-spin" /> : null} Match
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }
