@@ -26,7 +26,7 @@ export interface BillingSyncResult {
 export async function syncBilling(service: any, year: number): Promise<BillingSyncResult> {
   const { data: clients } = await service
     .from("client_links")
-    .select("id, client_name, legal_business_name, client_email, contact_first_name, contact_last_name, stripe_customer_id")
+    .select("id, client_name, legal_business_name, client_email, contact_first_name, contact_last_name, stripe_customer_id, jurisdiction")
     .eq("is_active", true);
 
   const result: BillingSyncResult = { scanned: 0, matched: 0, unmatched: [], paymentsWritten: 0 };
@@ -63,7 +63,7 @@ export async function syncBilling(service: any, year: number): Promise<BillingSy
       result.unmatched.push(c.client_name || c.id);
       // Still upsert a stub row so the client shows in the grid (no Stripe).
       await service.from("billing_subscriptions").upsert(
-        { client_link_id: c.id, subscription_status: "none", updated_at: new Date().toISOString() },
+        { client_link_id: c.id, subscription_status: "none", currency: c.jurisdiction === "CA" ? "cad" : "usd", updated_at: new Date().toISOString() },
         { onConflict: "client_link_id" }
       );
       continue;
@@ -87,6 +87,7 @@ export async function syncBilling(service: any, year: number): Promise<BillingSy
         stripe_subscription_id: subId,
         mrr_cents: mrrCents,
         subscription_status: status || "none",
+        currency: c.jurisdiction === "CA" ? "cad" : "usd",
         match_method: method,
         matched_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),

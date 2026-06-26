@@ -11,21 +11,27 @@ type Row = {
   contact: string;
   email: string | null;
   mrrCents: number;
+  currency: string;
   subStatus: string;
   matchMethod: string | null;
   stripeCustomerId: string | null;
   months: Record<number, Cell>;
 };
 
+type Totals = { expectedUsdCents: number; expectedCadCents: number; collectedUsdCents: number; collectedCadCents: number };
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const money = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+// Currency-aware: CAD amounts get a " CAD" tag; USD stays plain.
+const fmtCur = (cents: number, currency: string) => money(cents) + (currency === "cad" ? " CAD" : "");
 
-export function BillingTable({ year, rows }: { year: number; rows: Row[] }) {
+export function BillingTable({ year, rows, fxUsdToCad, totals }: { year: number; rows: Row[]; fxUsdToCad: number; totals: Totals }) {
   const router = useRouter();
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [modal, setModal] = useState<{ row: Row; month: number } | null>(null);
   const [matchRow, setMatchRow] = useState<Row | null>(null);
+  const [expectedRow, setExpectedRow] = useState<Row | null>(null);
 
   const now = new Date();
   const curYear = now.getUTCFullYear();
@@ -52,28 +58,40 @@ export function BillingTable({ year, rows }: { year: number; rows: Row[] }) {
     const mrr = row.mrrCents;
     const isPast = year < curYear || (year === curYear && m < curMonth);
     const collected = c.collected;
+    const cur = row.currency;
     if (collected > 0) {
-      if (mrr > 0 && collected > mrr + 50) return { bg: "#0F5132", fg: "#fff", label: money(collected) };   // dark green: extra
-      return { bg: "#D1E7DD", fg: "#0F5132", label: money(collected) };                                      // green: collected
+      if (mrr > 0 && collected > mrr + 50) return { bg: "#0F5132", fg: "#fff", label: fmtCur(collected, cur) };  // dark green: extra
+      return { bg: "#D1E7DD", fg: "#0F5132", label: fmtCur(collected, cur) };                                    // green: collected
     }
-    if (c.failed > 0) return { bg: "#F8D7DA", fg: "#842029", label: money(c.failed) };                        // red: failed
+    if (c.failed > 0) return { bg: "#F8D7DA", fg: "#842029", label: fmtCur(c.failed, cur) };                      // red: failed
     if (isPast && mrr > 0 && ["active", "past_due"].includes(row.subStatus)) {
-      return { bg: "#F8D7DA", fg: "#842029", label: "missed" };                                              // red: missed
+      return { bg: "#F8D7DA", fg: "#842029", label: "missed" };                                                  // red: missed
     }
-    return { bg: "#F1F3F5", fg: "#9AA3AD", label: mrr > 0 ? money(mrr) : "" };                                // grey: expected
+    return { bg: "#F1F3F5", fg: "#9AA3AD", label: mrr > 0 ? fmtCur(mrr, cur) : "" };                             // grey: expected
   }
 
-  const totalMrr = rows.reduce((s, r) => s + r.mrrCents, 0);
-  const totalCollected = rows.reduce((s, r) => s + Object.values(r.months).reduce((a, c) => a + c.collected, 0), 0);
+  const cad = (cents: number) => money(cents);
+  const expectedCombinedCad = totals.expectedCadCents + Math.round(totals.expectedUsdCents * fxUsdToCad);
+  const collectedCombinedCad = totals.collectedCadCents + Math.round(totals.collectedUsdCents * fxUsdToCad);
 
   return (
     <div className="px-4 py-6 max-w-[1700px] mx-auto">
       <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
         <div>
           <h1 className="text-2xl font-bold text-navy">Billing</h1>
-          <p className="text-sm text-ink-slate mt-0.5">
-            {rows.length} clients · MRR <strong>{money(totalMrr)}</strong> · collected {year}: <strong>{money(totalCollected)}</strong>
-          </p>
+          <div className="text-sm text-ink-slate mt-1 space-y-0.5">
+            <div>
+              <span className="text-ink-light">Expected MRR:</span>{" "}
+              <strong className="text-navy">{cad(expectedCombinedCad)} CAD</strong>{" "}
+              <span className="text-ink-light">(USD {money(totals.expectedUsdCents)} + CAD {money(totals.expectedCadCents)}, USD→CAD {fxUsdToCad.toFixed(3)})</span>
+            </div>
+            <div>
+              <span className="text-ink-light">Collected {year}:</span>{" "}
+              <strong className="text-navy">{cad(collectedCombinedCad)} CAD</strong>{" "}
+              <span className="text-ink-light">(USD {money(totals.collectedUsdCents)} + CAD {money(totals.collectedCadCents)})</span>
+            </div>
+            <div className="text-ink-light">{rows.length} clients</div>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <a href={`/admin/billing?year=${year - 1}`} className="px-2.5 py-1.5 rounded-lg border border-gray-200 text-sm">←</a>
@@ -118,7 +136,12 @@ export function BillingTable({ year, rows }: { year: number; rows: Row[] }) {
                   </button>
                 </td>
                 <td className="px-3 py-1.5 border-b border-gray-100 text-ink-slate truncate max-w-[160px]">{r.contact}</td>
-                <td className="px-3 py-1.5 border-b border-gray-100 text-right text-navy font-semibold">{r.mrrCents > 0 ? money(r.mrrCents) : "—"}</td>
+                <td className="px-3 py-1.5 border-b border-gray-100 text-right">
+                  <button onClick={() => setExpectedRow(r)} title="Set expected monthly (subscription + payroll + …)"
+                    className="text-navy font-semibold hover:text-teal-dark hover:underline">
+                    {r.mrrCents > 0 ? fmtCur(r.mrrCents, r.currency) : <span className="text-ink-light font-normal">set…</span>}
+                  </button>
+                </td>
                 {MONTHS.map((_, i) => {
                   const m = i + 1;
                   const st = cellStyle(r, m);
@@ -140,6 +163,7 @@ export function BillingTable({ year, rows }: { year: number; rows: Row[] }) {
 
       {modal && <ManualModal row={modal.row} month={modal.month} year={year} onClose={() => setModal(null)} onSaved={() => { setModal(null); router.refresh(); }} />}
       {matchRow && <StripeMatchModal row={matchRow} year={year} onClose={() => setMatchRow(null)} onSaved={() => { setMatchRow(null); router.refresh(); }} />}
+      {expectedRow && <ExpectedModal row={expectedRow} onClose={() => setExpectedRow(null)} onSaved={() => { setExpectedRow(null); router.refresh(); }} />}
     </div>
   );
 }
@@ -202,6 +226,50 @@ function StripeMatchModal({ row, year, onClose, onSaved }: { row: Row; year: num
             </li>
           ))}
         </ul>
+      </div>
+    </div>
+  );
+}
+
+function ExpectedModal({ row, onClose, onSaved }: { row: Row; onClose: () => void; onSaved: () => void }) {
+  const [amount, setAmount] = useState((row.mrrCents / 100 || 0).toString());
+  const [currency, setCurrency] = useState(row.currency || "usd");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    setSaving(true); setErr(null);
+    try {
+      const res = await fetch("/api/admin/billing/expected", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_link_id: row.clientLinkId, mrr: Number(amount), currency }),
+      });
+      const j = await res.json();
+      if (!res.ok) { setErr(j.error || "Save failed"); return; }
+      onSaved();
+    } catch (e: any) { setErr(e?.message || "Network error"); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div style={{ minHeight: "100vh" }} className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="font-bold text-navy">Expected monthly</h3>
+          <button onClick={onClose} className="p-1 text-ink-light hover:text-navy"><X size={16} /></button>
+        </div>
+        <p className="text-xs text-ink-slate mb-3">{row.company} — the full expected amount each month (subscription + payroll + any add-ons).</p>
+        <div className="flex gap-2">
+          <label className="flex-1"><span className="text-xs font-semibold text-ink-slate">Amount</span>
+            <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" autoFocus className="mt-1 w-full px-3 py-2 text-sm border border-gray-200 rounded-lg" /></label>
+          <label><span className="text-xs font-semibold text-ink-slate">Currency</span>
+            <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="mt-1 px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white">
+              <option value="usd">USD</option><option value="cad">CAD</option></select></label>
+        </div>
+        {err && <div className="mt-2 text-xs text-red-700">{err}</div>}
+        <button onClick={save} disabled={saving} className="mt-3 w-full inline-flex items-center justify-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-bold px-4 py-2.5 rounded-lg disabled:opacity-60">
+          {saving ? <Loader2 size={14} className="animate-spin" /> : null} Save expected
+        </button>
       </div>
     </div>
   );

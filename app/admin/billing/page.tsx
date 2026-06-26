@@ -53,6 +53,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
       contact: [c.contact_first_name, c.contact_last_name].filter(Boolean).join(" ") || "—",
       email: c.client_email || null,
       mrrCents,
+      currency: (sub?.currency as string) || "usd",
       subStatus: sub?.subscription_status || "none",
       matchMethod: sub?.match_method || null,
       stripeCustomerId: sub?.stripe_customer_id || null,
@@ -60,5 +61,23 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
     };
   });
 
-  return <BillingTable year={year} rows={rows} />;
+  // Current USD→CAD spot rate (server-side fetch; safe fallback if it fails).
+  let fxUsdToCad = 1.37;
+  try {
+    const r = await fetch("https://open.er-api.com/v6/latest/USD", { next: { revalidate: 3600 } });
+    const j = await r.json();
+    if (j?.rates?.CAD && Number.isFinite(j.rates.CAD)) fxUsdToCad = j.rates.CAD;
+  } catch { /* keep fallback */ }
+
+  const sum = (pred: (r: typeof rows[number]) => boolean, val: (r: typeof rows[number]) => number) =>
+    rows.filter(pred).reduce((s, r) => s + val(r), 0);
+  const collectedOf = (r: typeof rows[number]) => Object.values(r.months).reduce((a, c) => a + c.collected, 0);
+  const totals = {
+    expectedUsdCents: sum((r) => r.currency !== "cad", (r) => r.mrrCents),
+    expectedCadCents: sum((r) => r.currency === "cad", (r) => r.mrrCents),
+    collectedUsdCents: sum((r) => r.currency !== "cad", collectedOf),
+    collectedCadCents: sum((r) => r.currency === "cad", collectedOf),
+  };
+
+  return <BillingTable year={year} rows={rows} fxUsdToCad={fxUsdToCad} totals={totals} />;
 }
