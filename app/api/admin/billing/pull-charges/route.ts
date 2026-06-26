@@ -1,4 +1,5 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
+import { buildClientIndex } from "@/lib/billing-match";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -41,19 +42,13 @@ export async function POST(request: Request) {
   const start = Math.floor(Date.UTC(year, month - 1, 1) / 1000);
   const end = Math.floor(Date.UTC(year, month, 1) / 1000) - 1;
 
-  // Mapping: customer id → client, and email → client.
-  const [{ data: subs }, { data: clients }] = await Promise.all([
-    (service as any).from("billing_subscriptions").select("client_link_id, stripe_customer_id"),
-    service.from("client_links").select("id, stripe_customer_id, client_email, jurisdiction").eq("is_active", true),
-  ]);
-  const custToClient = new Map<string, string>();
-  for (const s of ((subs as any[]) || [])) if (s.stripe_customer_id) custToClient.set(s.stripe_customer_id, s.client_link_id);
-  const emailToClient = new Map<string, string>();
-  for (const c of ((clients as any[]) || [])) {
-    if (c.stripe_customer_id) custToClient.set(c.stripe_customer_id, c.id);
-    if (c.client_email) emailToClient.set(String(c.client_email).toLowerCase(), c.id);
-  }
-  const jurByClient = new Map<string, string>(((clients as any[]) || []).map((c) => [c.id, c.jurisdiction]));
+  // Mapping: customer id → client, and email → client (incl. portal-login
+  // emails + subscription-mapped customers via the shared index).
+  const index = await buildClientIndex(service);
+  const { data: subs } = await (service as any).from("billing_subscriptions").select("client_link_id, stripe_customer_id");
+  for (const s of ((subs as any[]) || [])) if (s.stripe_customer_id) index.byCustomer.set(s.stripe_customer_id, s.client_link_id);
+  const custToClient = index.byCustomer;
+  const emailToClient = index.byEmail;
 
   // Pull all succeeded charges in the window.
   let charges: any[] = [], startingAfter = "", more = true, pages = 0;

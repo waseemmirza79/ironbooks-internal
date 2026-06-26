@@ -173,26 +173,11 @@ export function BillingTable({ year, rows, fxUsdToCad, totals, recon, unmatched 
         </div>
       </div>
       {syncMsg && <div className="mb-3 text-xs text-ink-slate bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">{syncMsg}</div>}
-      {pullResult && (
-        pullResult.error
-          ? <div className="mb-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{pullResult.error}</div>
-          : <div className="mb-3 text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 space-y-1">
-              <div>
-                Pulled <strong>{pullResult.charges}</strong> charges for {MONTHS[pullResult.month - 1]} {pullResult.year} · matched <strong>{pullResult.matched.clients}</strong> clients →{" "}
-                <strong className="text-navy">${pullResult.matched.combined_cad.toLocaleString()} CAD</strong>{" "}
-                <span className="text-ink-light">(USD ${pullResult.matched.usd.toLocaleString()} + CAD ${pullResult.matched.cad.toLocaleString()}, fx {pullResult.fx?.toFixed(3)})</span>
-              </div>
-              {pullResult.unmatched?.count > 0 && (
-                <div className="text-amber-800">
-                  <strong>{pullResult.unmatched.count} unmatched</strong> = ${pullResult.unmatched.combined_cad.toLocaleString()} CAD — map their customers (click a client&apos;s email, or "no email" row) then re-pull.
-                  <div className="text-amber-700 mt-0.5">Top: {pullResult.unmatched.top.map((u: any) => `${u.who} ($${u.amount.toLocaleString()} ${u.currency})`).join(" · ")}</div>
-                </div>
-              )}
-            </div>
-      )}
+      {pullResult?.error && <div className="mb-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{pullResult.error}</div>}
 
-      {/* Reconciliation — the critical number. Stripe gross this month must equal
-          what we recorded; any gap is shown loudly, never hidden. */}
+      {/* Single reconciliation banner — the critical number. Stripe gross this
+          month = recorded + unmatched; the gap is shown loudly with a direct
+          link to resolve it (no duplicate sections). */}
       {reconCombined && (
         <div className={`mb-3 rounded-lg border px-3 py-2.5 text-sm ${reconCombined.unmatchedCad > 0 ? "bg-amber-50 border-amber-300" : "bg-emerald-50 border-emerald-200"}`}>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -204,27 +189,20 @@ export function BillingTable({ year, rows, fxUsdToCad, totals, recon, unmatched 
               <strong className={reconCombined.unmatchedCad > 0 ? "text-amber-800" : ""}>{cad(reconCombined.unmatchedCad)} unmatched</strong>
               {" "}({recon!.unmatched_count} charge{recon!.unmatched_count === 1 ? "" : "s"})
             </span>
+            {recon!.unmatched_count > 0 && (
+              <a href="/admin/billing/match" className="font-semibold text-amber-900 underline underline-offset-2">Review &amp; match →</a>
+            )}
             <span className="text-ink-light text-xs">· pulled {new Date(recon!.ran_at).toLocaleString()}</span>
           </div>
         </div>
       )}
 
-      {/* Unmatched-charge worklist — every dollar Stripe collected that we couldn't
-          map to a client. Find the client below (click their email) + re-pull. */}
-      {unmatched.length > 0 && (
-        <details className="mb-3 rounded-lg border border-amber-200 bg-amber-50/50">
-          <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-amber-900">
-            {unmatched.length} unmatched Stripe charge{unmatched.length === 1 ? "" : "s"} · {cad(unmatchedTotalCents)} CAD — map these to close the gap
-          </summary>
-          <ul className="px-3 pb-3 space-y-1 max-h-64 overflow-y-auto">
-            {unmatched.map((u, i) => (
-              <li key={i} className="flex justify-between gap-3 text-xs text-amber-900 border-t border-amber-100 pt-1">
-                <span className="truncate">{u.who}</span>
-                <span className="flex-shrink-0 font-medium">{fmtCur(u.amountCents, u.currency)}</span>
-              </li>
-            ))}
-          </ul>
-        </details>
+      {/* No recon snapshot yet, but a worklist exists → still offer the matcher. */}
+      {!reconCombined && unmatched.length > 0 && (
+        <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm">
+          <strong className="text-amber-900">{unmatched.length} unmatched Stripe charge{unmatched.length === 1 ? "" : "s"}</strong> · {cad(unmatchedTotalCents)} CAD —{" "}
+          <a href="/admin/billing/match" className="font-semibold text-amber-900 underline underline-offset-2">Review &amp; match →</a>
+        </div>
       )}
 
       <div className="flex flex-wrap items-center gap-2 mb-3">

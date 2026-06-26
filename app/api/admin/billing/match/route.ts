@@ -55,6 +55,9 @@ export async function POST(request: Request) {
   // Master mapping → also stamp the client record (used in their profile).
   await service.from("client_links").update({ stripe_customer_id: customerId } as any).eq("id", clientLinkId);
 
+  // This customer is now mapped → drop it from the unmatched worklist.
+  await (service as any).from("billing_unmatched_charges").delete().eq("stripe_customer_id", customerId);
+
   // Refresh this year's Stripe payments for the client (leave manual rows).
   let paymentsWritten = 0;
   try {
