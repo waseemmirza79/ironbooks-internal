@@ -23,7 +23,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
   const curMonth = new Date().getUTCMonth() + 1;
   const [{ data: clients }, { data: subs }, { data: pays }, { data: reconRows }, { data: unmatchedRows }] = await Promise.all([
     service.from("client_links")
-      .select("id, client_name, legal_business_name, contact_first_name, contact_last_name, client_email")
+      .select("id, client_name, legal_business_name, contact_first_name, contact_last_name, client_email, portal_billing_hold, billing_past_due_since")
       .eq("is_active", true)
       .order("client_name"),
     (service as any).from("billing_subscriptions").select("*"),
@@ -57,6 +57,8 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
       company: c.legal_business_name || c.client_name || "—",
       contact: [c.contact_first_name, c.contact_last_name].filter(Boolean).join(" ") || "—",
       email: c.client_email || null,
+      billingHold: !!c.portal_billing_hold,
+      pastDue: !!c.billing_past_due_since,
       mrrCents,
       currency: (sub?.currency as string) || "usd",
       subStatus: sub?.subscription_status || "none",

@@ -10,6 +10,8 @@ type Row = {
   company: string;
   contact: string;
   email: string | null;
+  billingHold: boolean;
+  pastDue: boolean;
   mrrCents: number;
   currency: string;
   subStatus: string;
@@ -58,6 +60,27 @@ export function BillingTable({ year, rows, fxUsdToCad, totals, recon, unmatched 
       router.refresh();
     } catch (e: any) { setSyncMsg(e?.message || "Network error"); }
     finally { setSyncing(false); }
+  }
+
+  async function runDunning() {
+    if (!confirm("Run billing dunning now? Sends a past-due reminder (email + portal) to clients with a confirmed failed payment, and applies/clears holds. Auto-suspend only acts if it's enabled server-side.")) return;
+    setSyncMsg(null);
+    try {
+      const res = await fetch("/api/admin/billing/dunning", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+      const j = await res.json();
+      if (!res.ok) { setSyncMsg(j.error || "Dunning failed"); return; }
+      setSyncMsg(`Dunning: ${j.pastDue} past due · ${j.remindersSent} reminders sent · ${j.suspended} suspended · ${j.cleared} cleared · auto-suspend ${j.autoSuspendOn ? "ON" : "OFF"}`);
+      router.refresh();
+    } catch (e: any) { setSyncMsg(e?.message || "Network error"); }
+  }
+
+  async function toggleHold(r: Row) {
+    const place = !r.billingHold;
+    if (!confirm(`${place ? "PLACE a billing hold on" : "RELEASE the billing hold for"} ${r.company}? ${place ? "This suspends their portal access until released." : "This restores their portal access."}`)) return;
+    try {
+      const res = await fetch("/api/admin/billing/dunning", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ client_link_id: r.clientLinkId, hold: place }) });
+      if (res.ok) router.refresh();
+    } catch { /* ignore */ }
   }
 
   async function pullCharges() {
@@ -143,6 +166,9 @@ export function BillingTable({ year, rows, fxUsdToCad, totals, recon, unmatched 
           </button>
           <button onClick={sync} disabled={syncing} className="inline-flex items-center gap-1.5 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-3 py-2 rounded-lg disabled:opacity-60" title="Map clients to Stripe customers + pull the year's invoices">
             {syncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Sync mapping
+          </button>
+          <button onClick={runDunning} className="inline-flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold px-3 py-2 rounded-lg" title="Send past-due reminders + apply/clear holds">
+            Run dunning
           </button>
         </div>
       </div>
@@ -232,7 +258,13 @@ export function BillingTable({ year, rows, fxUsdToCad, totals, recon, unmatched 
             {filteredRows.map((r) => (
               <tr key={r.clientLinkId} className="hover:bg-gray-50/50">
                 <td className="sticky left-0 bg-white px-3 py-1.5 border-b border-gray-100 max-w-[240px]">
-                  <div className="font-medium text-navy truncate" title={r.company}>{r.company}</div>
+                  <div className="font-medium text-navy truncate flex items-center gap-1.5" title={r.company}>
+                    {r.billingHold && <span className="text-[9px] font-bold bg-red-100 text-red-700 px-1 py-0.5 rounded" title="Portal access suspended">HOLD</span>}
+                    {!r.billingHold && r.pastDue && <span className="text-[9px] font-bold bg-amber-100 text-amber-800 px-1 py-0.5 rounded" title="Past due — reminders sending">PAST DUE</span>}
+                    <span className="truncate">{r.company}</span>
+                    <button onClick={() => toggleHold(r)} title={r.billingHold ? "Release hold (restore access)" : "Place hold (suspend access)"}
+                      className="ml-auto flex-shrink-0 text-[10px] text-ink-light hover:text-navy">{r.billingHold ? "release" : "hold"}</button>
+                  </div>
                   <button
                     onClick={() => setMatchRow(r)}
                     className="text-[11px] text-teal-dark hover:underline truncate max-w-[220px] block"
