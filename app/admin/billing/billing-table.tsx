@@ -19,18 +19,25 @@ type Row = {
 };
 
 type Totals = { expectedUsdCents: number; expectedCadCents: number; collectedUsdCents: number; collectedCadCents: number };
+type Recon = {
+  charge_count: number; matched_clients: number; matched_usd_cents: number; matched_cad_cents: number;
+  unmatched_count: number; unmatched_usd_cents: number; unmatched_cad_cents: number; fx_usd_cad: number; ran_at: string;
+} | null;
+type Unmatched = { who: string; amountCents: number; currency: string; customerId: string | null };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const money = (cents: number) => `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 // Currency-aware: CAD amounts get a " CAD" tag; USD stays plain.
 const fmtCur = (cents: number, currency: string) => money(cents) + (currency === "cad" ? " CAD" : "");
 
-export function BillingTable({ year, rows, fxUsdToCad, totals }: { year: number; rows: Row[]; fxUsdToCad: number; totals: Totals }) {
+export function BillingTable({ year, rows, fxUsdToCad, totals, recon, unmatched }: { year: number; rows: Row[]; fxUsdToCad: number; totals: Totals; recon: Recon; unmatched: Unmatched[] }) {
   const router = useRouter();
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [pulling, setPulling] = useState(false);
   const [pullResult, setPullResult] = useState<any | null>(null);
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState<"all" | "unmapped" | "failed">("all");
   const [modal, setModal] = useState<{ row: Row; month: number } | null>(null);
   const [matchRow, setMatchRow] = useState<Row | null>(null);
   const [expectedRow, setExpectedRow] = useState<Row | null>(null);
@@ -89,6 +96,25 @@ export function BillingTable({ year, rows, fxUsdToCad, totals }: { year: number;
   const expectedCombinedCad = totals.expectedCadCents + Math.round(totals.expectedUsdCents * fxUsdToCad);
   const collectedCombinedCad = totals.collectedCadCents + Math.round(totals.collectedUsdCents * fxUsdToCad);
 
+  // Search + filter (client-side; server-side pagination is the scale follow-up).
+  const ql = q.trim().toLowerCase();
+  const filteredRows = rows.filter((r) => {
+    if (ql && !`${r.company} ${r.contact} ${r.email || ""}`.toLowerCase().includes(ql)) return false;
+    if (filter === "unmapped" && r.stripeCustomerId) return false;
+    if (filter === "failed" && !Object.values(r.months).some((c) => c.failed > 0)) return false;
+    return true;
+  });
+
+  // Reconciliation: Stripe gross (this month) vs what we recorded vs unmatched.
+  const reconCombined = recon
+    ? {
+        grossCad: recon.matched_cad_cents + recon.unmatched_cad_cents + Math.round((recon.matched_usd_cents + recon.unmatched_usd_cents) * (recon.fx_usd_cad || fxUsdToCad)),
+        recordedCad: recon.matched_cad_cents + Math.round(recon.matched_usd_cents * (recon.fx_usd_cad || fxUsdToCad)),
+        unmatchedCad: recon.unmatched_cad_cents + Math.round(recon.unmatched_usd_cents * (recon.fx_usd_cad || fxUsdToCad)),
+      }
+    : null;
+  const unmatchedTotalCents = unmatched.reduce((s, u) => s + (u.currency === "cad" ? u.amountCents : Math.round(u.amountCents * fxUsdToCad)), 0);
+
   return (
     <div className="px-4 py-6 max-w-[1700px] mx-auto">
       <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
@@ -139,6 +165,53 @@ export function BillingTable({ year, rows, fxUsdToCad, totals }: { year: number;
             </div>
       )}
 
+      {/* Reconciliation — the critical number. Stripe gross this month must equal
+          what we recorded; any gap is shown loudly, never hidden. */}
+      {reconCombined && (
+        <div className={`mb-3 rounded-lg border px-3 py-2.5 text-sm ${reconCombined.unmatchedCad > 0 ? "bg-amber-50 border-amber-300" : "bg-emerald-50 border-emerald-200"}`}>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <strong className={reconCombined.unmatchedCad > 0 ? "text-amber-900" : "text-emerald-900"}>
+              {reconCombined.unmatchedCad > 0 ? "⚠ Reconciliation" : "✓ Reconciled"}
+            </strong>
+            <span className="text-ink-slate">
+              {MONTHS[curMonth - 1]} Stripe gross <strong>{cad(reconCombined.grossCad)} CAD</strong> = recorded {cad(reconCombined.recordedCad)} +{" "}
+              <strong className={reconCombined.unmatchedCad > 0 ? "text-amber-800" : ""}>{cad(reconCombined.unmatchedCad)} unmatched</strong>
+              {" "}({recon!.unmatched_count} charge{recon!.unmatched_count === 1 ? "" : "s"})
+            </span>
+            <span className="text-ink-light text-xs">· pulled {new Date(recon!.ran_at).toLocaleString()}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Unmatched-charge worklist — every dollar Stripe collected that we couldn't
+          map to a client. Find the client below (click their email) + re-pull. */}
+      {unmatched.length > 0 && (
+        <details className="mb-3 rounded-lg border border-amber-200 bg-amber-50/50">
+          <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-amber-900">
+            {unmatched.length} unmatched Stripe charge{unmatched.length === 1 ? "" : "s"} · {cad(unmatchedTotalCents)} CAD — map these to close the gap
+          </summary>
+          <ul className="px-3 pb-3 space-y-1 max-h-64 overflow-y-auto">
+            {unmatched.map((u, i) => (
+              <li key={i} className="flex justify-between gap-3 text-xs text-amber-900 border-t border-amber-100 pt-1">
+                <span className="truncate">{u.who}</span>
+                <span className="flex-shrink-0 font-medium">{fmtCur(u.amountCents, u.currency)}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search company / contact / email…"
+          className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg w-64" />
+        <select value={filter} onChange={(e) => setFilter(e.target.value as any)} className="px-2.5 py-1.5 text-sm border border-gray-200 rounded-lg bg-white">
+          <option value="all">All clients</option>
+          <option value="unmapped">Not mapped to Stripe</option>
+          <option value="failed">Has a failed payment</option>
+        </select>
+        <span className="text-xs text-ink-light">{filteredRows.length} of {rows.length}</span>
+      </div>
+
       <div className="flex flex-wrap gap-3 mb-3 text-[11px] text-ink-slate">
         <Legend bg="#D1E7DD" t="collected (= MRR)" /><Legend bg="#0F5132" t="extra (setup/coaching)" />
         <Legend bg="#F8D7DA" t="failed / missed" /><Legend bg="#F1F3F5" t="expected" />
@@ -156,7 +229,7 @@ export function BillingTable({ year, rows, fxUsdToCad, totals }: { year: number;
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {filteredRows.map((r) => (
               <tr key={r.clientLinkId} className="hover:bg-gray-50/50">
                 <td className="sticky left-0 bg-white px-3 py-1.5 border-b border-gray-100 max-w-[240px]">
                   <div className="font-medium text-navy truncate" title={r.company}>{r.company}</div>

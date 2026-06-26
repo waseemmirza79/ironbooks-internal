@@ -20,14 +20,19 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
   const sp = await searchParams;
   const year = Number(sp.year) || new Date().getUTCFullYear();
 
-  const [{ data: clients }, { data: subs }, { data: pays }] = await Promise.all([
+  const curMonth = new Date().getUTCMonth() + 1;
+  const [{ data: clients }, { data: subs }, { data: pays }, { data: reconRows }, { data: unmatchedRows }] = await Promise.all([
     service.from("client_links")
       .select("id, client_name, legal_business_name, contact_first_name, contact_last_name, client_email")
       .eq("is_active", true)
       .order("client_name"),
     (service as any).from("billing_subscriptions").select("*"),
     (service as any).from("billing_payments").select("*").eq("period_year", year),
+    (service as any).from("billing_recon_runs").select("*").eq("period_year", year).eq("period_month", curMonth).order("ran_at", { ascending: false }).limit(1),
+    (service as any).from("billing_unmatched_charges").select("*").eq("period_year", year).eq("period_month", curMonth).order("amount_cents", { ascending: false }),
   ]);
+  const recon = (reconRows as any[])?.[0] || null;
+  const unmatched = (unmatchedRows as any[]) || [];
 
   const subByClient = new Map<string, any>(((subs as any[]) || []).map((s) => [s.client_link_id, s]));
   // Aggregate payments → per client, per month.
@@ -79,5 +84,16 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
     collectedCadCents: sum((r) => r.currency === "cad", collectedOf),
   };
 
-  return <BillingTable year={year} rows={rows} fxUsdToCad={fxUsdToCad} totals={totals} />;
+  return (
+    <BillingTable
+      year={year}
+      rows={rows}
+      fxUsdToCad={fxUsdToCad}
+      totals={totals}
+      recon={recon}
+      unmatched={unmatched.map((u) => ({
+        who: u.who, amountCents: u.amount_cents, currency: u.currency, customerId: u.stripe_customer_id,
+      }))}
+    />
+  );
 }

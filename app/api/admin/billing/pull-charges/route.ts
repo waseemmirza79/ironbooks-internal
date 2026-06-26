@@ -71,7 +71,7 @@ export async function POST(request: Request) {
   // Bucket by client.
   type Agg = { cents: number; currency: string; clientLinkId: string; newCustomer?: string };
   const matched = new Map<string, Agg>(); // client_link_id → agg (this month total)
-  const unmatched: { who: string; cents: number; currency: string }[] = [];
+  const unmatched: { who: string; cents: number; currency: string; chargeId: string; customerId: string | null }[] = [];
   let matchedUsd = 0, matchedCad = 0, unmatchedUsd = 0, unmatchedCad = 0;
 
   for (const c of ok) {
@@ -88,7 +88,7 @@ export async function POST(request: Request) {
       matched.set(clientId, a);
       if (currency === "cad") matchedCad += cents; else matchedUsd += cents;
     } else {
-      unmatched.push({ who: c.customer || email || c.description || c.id, cents, currency });
+      unmatched.push({ who: email || c.customer || c.description || c.id, cents, currency, chargeId: c.id, customerId: c.customer || null });
       if (currency === "cad") unmatchedCad += cents; else unmatchedUsd += cents;
     }
   }
@@ -118,6 +118,26 @@ export async function POST(request: Request) {
   let fx = 1.37;
   try { const r = await fetch("https://open.er-api.com/v6/latest/USD"); const j = await r.json(); if (j?.rates?.CAD) fx = j.rates.CAD; } catch {}
   const combinedCad = (cents: number, usd: number) => Math.round(cents + usd * fx);
+
+  // Persist the reconciliation snapshot (the "critical number" over time).
+  await (service as any).from("billing_recon_runs").insert({
+    period_year: year, period_month: month,
+    charge_count: ok.length, matched_clients: matched.size,
+    matched_usd_cents: matchedUsd, matched_cad_cents: matchedCad,
+    unmatched_count: unmatched.length, unmatched_usd_cents: unmatchedUsd, unmatched_cad_cents: unmatchedCad,
+    fx_usd_cad: fx, ran_by: user.id,
+  });
+  // Replace the month's unmatched-charges worklist with this pull's leftovers.
+  await (service as any).from("billing_unmatched_charges").delete().eq("period_year", year).eq("period_month", month);
+  if (unmatched.length) {
+    await (service as any).from("billing_unmatched_charges").insert(
+      unmatched.map((u) => ({
+        period_year: year, period_month: month, stripe_charge_id: u.chargeId,
+        stripe_customer_id: u.customerId, who: String(u.who).slice(0, 200),
+        amount_cents: u.cents, currency: u.currency,
+      }))
+    );
+  }
 
   await service.from("audit_log").insert({
     user_id: user.id, event_type: "billing_pull_charges",
