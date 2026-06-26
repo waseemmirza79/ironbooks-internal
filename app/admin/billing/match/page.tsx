@@ -30,8 +30,15 @@ export default async function BillingMatchPage() {
   for (const r of ((rows as any[]) || [])) {
     let email: string | null = r.who && String(r.who).includes("@") ? String(r.who).toLowerCase() : null;
     let name: string | null = null;
-    if (!email && r.stripe_customer_id) {
-      try { const c = await getStripeCustomer(r.stripe_customer_id); email = c?.email || null; name = c?.name || null; } catch { /* ignore */ }
+    // Always resolve the Stripe customer NAME (the cardholder) when we have a
+    // customer id — the contact name is often the only thing that ties a charge
+    // to a client when the paying email differs from the one on file.
+    if (r.stripe_customer_id) {
+      try {
+        const c = await getStripeCustomer(r.stripe_customer_id);
+        if (!email) email = c?.email || null;
+        name = c?.name || null;
+      } catch { /* ignore */ }
     }
     const suggestion = r.stripe_customer_id ? suggestClient(index, email, name) : null;
     items.push({

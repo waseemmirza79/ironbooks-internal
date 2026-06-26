@@ -8,7 +8,11 @@
 export interface ClientIndex {
   byEmail: Map<string, string>;       // email (lower) → client_link_id
   byCustomer: Map<string, string>;    // stripe_customer_id → client_link_id
-  clients: { id: string; company: string; emails: string[]; nameNorm: string }[];
+  // `names` holds discrete normalized variants to match a charge against:
+  // the company name AND the contact's "first last" / "last first" — the
+  // Stripe cardholder is usually the person, not the business, so the contact
+  // name is the strongest signal when the email doesn't line up.
+  clients: { id: string; company: string; emails: string[]; names: string[] }[];
 }
 
 const normName = (s: string) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -66,11 +70,19 @@ export async function buildClientIndex(service: any): Promise<ClientIndex> {
     for (const e of (portalEmailsByClient.get(c.id) || [])) emails.add(e);
     for (const e of emails) if (!byEmail.has(e)) byEmail.set(e, c.id);
     if (c.stripe_customer_id) byCustomer.set(c.stripe_customer_id, c.id);
+    const first = (c.contact_first_name || "").trim();
+    const last = (c.contact_last_name || "").trim();
+    const names = [
+      normName(c.legal_business_name),
+      normName(c.client_name),
+      normName(`${first} ${last}`),
+      normName(`${last} ${first}`),
+    ].filter((s) => s.length > 0);
     out.push({
       id: c.id,
       company: c.legal_business_name || c.client_name || "—",
       emails: [...emails],
-      nameNorm: normName(c.legal_business_name || c.client_name) + " " + normName(`${c.contact_first_name || ""}${c.contact_last_name || ""}`),
+      names: [...new Set(names)],
     });
   }
   return { byEmail, byCustomer, clients: out };
@@ -99,12 +111,19 @@ export function suggestClient(index: ClientIndex, email: string | null, name: st
   }
   if (name) {
     const n = normName(name);
-    let best: MatchSuggestion | null = null;
-    for (const c of index.clients) {
-      const s = similarity(n, c.nameNorm);
-      if (s >= 0.95 && (!best || s > best.score)) best = { clientLinkId: c.id, company: c.company, score: s, reason: `~name ${(s * 100).toFixed(0)}%` };
+    if (n) {
+      let best: MatchSuggestion | null = null;
+      for (const c of index.clients) {
+        for (const cn of c.names) {
+          const s = similarity(n, cn);
+          if (s >= 0.95 && (!best || s > best.score)) {
+            const exactNote = s === 1 ? "name exact" : `~name ${(s * 100).toFixed(0)}%`;
+            best = { clientLinkId: c.id, company: c.company, score: s, reason: exactNote };
+          }
+        }
+      }
+      if (best) return best;
     }
-    if (best) return best;
   }
   return null;
 }

@@ -370,6 +370,24 @@ export async function upsertLeadFromWebhook(
   return error ? { ok: false, error: error.message } : { ok: true, id: data?.id };
 }
 
+// Canadian NANP area codes — used to infer US/CA jurisdiction from a phone
+// number when the form/address doesn't say (GHL's `country` field defaults
+// everyone to "CA", so it's not trustworthy; the area code is).
+const CA_AREA_CODES = new Set([
+  "204","226","236","249","263","289","306","343","354","365","367","368","382",
+  "403","416","418","431","437","438","450","468","474","506","514","519","548",
+  "579","581","584","587","604","613","639","647","672","683","705","709","742",
+  "753","778","780","782","807","819","825","867","873","879","902","905",
+]);
+
+function jurisdictionFromPhone(phone?: string | null): "US" | "CA" | null {
+  const digits = (phone || "").replace(/[^0-9]/g, "");
+  if (!digits) return null;
+  const ac = digits.length >= 11 && digits.startsWith("1") ? digits.slice(1, 4) : digits.slice(0, 3);
+  if (ac.length !== 3) return null;
+  return CA_AREA_CODES.has(ac) ? "CA" : "US";
+}
+
 /**
  * Resolve (or create) the SNAP client profile (`client_links`) for a won sale.
  *
@@ -421,7 +439,10 @@ export async function resolveOrCreateClientForWon(
       ? `ghl_${opts.ghlContactId}`
       : `won_${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
   };
-  if (opts.jurisdiction) insert.jurisdiction = opts.jurisdiction;
+  // jurisdiction is NOT NULL. Prefer the form-derived value; else infer from
+  // the phone area code (Canadian NANP codes → CA); else default US (the modal
+  // case for new sales). Best-effort — the onboarding form sets it correctly.
+  insert.jurisdiction = opts.jurisdiction || jurisdictionFromPhone(opts.phone) || "US";
   if (opts.businessName) insert.legal_business_name = opts.businessName;
   if (opts.fullName) {
     const parts = opts.fullName.trim().split(/\s+/);
