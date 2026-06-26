@@ -139,6 +139,39 @@ export function Sidebar() {
 
   const isAdmin = userRole === "admin";
   const isSenior = userRole === "admin" || userRole === "lead";
+  const isBillingAdmin = userRole === "billing_admin";
+
+  // Billing-only admin: a stripped sidebar with just Billing — no bookkeeping
+  // nav (middleware also confines them to /admin/billing).
+  if (isBillingAdmin) {
+    return (
+      <aside className="flex flex-col h-screen sticky top-0 w-56 bg-navy text-white">
+        <div className="px-4 py-4 border-b border-white/10">
+          <div className="flex items-center gap-2.5">
+            <img src="/logo.png" alt="Ironbooks" className="w-9 h-9 object-contain flex-shrink-0" />
+            <div>
+              <div className="font-bold text-base tracking-tight leading-none">Ironbooks</div>
+              <div className="text-[11px] mt-0.5 text-white/45">Billing</div>
+            </div>
+          </div>
+        </div>
+        <nav className="flex-1 px-2.5 py-3">
+          <NavSection label="Billing" />
+          <NavItem item={{ href: "/admin/billing", label: "Billing", icon: CreditCard }} pathname={pathname} />
+        </nav>
+        <div className="px-2.5 py-3 border-t border-white/10">
+          <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg bg-white/5">
+            <div className="rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 w-8 h-8 bg-teal">{userName.charAt(0) || "?"}</div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold leading-tight truncate">{userName || "Loading..."}</div>
+              <div className="text-[11px] leading-tight truncate text-white/45 capitalize">billing admin</div>
+            </div>
+            <button onClick={handleSignOut} className="text-white/40 hover:text-white transition-colors" title="Sign out"><LogOut size={15} /></button>
+          </div>
+        </div>
+      </aside>
+    );
+  }
 
   const cleanupActive =
     pathname.startsWith("/jobs/") ||

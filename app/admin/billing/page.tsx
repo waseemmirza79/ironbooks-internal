@@ -15,7 +15,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
   if (!user) redirect("/auth/login");
   const service = createServiceSupabase();
   const { data: actor } = await service.from("users").select("role").eq("id", user.id).single();
-  if (!["admin", "lead"].includes((actor as any)?.role || "")) redirect("/dashboard");
+  if (!["admin", "lead", "billing_admin"].includes((actor as any)?.role || "")) redirect("/dashboard");
 
   const sp = await searchParams;
   const year = Number(sp.year) || new Date().getUTCFullYear();

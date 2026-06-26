@@ -16,7 +16,7 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const service = createServiceSupabase();
   const { data: actor } = await service.from("users").select("role").eq("id", user.id).single();
-  if (!["admin", "lead"].includes((actor as any)?.role || "")) {
+  if (!["admin", "lead", "billing_admin"].includes((actor as any)?.role || "")) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   const body = await request.json().catch(() => ({}));

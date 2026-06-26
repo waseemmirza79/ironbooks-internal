@@ -51,5 +51,52 @@ export async function POST(request: Request) {
     console.error("[ghl/won] upsert failed:", result.error);
     return NextResponse.json({ error: result.error }, { status: 500 });
   }
-  return NextResponse.json({ ok: true, lead_id: result.id });
+
+  // On WON, create the SNAP client right away (status=onboarding) so it exists
+  // before the onboarding form arrives. Idempotent: reuse the lead's linked
+  // client, else an existing client with the same email, else create one.
+  const cf = extractContactFields(payload);
+  const emailLc = (cf.email ? String(cf.email) : "").trim().toLowerCase();
+  let clientLinkId: string | null = null;
+  let createdClient = false;
+  try {
+    const { data: lead } = await (service as any)
+      .from("onboarding_leads").select("client_link_id").eq("id", result.id).maybeSingle();
+    clientLinkId = lead?.client_link_id || null;
+
+    if (!clientLinkId && emailLc) {
+      const { data: ex } = await (service as any)
+        .from("client_links").select("id").ilike("client_email", emailLc).limit(1).maybeSingle();
+      clientLinkId = ex?.id || null;
+    }
+    if (!clientLinkId) {
+      const fullName = (cf.full_name || "").trim();
+      const sp = fullName.indexOf(" ");
+      const { data: created, error } = await (service as any)
+        .from("client_links")
+        .insert({
+          client_name: cf.business_name || fullName || "New client (won)",
+          client_email: cf.email || null,
+          client_phone: cf.phone || null,
+          contact_first_name: sp > 0 ? fullName.slice(0, sp) : fullName || null,
+          contact_last_name: sp > 0 ? fullName.slice(sp + 1) : null,
+          status: "onboarding",
+          is_active: true,
+        })
+        .select("id").single();
+      if (!error && created) { clientLinkId = created.id; createdClient = true; }
+    }
+    if (clientLinkId) {
+      await (service as any).from("onboarding_leads")
+        .update({ client_link_id: clientLinkId }).eq("id", result.id);
+      await service.from("audit_log").insert({
+        event_type: createdClient ? "ghl_won_created_client" : "ghl_won_linked_client",
+        request_payload: { lead_id: result.id, client_link_id: clientLinkId, email: cf.email, created: createdClient } as any,
+      });
+    }
+  } catch (e: any) {
+    console.warn("[ghl/won] client create/link skipped:", e?.message);
+  }
+
+  return NextResponse.json({ ok: true, lead_id: result.id, client_link_id: clientLinkId, created_client: createdClient });
 }

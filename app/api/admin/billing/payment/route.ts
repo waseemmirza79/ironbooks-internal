@@ -16,7 +16,7 @@ async function authActor() {
   if (!user) return { user: null, service: null as any };
   const service = createServiceSupabase();
   const { data: actor } = await service.from("users").select("role").eq("id", user.id).single();
-  if (!["admin", "lead"].includes((actor as any)?.role || "")) return { user: null, service };
+  if (!["admin", "lead", "billing_admin"].includes((actor as any)?.role || "")) return { user: null, service };
   return { user, service };
 }
 
