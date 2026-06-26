@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
   Home, Wallet, Receipt, Sparkles,
-  GraduationCap, Settings, FileCheck2, Mail, BookOpen, Tags, CreditCard,
+  GraduationCap, Settings, FileCheck2, Mail, BookOpen, Tags, CreditCard, Phone,
 } from "lucide-react";
 import { MessagesNavLink } from "./messages-nav-link";
 import { FinancialStatementsNav } from "./financial-statements-nav";
@@ -175,27 +175,22 @@ export default async function PortalLayout({ children }: { children: React.React
             <NavLink href="/portal/ask-ai" icon={Sparkles} label="Ask the AI" badge="NEW" ai />
             <NavLink href="/portal/knowledge-base" icon={BookOpen} label="Knowledge Base" />
             <NavLink href="/portal/learn" icon={GraduationCap} label="Learn" />
+            <NavLink href="/portal/coaching-call" icon={Phone} label="Book a coaching call" />
+
+            {/* Account actions sit right under Help so they're reachable without
+                scrolling to the footer. */}
+            <NavSection label="Account" />
+            <NavLink href="/portal/billing" icon={CreditCard} label="Billing &amp; Plan" />
+            <NavLink href="/portal/settings" icon={Settings} label="Settings" />
           </nav>
 
-          <div className="px-3 py-3 border-t border-white/10 space-y-1">
-            {/* Account actions live in the footer so the main nav stays focused
-                on the books, not billing/settings. */}
-            <Link
-              href="/portal/billing"
-              className="flex items-center gap-2 px-3 py-2 rounded text-sm text-white/65 hover:bg-white/5 hover:text-white"
-            >
-              <CreditCard size={14} /> Billing &amp; Plan
-            </Link>
-            <Link
-              href="/portal/settings"
-              className="flex items-center gap-2 px-3 py-2 rounded text-sm text-white/65 hover:bg-white/5 hover:text-white"
-            >
-              <Settings size={14} /> Settings
-            </Link>
-            {/* Don't show client sign-out when impersonating — admin signs
-                out via stop-impersonating + their own /auth/login flow */}
-            {!ctx.impersonating && <SignOutButton />}
-          </div>
+          {/* Don't show client sign-out when impersonating — admin signs out via
+              stop-impersonating + their own /auth/login flow. */}
+          {!ctx.impersonating && (
+            <div className="px-3 py-3 border-t border-white/10">
+              <SignOutButton />
+            </div>
+          )}
         </aside>
 
         <main className="flex-1 max-w-5xl mx-auto px-8 py-8">{children}</main>
