@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Phone, Loader2, ExternalLink, Check, BookOpen, Sparkles, MousePointerClick, Mail } from "lucide-react";
+import { Phone, Loader2, ExternalLink, Check, BookOpen, Sparkles, MousePointerClick, Mail, CalendarClock, BellRing } from "lucide-react";
 
 export function CoachingCallBooking({
   coaches,
@@ -18,6 +18,26 @@ export function CoachingCallBooking({
   const [coachKey, setCoachKey] = useState<string>(coaches[0]?.coach_key || "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+
+  // Weekly-training reminder opt-in (separate from the paid booking flow).
+  const [trainingBusy, setTrainingBusy] = useState(false);
+  const [trainingDone, setTrainingDone] = useState(false);
+  const [trainingErr, setTrainingErr] = useState("");
+
+  async function signUpTraining() {
+    setTrainingBusy(true);
+    setTrainingErr("");
+    try {
+      const res = await fetch("/api/portal/training-signup", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Could not sign you up");
+      setTrainingDone(true);
+    } catch (e: any) {
+      setTrainingErr(e.message);
+    } finally {
+      setTrainingBusy(false);
+    }
+  }
 
   async function book() {
     if (!coachKey) return;
@@ -100,6 +120,46 @@ export function CoachingCallBooking({
                 , click into a line, and use the button beside any transaction to send it in — our team
                 reviews it promptly.
               </span>
+            </li>
+            <li className="flex gap-3">
+              <CalendarClock size={16} className="text-teal mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <span className="text-sm text-ink-slate leading-relaxed">
+                  <strong className="text-navy">Join our free weekly training calls.</strong> Live group
+                  coaching every{" "}
+                  <strong className="text-navy">Thursday, 12–1 PM PST / 3–4 PM EST</strong>. Each week
+                  alternates between a <strong className="text-navy">Financial Literacy</strong> session and
+                  a hands-on <strong className="text-navy">Financial Working Session</strong> — bring your
+                  questions and work through your numbers with us.
+                </span>
+                <div className="mt-2.5">
+                  {impersonating ? (
+                    <span className="text-xs text-ink-slate italic">
+                      Sign-up is disabled while impersonating.
+                    </span>
+                  ) : trainingDone ? (
+                    <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-teal">
+                      <Check size={15} /> You&apos;re signed up — Thursday reminders are on the way.
+                    </span>
+                  ) : (
+                    <>
+                      <button
+                        onClick={signUpTraining}
+                        disabled={trainingBusy}
+                        className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-bold px-4 py-2 rounded-lg transition-colors"
+                      >
+                        {trainingBusy ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <BellRing size={14} />
+                        )}
+                        {trainingBusy ? "Signing you up…" : "Click here to sign up and get reminders"}
+                      </button>
+                      {trainingErr && <p className="text-xs text-red-600 mt-1.5">{trainingErr}</p>}
+                    </>
+                  )}
+                </div>
+              </div>
             </li>
             <li className="flex gap-3">
               <Mail size={16} className="text-teal mt-0.5 flex-shrink-0" />

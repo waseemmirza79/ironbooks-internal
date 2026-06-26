@@ -84,6 +84,67 @@ export async function resendOnboardingEmail(contactId: string): Promise<void> {
   await ghlRequest(`/contacts/${contactId}/workflow/${workflowId}`, { method: "POST" });
 }
 
+/** Is the weekly-training reminder automation wired up? */
+export function trainingSignupConfigured(): boolean {
+  return ghlConfigured() && !!process.env.GHL_TRAINING_WORKFLOW_ID;
+}
+
+/**
+ * Enroll a client in the weekly training-calls reminder automation.
+ *
+ * Finds the contact by email (they're almost always already a GHL contact from
+ * the sale); upserts one if not. Tags them "weekly-training" for segmenting and
+ * fires the reminder workflow (env GHL_TRAINING_WORKFLOW_ID) — the same
+ * /contacts/{id}/workflow/{id} mechanism resendOnboardingEmail uses.
+ *
+ * Throws a clear error if GHL or the workflow id isn't configured, so the
+ * caller can fall back to just recording the opt-in.
+ */
+export async function signUpForTrainingCalls(opts: {
+  email: string;
+  name?: string | null;
+  phone?: string | null;
+}): Promise<{ contactId: string }> {
+  const loc = process.env.GHL_LOCATION_ID;
+  const workflowId = process.env.GHL_TRAINING_WORKFLOW_ID;
+  if (!process.env.GHL_API_KEY || !loc) throw new Error("GHL not configured");
+  if (!workflowId) {
+    throw new Error(
+      "Training reminders not wired yet — set GHL_TRAINING_WORKFLOW_ID to the weekly-training workflow."
+    );
+  }
+  const email = (opts.email || "").trim();
+  if (!email) throw new Error("No email to sign up");
+
+  // Reuse the existing contact when we can; upsert otherwise.
+  let contactId = (await findGhlContactByEmail(email))?.id;
+  if (!contactId) {
+    const res = await ghlRequest<any>(`/contacts/upsert`, {
+      method: "POST",
+      body: {
+        locationId: loc,
+        email,
+        name: opts.name || undefined,
+        phone: opts.phone || undefined,
+      },
+    });
+    contactId = res?.contact?.id || res?.id;
+  }
+  if (!contactId) throw new Error("Could not resolve a GHL contact");
+
+  // Tag for segmenting (best-effort), then enroll in the reminder workflow.
+  try {
+    await ghlRequest(`/contacts/${contactId}/tags`, {
+      method: "POST",
+      body: { tags: ["weekly-training"] },
+    });
+  } catch {
+    /* tagging is non-critical */
+  }
+  await ghlRequest(`/contacts/${contactId}/workflow/${workflowId}`, { method: "POST" });
+  return { contactId };
+}
+
 /** A GHL contact, normalized to the fields we backfill onto a client profile. */
 export interface GhlContact {
   id: string;
