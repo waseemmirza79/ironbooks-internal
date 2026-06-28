@@ -763,7 +763,7 @@ export default async function TodayPage({
 }) {
   return (
     <AppShell>
-      <TopBar title="Today" subtitle="Daily reconciliation queue" />
+      <TopBar title="Today" subtitle="Production daily review &amp; your action queue · onboarding and cleanup live on the Workflow board" />
       <TodayContent searchParams={searchParams} />
     </AppShell>
   );

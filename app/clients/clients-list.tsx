@@ -4,6 +4,7 @@ import { useState, useMemo, Component, useEffect, useRef, type ReactNode } from 
 import { CommsTracker } from "./comms-tracker";
 import { PyTaxesWidget } from "./py-taxes-widget";
 import { LIFECYCLE_META, type LifecycleStatus } from "@/lib/client-lifecycle";
+import { LifecyclePill } from "@/components/LifecyclePill";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -653,12 +654,7 @@ function ClientRow({
           // Prefer the precise 11-stage lifecycle label (V2); fall back to the
           // legacy 3-label derivedStatus when lifecycle isn't supplied.
           if (client.lifecycle && LIFECYCLE_META[client.lifecycle]) {
-            const m = LIFECYCLE_META[client.lifecycle];
-            return (
-              <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold ${m.tone}`}>
-                {m.label}
-              </span>
-            );
+            return <LifecyclePill status={client.lifecycle} />;
           }
           const ds = derivedStatus(client);
           return (

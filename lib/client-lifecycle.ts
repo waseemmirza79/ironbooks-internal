@@ -8,6 +8,8 @@
  * manager can see exactly where each client sits.
  */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 export type LifecycleStatus =
   | "onboarding"        // new sale, not yet connected / no cleanup work
   | "needs_cleanup"     // connected, cleanup not started
@@ -91,4 +93,99 @@ export function deriveLifecycleStatus(c: LifecycleInput): LifecycleStatus {
   if (c.has_complete_coa) return "reclassify"; // COA done, reclass not started
   if (c.status === "onboarding" && !c.qbo_connected) return "onboarding";
   return "needs_cleanup";
+}
+
+const ACTIVE_JOB_STATUSES = ["pending", "executing", "in_review", "failed"];
+
+/** Current month-end close period ("YYYY-MM" = previous calendar month). */
+function currentClosePeriod(): string {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * Derive the lifecycle status for ONE client (profile header, etc.). Mirrors the
+ * batch derivation in app/clients/page.tsx but self-contained. Best-effort —
+ * each signal query is guarded so a missing table never breaks the caller.
+ * Pass the already-loaded client_links row; only job/month/message signals are
+ * fetched here.
+ */
+export async function deriveLifecycleForClient(
+  service: SupabaseClient,
+  client: {
+    id: string;
+    status?: string | null;
+    qbo_realm_id?: string | null;
+    cleanup_completed_at?: string | null;
+    cleanup_review_state?: string | null;
+    manual_cleanup_needed?: boolean | null;
+    daily_recon_enabled?: boolean | null;
+    bs_enabled?: boolean | null;
+  }
+): Promise<LifecycleStatus> {
+  const id = client.id;
+  const jobRows = async (table: string): Promise<{ status: string }[]> => {
+    try {
+      const { data } = await (service as any).from(table).select("status").eq("client_link_id", id);
+      return (data as { status: string }[]) || [];
+    } catch {
+      return [];
+    }
+  };
+  const [coa, reclass] = await Promise.all([jobRows("coa_jobs"), jobRows("reclass_jobs")]);
+  const anyActive = (rows: { status: string }[]) => rows.some((r) => ACTIVE_JOB_STATUSES.includes(r.status));
+  const anyComplete = (rows: { status: string }[]) => rows.some((r) => r.status === "complete");
+
+  let month_done = false;
+  let month_review = false;
+  let month_waiting = false;
+  if (client.daily_recon_enabled && client.cleanup_completed_at) {
+    try {
+      const { data } = await (service as any)
+        .from("monthly_rec_runs")
+        .select("status, board_status")
+        .eq("client_link_id", id)
+        .eq("kind", "production_me")
+        .eq("period", currentClosePeriod())
+        .maybeSingle();
+      if ((data as any)?.status === "complete") month_done = true;
+      else if ((data as any)?.status === "pending_review") month_review = true;
+      else if ((data as any)?.board_status === "waiting_client") month_waiting = true;
+    } catch {
+      /* pre-migration env */
+    }
+  }
+
+  let open_ask_client = false;
+  try {
+    const { count } = await (service as any)
+      .from("client_communications")
+      .select("id", { count: "exact", head: true })
+      .eq("client_link_id", id)
+      .eq("direction", "from_client")
+      .is("read_at", null);
+    open_ask_client = (count || 0) > 0;
+  } catch {
+    /* ignore */
+  }
+
+  return deriveLifecycleStatus({
+    status: client.status,
+    qbo_connected: !!client.qbo_realm_id,
+    cleanup_completed_at: client.cleanup_completed_at,
+    cleanup_review_state: client.cleanup_review_state,
+    manual_cleanup_needed: client.manual_cleanup_needed,
+    daily_recon_enabled: client.daily_recon_enabled,
+    bs_deferred: client.bs_enabled === false,
+    has_active_coa: anyActive(coa),
+    has_active_reclass: anyActive(reclass),
+    has_complete_coa: anyComplete(coa),
+    has_complete_reclass: anyComplete(reclass),
+    open_ask_client,
+    month_done,
+    month_review,
+    month_waiting_client: month_waiting,
+  });
 }
