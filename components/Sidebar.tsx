@@ -6,7 +6,7 @@ import {
   Home, Sparkles, Flag, Users, LogOut, BookOpen, Clock,
   Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight, Receipt, KanbanSquare, Sun,
   FileSpreadsheet, Wallet, Volume2, VolumeX, HeartPulse, Gauge, CalendarCheck,
-  ClipboardCheck, ListChecks, UserPlus, Video, GraduationCap, Settings as SettingsIcon, Mail, Inbox, ListTodo, LifeBuoy,
+  ClipboardCheck, ListChecks, UserPlus, Video, GraduationCap, Settings as SettingsIcon, Mail, Inbox, ListTodo, LifeBuoy, ExternalLink,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
@@ -15,10 +15,10 @@ import { StripeConnectModal } from "./StripeConnectModal";
 import { isMuted, setMuted, onMutedChange, playSound } from "@/lib/sounds";
 
 /** Daily work surface — the whole job in five stops. */
-const dailyNav: { href: string; label: string; icon: any; senior?: boolean }[] = [
+const dailyNav: { href: string; label: string; icon: any; senior?: boolean; newTab?: boolean }[] = [
   { href: "/today", label: "Today", icon: Sun },
   { href: "/inbox", label: "Inbox", icon: Inbox },
-  { href: "/support", label: "Support", icon: LifeBuoy },
+  { href: "/support", label: "Support", icon: LifeBuoy, newTab: true },
   { href: "/tasks", label: "Tasks", icon: ListTodo },
   { href: "/onboarding", label: "Onboarding", icon: UserPlus, senior: true },
   { href: "/cleanup", label: "Cleanup", icon: ClipboardCheck },
@@ -337,28 +337,30 @@ function NavItem({
   badgeTone = "amber",
   dim,
 }: {
-  item: { href: string; label: string; icon: any };
+  item: { href: string; label: string; icon: any; newTab?: boolean };
   pathname: string;
   badgeCount?: number;
   badgeTone?: "amber" | "red";
   dim?: boolean;
 }) {
-  const active = pathname === item.href || pathname.startsWith(item.href + "/");
+  // newTab items (e.g. Support → Freshdesk) open externally, so they never
+  // match the current path and never show as active.
+  const active = !item.newTab && (pathname === item.href || pathname.startsWith(item.href + "/"));
   const Icon = item.icon;
 
-  return (
-    <Link
-      href={item.href}
-      className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all mb-0.5 ${
-        active
-          ? "bg-teal/20 text-white"
-          : dim
-          ? "text-white/40 hover:bg-white/5 hover:text-white/75"
-          : "text-white/70 hover:bg-white/5 hover:text-white"
-      }`}
-    >
+  const className = `w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all mb-0.5 ${
+    active
+      ? "bg-teal/20 text-white"
+      : dim
+      ? "text-white/40 hover:bg-white/5 hover:text-white/75"
+      : "text-white/70 hover:bg-white/5 hover:text-white"
+  }`;
+
+  const inner = (
+    <>
       <Icon size={dim ? 14 : 16} className="flex-shrink-0" />
-      <span className={dim ? "text-[13px]" : "text-[13px]"}>{item.label}</span>
+      <span className="text-[13px]">{item.label}</span>
+      {item.newTab && <ExternalLink size={12} className="ml-auto flex-shrink-0 opacity-50" />}
       {badgeCount != null && badgeCount > 0 && (
         <span
           className={`ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded-full text-white tabular-nums ${
@@ -368,6 +370,21 @@ function NavItem({
           {badgeCount > 999 ? "999+" : badgeCount}
         </span>
       )}
+    </>
+  );
+
+  // Open externally in a new tab (full navigation, not SPA routing).
+  if (item.newTab) {
+    return (
+      <a href={item.href} target="_blank" rel="noopener noreferrer" className={className}>
+        {inner}
+      </a>
+    );
+  }
+
+  return (
+    <Link href={item.href} className={className}>
+      {inner}
     </Link>
   );
 }
