@@ -3,6 +3,8 @@ import { TopBar } from "@/components/TopBar";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { notFound, redirect } from "next/navigation";
 import { ClientProfileShell } from "./client-profile-shell";
+import { deriveLifecycleForClient } from "@/lib/client-lifecycle";
+import { LifecyclePill } from "@/components/LifecyclePill";
 import {
   fetchOutstandingWork,
   fetchRecentActivity,
@@ -213,7 +215,7 @@ export default async function ClientProfilePage({
   // used elsewhere in this codebase pending a types regen.
   const { data: clientLinkRaw } = await service
     .from("client_links")
-    .select("id, client_name, qbo_realm_id, industry, jurisdiction, state_province, status, last_synced_at, double_client_id, double_client_name, daily_recon_enabled, daily_recon_paused, daily_recon_paused_reason, daily_recon_enabled_at, cleanup_completed_at, contact_first_name, contact_last_name, client_email, client_phone, legal_business_name, trade_type, corporate_type, fiscal_year_end, country, address_line1, address_line2, city, postal_code, annual_revenue_range, taxes_up_to_date, prior_bookkeeper, accounting_software, payroll_provider, employee_count_range, uses_business_cards, keeps_receipts, bank_connected_to_software, profile_updated_at" as any)
+    .select("id, client_name, qbo_realm_id, industry, jurisdiction, state_province, status, last_synced_at, double_client_id, double_client_name, daily_recon_enabled, daily_recon_paused, daily_recon_paused_reason, daily_recon_enabled_at, cleanup_completed_at, cleanup_review_state, manual_cleanup_needed, bs_enabled, contact_first_name, contact_last_name, client_email, client_phone, legal_business_name, trade_type, corporate_type, fiscal_year_end, country, address_line1, address_line2, city, postal_code, annual_revenue_range, taxes_up_to_date, prior_bookkeeper, accounting_software, payroll_provider, employee_count_range, uses_business_cards, keeps_receipts, bank_connected_to_software, profile_updated_at" as any)
     .eq("id", id)
     .single();
 
@@ -332,6 +334,13 @@ export default async function ClientProfilePage({
     bsCleanupOwed = (bsRow as any)?.bs_enabled === false;
   } catch { /* ignore */ }
 
+  // Precise lifecycle stage for the header pill — the unmistakable
+  // "onboarding/cleanup vs in-production" signal, same source as /clients.
+  let lifecycle = null;
+  try {
+    lifecycle = await deriveLifecycleForClient(service, clientLink as any);
+  } catch { /* non-critical */ }
+
   return (
     <AppShell>
       <TopBar
@@ -340,11 +349,11 @@ export default async function ClientProfilePage({
           [
             clientLink.industry,
             clientLink.state_province || clientLink.jurisdiction,
-            clientLink.status,
           ]
             .filter(Boolean)
             .join(" · ") || "Client profile"
         }
+        actions={lifecycle ? <LifecyclePill status={lifecycle} size="md" /> : undefined}
       />
       <ClientProfileShell
         clientLink={clientLink as any}

@@ -423,7 +423,7 @@ export default async function TodayPage({
   ) {
     return (
       <AppShell>
-        <TopBar title="Today" subtitle="Daily reconciliation queue" />
+        <TopBar title="Today" subtitle="Production daily review — clients on auto-recon" />
         <div className="px-8 py-12 max-w-2xl">
           <div className="bg-white rounded-2xl border border-gray-100 p-10 text-center space-y-4">
             <div className="inline-flex w-16 h-16 rounded-full bg-teal-lighter items-center justify-center">
@@ -593,7 +593,7 @@ export default async function TodayPage({
 
   return (
     <AppShell>
-      <TopBar title="Today" subtitle={`Daily reconciliation · ${today}`} />
+      <TopBar title="Today" subtitle={`Production daily review · ${today}`} />
       <div className="px-8 py-6 max-w-5xl space-y-5">
         {/* Pulse bar — time-pressure at a glance + month-end status + view-as */}
         <PulseBar
