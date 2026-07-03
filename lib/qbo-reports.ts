@@ -67,7 +67,9 @@ export async function fetchProfitAndLossDetail(
     data = await fetchQBOReport(realmId, accessToken, "ProfitAndLossDetail", {
       start_date: startDate,
       end_date: endDate,
-      accounting_method: "Accrual",
+      // Cash to match the statements and portal P&L (IronBooks is cash-basis) —
+      // the drill-down must sum to the line it drills into.
+      accounting_method: "Cash",
       account: accountId,
     });
   } catch (err: any) {
@@ -374,9 +376,11 @@ export async function fetchProfitAndLoss(
   accessToken: string,
   startDate: string,
   endDate: string,
-  // Accounting basis. Defaults to Accrual (the long-standing behavior);
-  // pass "Cash" for cash-basis pulls (e.g. to match published statements).
-  method: "Accrual" | "Cash" = "Accrual"
+  // Accounting basis. Defaults to CASH — IronBooks does cash accounting, and
+  // statements carry a cash-basis Notice to Reader. (Until 2026-07-02 this was
+  // hardcoded Accrual, so every published statement was accrual mislabeled as
+  // cash.) Pass "Accrual" explicitly for comparisons/audits.
+  method: "Accrual" | "Cash" = "Cash"
 ): Promise<ProfitLossData> {
   if (isDemoRealm(realmId)) return demoProfitAndLoss(startDate);
   const report = await fetchQBOReport(realmId, accessToken, "ProfitAndLoss", {
