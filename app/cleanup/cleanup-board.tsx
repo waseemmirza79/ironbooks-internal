@@ -9,7 +9,7 @@ import {
 import { ClientRecCard, type ProdClient } from "../production/rec-card";
 import { ClientBadges } from "@/components/ClientBadges";
 import { EscalateMenu, EscalationStrip } from "@/components/escalations-ui";
-import { hasAttention, type AttentionState } from "@/lib/client-attention-state";
+import { type AttentionState } from "@/lib/client-attention-state";
 
 /**
  * Three-column cleanup board. Data comes straight from the existing
@@ -259,13 +259,19 @@ export function CleanupBoard() {
     return counts;
   }, [collapsed]);
 
-  // "Flagged only" — show just the cards with an attention state (escalated,
-  // BS owed, disconnected, stuck). Scale valve for a fat board.
+  // "Flagged only" — show just the cards with a VISIBLE badge at this stage
+  // (escalated, BS owed, disconnected, reclass paused). Billing is excluded
+  // to match the badges: cleanup-stage cards don't render billing chips, and
+  // a filter that keeps badge-less cards reads as broken.
   const [flaggedOnly, setFlaggedOnly] = useState(false);
 
   const visible = (cards: KanbanCard[], inReview: boolean) => {
     let out = chipFilter ? cards.filter((c) => classifyCard(c, inReview) === chipFilter) : cards;
-    if (flaggedOnly) out = out.filter((c) => hasAttention(attention[c.id]));
+    if (flaggedOnly)
+      out = out.filter((c) => {
+        const a = attention[c.id];
+        return a && (a.escalations.length > 0 || a.bs_owed || a.disconnected || a.stuck_job);
+      });
     return out;
   };
 
@@ -362,8 +368,9 @@ export function CleanupBoard() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
           {COLS.map((col) => {
             const cards = visible(collapsed[col.id], col.id === "review");
+            // no overflow-hidden on the column shell — it clips the Escalate popover
             return (
-              <div key={col.id} className={`bg-white rounded-2xl border-2 ${col.tone} overflow-hidden`}>
+              <div key={col.id} className={`bg-white rounded-2xl border-2 ${col.tone}`}>
                 <div className="px-3 py-2.5 border-b border-gray-100">
                   <div className="flex items-center gap-2">
                     <ClipboardList size={14} className="text-ink-slate" />
@@ -544,7 +551,6 @@ function CleanupCard({
           <EscalateMenu
             clientLinkId={card.id}
             clientName={card.client_name}
-            seniors={bookkeepers}
             onRaised={onChanged}
             small
           />

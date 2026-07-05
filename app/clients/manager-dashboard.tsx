@@ -89,6 +89,10 @@ export function ManagerDashboard({
       .then((j) => setAttention(j.clients || {}))
       .catch(() => {});
   }, []);
+  const escalatedCount = useMemo(
+    () => Object.values(attention).filter((a) => a.escalations.length > 0).length,
+    [attention]
+  );
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState<LifecycleStatus | "all">("all");
   const [bsOnly, setBsOnly] = useState(false);
@@ -215,6 +219,16 @@ export function ManagerDashboard({
                 <span className="text-[11px] font-semibold uppercase tracking-wide">{g}</span>
               </div>
             ))}
+            {escalatedCount > 0 && (
+              <Link
+                href="/approvals"
+                className="flex items-baseline gap-1.5 px-3 py-1.5 rounded-lg text-red-700 bg-red-50 hover:bg-red-100"
+                title="Open the escalation queue on Approvals"
+              >
+                <span className="text-lg font-black tabular-nums">{escalatedCount}</span>
+                <span className="text-[11px] font-semibold uppercase tracking-wide">Escalated →</span>
+              </Link>
+            )}
           </div>
 
           {/* Filters */}
@@ -366,12 +380,10 @@ export function ManagerDashboard({
                           <SkipForward size={11} /> Defer BS
                         </button>
                       )}
-                      {/* Mark BS done — whenever it's owed (cleanup OR production) */}
                       <span className="mr-1.5">
                         <EscalateMenu
                           clientLinkId={r.id}
                           clientName={r.client_name}
-                          seniors={bookkeepers}
                           onRaised={() =>
                             fetch("/api/attention")
                               .then((res) => res.json())
@@ -381,6 +393,7 @@ export function ManagerDashboard({
                           small
                         />
                       </span>
+                      {/* Mark BS done — whenever it's owed (cleanup OR production) */}
                       {canEdit && r.bs_owed && (
                         <button
                           onClick={() => bsAction(r.id, false)}

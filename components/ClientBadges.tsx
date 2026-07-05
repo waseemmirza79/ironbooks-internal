@@ -35,7 +35,7 @@ export function buildBadges(a: AttentionState, stage: Stage): Badge[] {
       label: a.escalations.length > 1 ? `ESCALATED ×${a.escalations.length}` : "ESCALATED",
       cls: aging ? "bg-red-200 text-red-900 border-red-400" : "bg-red-100 text-red-800 border-red-200",
       icon: <AlertTriangle size={9} />,
-      title: `${top.reason}${top.assignee_name ? ` → ${top.assignee_name}` : " — unassigned"}${top.note ? ` · ${top.note.slice(0, 140)}` : ""}`,
+      title: `${top.reason}${top.note ? ` · ${top.note.slice(0, 140)}` : ""}`,
     });
   }
 
@@ -64,11 +64,13 @@ export function buildBadges(a: AttentionState, stage: Stage): Badge[] {
           ? "Portal billing hold is active"
           : a.billing === "past_due"
           ? "Subscription is past due"
-          : "In production with no billing set up — see /admin/billing coverage",
+          : "In production with no billing set up — flag to Mike",
     });
   }
 
-  if (a.bs_owed) {
+  // On the production board bs_owed already has a dedicated banner + action
+  // button — a third rendering of the same fact is noise, so skip it there.
+  if (a.bs_owed && stage !== "production") {
     badges.push({
       key: "bs_owed",
       label: "BS OWED",
@@ -81,10 +83,10 @@ export function buildBadges(a: AttentionState, stage: Stage): Badge[] {
   if (a.stuck_job) {
     badges.push({
       key: "stuck_job",
-      label: "STUCK JOB",
+      label: "RECLASS PAUSED",
       cls: "bg-slate-200 text-slate-700 border-slate-300",
       icon: <PauseCircle size={9} />,
-      title: "A reclass job is paused — use Get unstuck on the manager dashboard",
+      title: "A reclass job is paused mid-run — use Get unstuck on the manager dashboard",
     });
   }
 

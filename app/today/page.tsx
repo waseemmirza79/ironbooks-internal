@@ -7,9 +7,6 @@ import { ArrowRight, Sparkles, Pause } from "lucide-react";
 import { ClientFlagsWidget } from "./client-flags-widget";
 import { ReclassRequestsWidget, type PendingReclassRequest } from "./reclass-requests-widget";
 import { ClientInboxWidget, type InboundCommRow } from "./client-inbox-widget";
-import { ManagerReviewWidget } from "./manager-review-widget";
-import { StatementApprovalsWidget, type StatementApprovalRow } from "./statement-approvals-widget";
-import { StatementEscalationsWidget, type StatementEscalationRow } from "./statement-escalations-widget";
 import { CleanupDeadlinesWidget, type CleanupDeadlineRow } from "./cleanup-deadlines-widget";
 import { QboHealthAlert } from "@/components/QboHealthAlert";
 import { MonthlyBsCheckButton } from "./monthly-bs-check";
@@ -71,14 +68,8 @@ export default async function TodayPage({
   const { data: clients } = await clientsQuery.order("client_name");
   const eligibleClients = (clients || []) as any[];
 
-  // ─── Manager review queue (seniors only) ───
-  // Files a bookkeeper submitted for manager review (cleanup_review_state =
-  // 'in_review'). These land on Mike's Today page so he can review the
-  // statements and send to the client. Oldest-submitted first.
-  // Manager approvals moved to Production → Approvals (/approvals). Kept as an
-  // empty array so the rest of /today (empty-state checks, props) is unchanged
-  // and the approval widgets simply don't render here.
-  const managerReviewRows: { id: string; client_name: string; submitted_at: string | null; submitted_by: string | null }[] = [];
+  // Manager approvals, statement approvals, and escalations all moved to
+  // Production → Approvals (/approvals) — no senior queues are fetched here.
 
   // ─── Portal transaction flags from clients ───
   // These are independent of daily-recon enrollment — surface them even
@@ -300,28 +291,13 @@ export default async function TodayPage({
     cleanupDeadlines = [];
   }
 
-  // ─── Statements awaiting senior approval ───
-  // JR-submitted monthly closes + cleanup sign-offs (monthly_rec_runs
-  // status=pending_review). Senior-only: this is Lisa's approval queue —
-  // she reviews the statements on /monthly-rec and approves the send.
-  // Statement approvals moved to Production → Approvals (/approvals).
-  const statementApprovals: StatementApprovalRow[] = [];
-
-  // ─── Statements flagged wrong by a bookkeeper (senior-only) ───
-  // Pulled from audit_log (append-only). Show the last 30 days so resolved
-  // ones age off without needing a status column.
-  // Statement escalations moved to Production → Approvals (/approvals).
-  const statementEscalations: StatementEscalationRow[] = [];
-
   // If nothing's enabled AND no flags AND no reclass requests AND no
   // inbound messages AND no statement approvals, show the empty state
   if (
     eligibleClients.length === 0 &&
     pendingFlags.length === 0 &&
     pendingReclassRequests.length === 0 &&
-    inboundComms.length === 0 &&
-    statementApprovals.length === 0 &&
-    statementEscalations.length === 0
+    inboundComms.length === 0
   ) {
     return (
       <AppShell>
@@ -463,7 +439,7 @@ export default async function TodayPage({
     pendingReclassRequests,
     inboundComms,
     cleanupDeadlines,
-    statementEscalations,
+    statementEscalations: [], // moved to /approvals
     pendingByClient,
     anomaliesByClient,
     clientNameById,
@@ -519,13 +495,6 @@ export default async function TodayPage({
           autoExecuted={totalAutoExecuted}
           dueSoon={counts.dueToday + counts.dueSoon}
         />
-
-        {/* Manager review queue — seniors only; files submitted for review. */}
-        {isSenior && managerReviewRows.length > 0 && (
-          <section className="space-y-2">
-            <ManagerReviewWidget rows={managerReviewRows} />
-          </section>
-        )}
 
         {/* ── YOUR WORK ── the logged-in person's actionable queue ── */}
         <section id="work" className="space-y-4 scroll-mt-4">
@@ -638,10 +607,6 @@ export default async function TodayPage({
           ) : (
             <section id="team" className="space-y-4 scroll-mt-4">
               <h2 className="text-sm font-bold text-navy uppercase tracking-wider">Team</h2>
-              {statementApprovals.length > 0 && <StatementApprovalsWidget rows={statementApprovals} />}
-              {statementEscalations.length > 0 && (
-                <StatementEscalationsWidget rows={statementEscalations} />
-              )}
               {cleanupDeadlines.length > 0 && (
                 <CleanupDeadlinesWidget rows={cleanupDeadlines} showBookkeeper={true} />
               )}

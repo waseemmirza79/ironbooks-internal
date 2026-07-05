@@ -1,8 +1,7 @@
 -- migration 105 — client escalations (the one manual attention state).
 -- One first-class "a senior needs to look at this client" mechanism replacing
--- scattered half-mechanisms. Escalations carry an owner and a reason, live on
--- every board as a red badge + strip, and resolve with one click (or
--- automatically when the underlying data heals, e.g. QBO reconnects).
+-- scattered half-mechanisms. Escalations carry a reason + note, live on
+-- every board as a red badge + strip, and resolve with one click.
 -- Idempotent — safe to run more than once.
 
 CREATE TABLE IF NOT EXISTS client_escalations (
@@ -18,7 +17,7 @@ CREATE TABLE IF NOT EXISTS client_escalations (
   status           text NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
   resolved_by      uuid REFERENCES users(id),
   resolved_at      timestamptz,
-  resolution_note  text,                        -- 'auto: QBO feed healthy again' for auto-resolves
+  resolution_note  text,                        -- the answer, shown to the raiser for 7 days
   created_at       timestamptz NOT NULL DEFAULT now()
 );
 

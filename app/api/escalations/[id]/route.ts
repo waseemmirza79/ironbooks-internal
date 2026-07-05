@@ -49,14 +49,34 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     return NextResponse.json({ error: "action must be resolve, reopen, or assign" }, { status: 400 });
   }
 
-  const { data: row, error } = await (service as any)
-    .from("client_escalations")
-    .update(update)
-    .eq("id", id)
-    .select("*")
-    .single();
+  // Resolve only transitions OPEN rows — a concurrent double-resolve must
+  // not overwrite the first resolver's note with a second (possibly empty)
+  // one. The loser gets ok+already_resolved and the strip just refreshes.
+  let query = (service as any).from("client_escalations").update(update).eq("id", id);
+  if (body.action === "resolve") query = query.eq("status", "open");
+  const { data: row, error } = await query.select("*").maybeSingle();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  if (!row) return NextResponse.json({ error: "Escalation not found" }, { status: 404 });
+  if (!row) {
+    if (body.action === "resolve") return NextResponse.json({ ok: true, already_resolved: true });
+    return NextResponse.json({ error: "Escalation not found" }, { status: 404 });
+  }
+
+  if (body.action === "resolve" || body.action === "reopen") {
+    try {
+      await (service as any).from("audit_log").insert({
+        event_type: `client_escalation_${body.action === "resolve" ? "resolved" : "reopened"}`,
+        user_id: user.id,
+        request_payload: {
+          escalation_id: id,
+          client_link_id: (row as any).client_link_id,
+          reason: (row as any).reason,
+          resolution_note: (row as any).resolution_note || null,
+        },
+      });
+    } catch {
+      /* best-effort */
+    }
+  }
 
   return NextResponse.json({ ok: true, escalation: row });
 }

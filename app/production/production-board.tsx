@@ -12,7 +12,7 @@ import {
 import { CoaUpdatesBanner } from "./coa-updates-banner";
 import { ClientBadges } from "@/components/ClientBadges";
 import { EscalateMenu, EscalationStrip } from "@/components/escalations-ui";
-import { hasAttention, type AttentionState } from "@/lib/client-attention-state";
+import { type AttentionState } from "@/lib/client-attention-state";
 
 /**
  * /production — the month-by-month board for graduated clients.
@@ -160,7 +160,7 @@ export function ProductionBoard() {
               ? "bg-red-100 text-red-800 border-red-300 ring-2 ring-navy/40"
               : "bg-white text-ink-slate border-gray-200 hover:border-red-200"
           }`}
-          title="Show only clients with an attention flag (escalated, billing, BS owed, disconnected, stuck)"
+          title="Show only clients needing intervention (escalated, billing, disconnected, reclass paused)"
         >
           ⚠ Flagged only
         </button>
@@ -238,13 +238,21 @@ export function ProductionBoard() {
             ]
               .map((col) => ({
                 ...col,
-                cards: flaggedOnly ? col.cards.filter((c) => hasAttention(attention[c.id])) : col.cards,
+                // Intervention states only — bs_owed is a chronic service
+                // mode with its own banner here, not a flag to triage.
+                cards: flaggedOnly
+                  ? col.cards.filter((c) => {
+                      const a = attention[c.id];
+                      return a && (a.escalations.length > 0 || !!a.billing || a.disconnected || a.stuck_job);
+                    })
+                  : col.cards,
               }))
               .map((col) => {
               const Icon = col.icon;
               const isCompletedCol = col.id === "completed";
+              // no overflow-hidden on the column shell — it clips the Escalate popover
               return (
-                <div key={col.id} className={`bg-white rounded-2xl border-2 ${col.tone} overflow-hidden`}>
+                <div key={col.id} className={`bg-white rounded-2xl border-2 ${col.tone}`}>
                   <div className="px-3 py-2.5 border-b border-gray-100 flex items-center gap-2">
                     <Icon size={14} className={isCompletedCol ? "text-emerald-600" : "text-ink-slate"} />
                     <span className="text-sm font-bold text-navy">{col.title}</span>
@@ -515,7 +523,6 @@ function BoardCard({
         <EscalateMenu
           clientLinkId={client.id}
           clientName={client.client_name}
-          seniors={bookkeepers}
           onRaised={onChanged}
           small
         />
@@ -600,7 +607,7 @@ function BoardCard({
         >
           <option value="not_started">Not started</option>
           <option value="in_progress">In progress</option>
-          <option value="stuck">Stuck</option>
+          <option value="stuck">Blocked (this month)</option>
           <option value="waiting_client">Waiting on client</option>
           <option value="completed">✓ Completed</option>
         </select>

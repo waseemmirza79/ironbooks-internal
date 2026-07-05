@@ -24,5 +24,16 @@ export async function GET() {
   }
 
   const map = await getAttentionMap(service as any);
-  return NextResponse.json({ ok: true, clients: attentionMapToJson(map) });
+  const clients = attentionMapToJson(map);
+
+  // Billing states are revenue ops — senior signal. Bookkeepers can't act
+  // on UNBILLED/PAST DUE, so don't broadcast them; "hold" stays visible to
+  // everyone because it changes how the client is serviced.
+  if (!["admin", "lead"].includes((actor as any)?.role || "")) {
+    for (const id of Object.keys(clients)) {
+      if (clients[id].billing && clients[id].billing !== "hold") clients[id].billing = null;
+    }
+  }
+
+  return NextResponse.json({ ok: true, clients });
 }

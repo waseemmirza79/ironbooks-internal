@@ -8,9 +8,10 @@ export const dynamic = "force-dynamic";
  *
  * GET  ?status=open|resolved|all (default open)
  *      → escalations enriched with client + user names, newest first.
- * POST { client_link_id, reason, kind?, note?, assignee_id?, priority? }
+ * POST { client_link_id, reason, kind?, note? }
  *      → raise. One OPEN escalation per (client, kind): a duplicate raise
- *        returns the existing row (200, deduped: true) instead of stacking.
+ *        APPENDS the new context to the existing row's note (never silently
+ *        dropped) and returns it (200, deduped: true) instead of stacking.
  *
  * Any staff member can raise; resolution lives in /api/escalations/[id].
  */
@@ -46,8 +47,6 @@ export async function POST(request: Request) {
     reason?: string;
     kind?: string;
     note?: string;
-    assignee_id?: string;
-    priority?: string;
   };
   try {
     body = await request.json();
@@ -60,14 +59,14 @@ export async function POST(request: Request) {
   if (!clientLinkId || !reason) {
     return NextResponse.json({ error: "client_link_id and reason are required" }, { status: 400 });
   }
-  const kind = ["general", "billing", "statement", "stuck_job", "disconnected", "client_relationship"].includes(
-    body.kind || ""
-  )
+  const kind = ["general", "billing", "statement", "client_relationship"].includes(body.kind || "")
     ? body.kind
     : "general";
-  const priority = body.priority === "low" ? "low" : "high";
+  const note = (body.note || "").trim().slice(0, 2000) || null;
 
-  // Dedup: surface the existing open escalation instead of stacking.
+  // Dedup: fold into the existing open escalation instead of stacking. The
+  // second raiser's context is APPENDED, never dropped — the senior sees
+  // both takes on the one row the boards already render.
   const { data: existing } = await (service as any)
     .from("client_escalations")
     .select("*")
@@ -76,7 +75,25 @@ export async function POST(request: Request) {
     .eq("status", "open")
     .maybeSingle();
   if (existing) {
-    const [row] = await enrich(service, [existing]);
+    const addition = [reason !== existing.reason ? reason : null, note].filter(Boolean).join(" — ");
+    let updated = existing;
+    if (addition) {
+      const { data: raiser } = await service
+        .from("users")
+        .select("full_name, email")
+        .eq("id", userId)
+        .single();
+      const who = (raiser as any)?.full_name || (raiser as any)?.email || "someone";
+      const merged = [existing.note, `${who}: ${addition}`].filter(Boolean).join("\n").slice(0, 4000);
+      const { data: after } = await (service as any)
+        .from("client_escalations")
+        .update({ note: merged })
+        .eq("id", existing.id)
+        .select("*")
+        .single();
+      if (after) updated = after;
+    }
+    const [row] = await enrich(service, [updated]);
     return NextResponse.json({ ok: true, deduped: true, escalation: row });
   }
 
@@ -86,10 +103,8 @@ export async function POST(request: Request) {
       client_link_id: clientLinkId,
       kind,
       reason,
-      note: (body.note || "").trim().slice(0, 2000) || null,
-      priority,
+      note,
       raised_by: userId,
-      assignee_id: body.assignee_id || null,
     })
     .select("*")
     .single();

@@ -23,9 +23,7 @@ export interface OpenEscalation {
   kind: string;
   reason: string;
   note: string | null;
-  priority: "low" | "high";
   raised_by_name: string | null;
-  assignee_name: string | null;
   created_at: string;
   /** Open for more than 3 days — render darker (mirrors onboarding SLA). */
   aging: boolean;
@@ -72,7 +70,7 @@ export async function getAttentionMap(
 
   let escQuery = svc
     .from("client_escalations")
-    .select("id, client_link_id, kind, reason, note, priority, raised_by, assignee_id, created_at")
+    .select("id, client_link_id, kind, reason, note, raised_by, created_at")
     .eq("status", "open")
     .order("created_at", { ascending: true });
   if (scope) escQuery = escQuery.in("client_link_id", scope);
@@ -100,12 +98,8 @@ export async function getAttentionMap(
     computeBillingCoverage(service).catch(() => null),
   ]);
 
-  // Resolve user names for raised_by / assignee (one query).
-  const userIds = [
-    ...new Set(
-      (escRows as any[]).flatMap((e) => [e.raised_by, e.assignee_id]).filter(Boolean)
-    ),
-  ];
+  // Resolve raiser names (one query).
+  const userIds = [...new Set((escRows as any[]).map((e) => e.raised_by).filter(Boolean))];
   const nameById = new Map<string, string>();
   if (userIds.length) {
     const users = await safe(
@@ -138,9 +132,7 @@ export async function getAttentionMap(
       kind: e.kind,
       reason: e.reason,
       note: e.note,
-      priority: e.priority,
       raised_by_name: e.raised_by ? nameById.get(e.raised_by) || null : null,
-      assignee_name: e.assignee_id ? nameById.get(e.assignee_id) || null : null,
       created_at: e.created_at,
       aging: now - new Date(e.created_at).getTime() > AGING_MS,
     });
