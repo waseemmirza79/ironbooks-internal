@@ -10,6 +10,9 @@ import {
   type EligibleClient, type ProdClient, type Bookkeeper,
 } from "./rec-card";
 import { CoaUpdatesBanner } from "./coa-updates-banner";
+import { ClientBadges } from "@/components/ClientBadges";
+import { EscalateMenu, EscalationStrip } from "@/components/escalations-ui";
+import { hasAttention, type AttentionState } from "@/lib/client-attention-state";
 
 /**
  * /production — the month-by-month board for graduated clients.
@@ -43,7 +46,9 @@ type BoardStatus = "not_started" | "in_progress" | "stuck" | "waiting_client";
 const COLUMNS: { id: BoardStatus; title: string; icon: any; tone: string }[] = [
   { id: "not_started", title: "Not Started", icon: CircleDashed, tone: "border-gray-200" },
   { id: "in_progress", title: "In Progress", icon: PlayCircle, tone: "border-teal/40" },
-  { id: "stuck", title: "Stuck", icon: OctagonAlert, tone: "border-red-300" },
+  // "Blocked (this month)" — month-state, deliberately NOT the client-level
+  // STUCK JOB badge. A client can be blocked this month and fine as a client.
+  { id: "stuck", title: "Blocked (this month)", icon: OctagonAlert, tone: "border-red-300" },
   { id: "waiting_client", title: "Waiting on Client", icon: MailQuestion, tone: "border-amber-300" },
 ];
 
@@ -56,12 +61,18 @@ export function ProductionBoard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Attention states (escalated / billing / BS owed / disconnected / stuck).
+  const [attention, setAttention] = useState<Record<string, AttentionState>>({});
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
 
   async function load(p?: string) {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`/api/monthly-rec${p ? `?period=${p}` : ""}`);
+      const [res, attRes] = await Promise.all([
+        fetch(`/api/monthly-rec${p ? `?period=${p}` : ""}`),
+        fetch("/api/attention"),
+      ]);
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       setPeriod(body.period);
@@ -69,6 +80,10 @@ export function ProductionBoard() {
       setEligible(body.eligible || []);
       setBookkeepers(body.bookkeepers || []);
       setIsSenior(!!body.is_senior);
+      if (attRes.ok) {
+        const att = await attRes.json();
+        setAttention(att.clients || {});
+      }
     } catch (e: any) {
       setError(e?.message || "Failed to load");
     } finally {
@@ -138,6 +153,17 @@ export function ProductionBoard() {
           </button>
         </div>
         <div className="flex-1" />
+        <button
+          onClick={() => setFlaggedOnly((f) => !f)}
+          className={`text-xs font-semibold px-2.5 py-1 rounded-full border transition-all ${
+            flaggedOnly
+              ? "bg-red-100 text-red-800 border-red-300 ring-2 ring-navy/40"
+              : "bg-white text-ink-slate border-gray-200 hover:border-red-200"
+          }`}
+          title="Show only clients with an attention flag (escalated, billing, BS owed, disconnected, stuck)"
+        >
+          ⚠ Flagged only
+        </button>
         {production.length > 0 && (
           <span className="text-sm text-ink-slate">
             <strong className="text-navy">{done.length}</strong> of{" "}
@@ -146,6 +172,11 @@ export function ProductionBoard() {
           </span>
         )}
       </div>
+
+      {/* Escalations — triage on the board. */}
+      {!loading && (
+        <EscalationStrip clientIds={production.map((c) => c.id)} onChanged={() => load(period)} />
+      )}
 
       {/* BS-owed banner — production clients on P&L-only service still owe
           a finished balance sheet. Don't let "in production" hide that. */}
@@ -204,7 +235,12 @@ export function ProductionBoard() {
                 tone: "border-emerald-300",
                 cards: done,
               },
-            ].map((col) => {
+            ]
+              .map((col) => ({
+                ...col,
+                cards: flaggedOnly ? col.cards.filter((c) => hasAttention(attention[c.id])) : col.cards,
+              }))
+              .map((col) => {
               const Icon = col.icon;
               const isCompletedCol = col.id === "completed";
               return (
@@ -225,6 +261,7 @@ export function ProductionBoard() {
                         period={period}
                         isSenior={isSenior}
                         bookkeepers={bookkeepers}
+                        attention={attention[c.id]}
                         selected={selectedId === c.id}
                         onSelect={() => setSelectedId(selectedId === c.id ? null : c.id)}
                         onChanged={() => load(period)}
@@ -293,6 +330,7 @@ function BoardCard({
   period,
   isSenior,
   bookkeepers,
+  attention,
   selected,
   onSelect,
   onChanged,
@@ -301,6 +339,7 @@ function BoardCard({
   period: string;
   isSenior: boolean;
   bookkeepers: Bookkeeper[];
+  attention?: AttentionState;
   selected: boolean;
   onSelect: () => void;
   onChanged: () => void;
@@ -463,16 +502,25 @@ function BoardCard({
         selected ? "border-teal ring-1 ring-teal/30" : "border-gray-150 border-gray-200"
       }`}
     >
+      <div className="flex items-start gap-1">
+        <button onClick={onSelect} className="flex-1 min-w-0 text-left">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm font-semibold text-navy">{client.client_name}</span>
+            {client.paused && (
+              <span className="text-[9px] font-bold bg-gray-100 text-ink-slate px-1 py-0.5 rounded">PAUSED</span>
+            )}
+            <ClientBadges attention={attention} stage="production" max={2} />
+          </div>
+        </button>
+        <EscalateMenu
+          clientLinkId={client.id}
+          clientName={client.client_name}
+          seniors={bookkeepers}
+          onRaised={onChanged}
+          small
+        />
+      </div>
       <button onClick={onSelect} className="w-full text-left">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-sm font-semibold text-navy">{client.client_name}</span>
-          {client.paused && (
-            <span className="text-[9px] font-bold bg-gray-100 text-ink-slate px-1 py-0.5 rounded">PAUSED</span>
-          )}
-          {bsOff && (
-            <span className="text-[9px] font-bold bg-sky-100 text-sky-800 px-1 py-0.5 rounded">P&L ONLY</span>
-          )}
-        </div>
         <div className="flex items-center gap-1.5 mt-1 flex-wrap">
           {isPending ? (
             <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded">

@@ -7,6 +7,9 @@ import {
   Loader2, MinusCircle, PlayCircle, Plus, Sparkles, X, XCircle,
 } from "lucide-react";
 import { ClientRecCard, type ProdClient } from "../production/rec-card";
+import { ClientBadges } from "@/components/ClientBadges";
+import { EscalateMenu, EscalationStrip } from "@/components/escalations-ui";
+import { hasAttention, type AttentionState } from "@/lib/client-attention-state";
 
 /**
  * Three-column cleanup board. Data comes straight from the existing
@@ -183,13 +186,18 @@ export function CleanupBoard() {
   const [error, setError] = useState("");
   const [selectedSignoff, setSelectedSignoff] = useState<string | null>(null);
 
+  // Attention states (escalated / BS owed / disconnected / stuck) — one feed
+  // for every badge on this board.
+  const [attention, setAttention] = useState<Record<string, AttentionState>>({});
+
   async function load() {
     setLoading(true);
     setError("");
     try {
-      const [kanbanRes, recRes] = await Promise.all([
+      const [kanbanRes, recRes, attRes] = await Promise.all([
         fetch("/api/kanban/onboarding?limit=50"),
         fetch("/api/monthly-rec"),
+        fetch("/api/attention"),
       ]);
       const kanban = await kanbanRes.json();
       if (!kanbanRes.ok) throw new Error(kanban.error || `HTTP ${kanbanRes.status}`);
@@ -199,6 +207,10 @@ export function CleanupBoard() {
         const rec = await recRes.json();
         setSignoffs(rec.cleanup_signoffs || []);
         setIsSenior(!!rec.is_senior);
+      }
+      if (attRes.ok) {
+        const att = await attRes.json();
+        setAttention(att.clients || {});
       }
     } catch (e: any) {
       setError(e?.message || "Failed to load");
@@ -247,8 +259,20 @@ export function CleanupBoard() {
     return counts;
   }, [collapsed]);
 
-  const visible = (cards: KanbanCard[], inReview: boolean) =>
-    chipFilter ? cards.filter((c) => classifyCard(c, inReview) === chipFilter) : cards;
+  // "Flagged only" — show just the cards with an attention state (escalated,
+  // BS owed, disconnected, stuck). Scale valve for a fat board.
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
+
+  const visible = (cards: KanbanCard[], inReview: boolean) => {
+    let out = chipFilter ? cards.filter((c) => classifyCard(c, inReview) === chipFilter) : cards;
+    if (flaggedOnly) out = out.filter((c) => hasAttention(attention[c.id]));
+    return out;
+  };
+
+  const boardClientIds = useMemo(
+    () => [...collapsed.needs_cleanup, ...collapsed.in_progress, ...collapsed.review].map((c) => c.id),
+    [collapsed]
+  );
 
   const signoffByClient = useMemo(
     () => new Map(signoffs.map((s) => [s.id, s])),
@@ -284,9 +308,23 @@ export function CleanupBoard() {
         </Link>
       </div>
 
+      {/* Escalations — triage happens ON the board, not in another tool. */}
+      {!loading && <EscalationStrip clientIds={boardClientIds} onChanged={load} />}
+
       {/* Funnel strip — clickable counts that filter the board */}
       {!loading && (
         <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            onClick={() => setFlaggedOnly((f) => !f)}
+            className={`text-xs font-semibold px-2.5 py-1 rounded-full border transition-all ${
+              flaggedOnly
+                ? "bg-red-100 text-red-800 border-red-300 ring-2 ring-navy/40"
+                : "bg-white text-ink-slate border-gray-200 hover:border-red-200"
+            }`}
+            title="Show only clients with an attention flag (escalated, BS owed, disconnected, stuck)"
+          >
+            ⚠ Flagged only
+          </button>
           {(Object.keys(CHIP_META) as ChipKey[])
             .sort((a, b) => CHIP_META[a].rank - CHIP_META[b].rank)
             .filter((k) => (funnel.get(k) || 0) > 0)
@@ -354,6 +392,7 @@ export function CleanupBoard() {
                       hasSignoff={signoffByClient.has(card.id)}
                       isSenior={isSenior}
                       bookkeepers={bookkeepers}
+                      attention={attention[card.id]}
                       onChanged={load}
                       onOpenSignoff={() =>
                         setSelectedSignoff(selectedSignoff === card.id ? null : card.id)
@@ -411,6 +450,7 @@ function CleanupCard({
   hasSignoff,
   isSenior,
   bookkeepers,
+  attention,
   onChanged,
   onOpenSignoff,
 }: {
@@ -419,6 +459,7 @@ function CleanupCard({
   hasSignoff: boolean;
   isSenior: boolean;
   bookkeepers: { id: string; full_name: string }[];
+  attention?: AttentionState;
   onChanged: () => void;
   onOpenSignoff: () => void;
 }) {
@@ -468,6 +509,7 @@ function CleanupCard({
               {CHIP_META[classifyCard(card, inReview)].label}
             </span>
           </div>
+          <ClientBadges attention={attention} stage="cleanup" max={2} />
           <div className="text-[10px] text-ink-light flex items-center gap-1.5 flex-wrap">
             <button
               onClick={() => isSenior && setEditing(!editing)}
@@ -488,16 +530,25 @@ function CleanupCard({
             )}
           </div>
         </div>
-        {card.cleanup_pdf_href && (
-          <a
-            href={card.cleanup_pdf_href}
-            className="text-[10px] font-semibold text-teal hover:underline flex-shrink-0"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            PDF
-          </a>
-        )}
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {card.cleanup_pdf_href && (
+            <a
+              href={card.cleanup_pdf_href}
+              className="text-[10px] font-semibold text-teal hover:underline"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              PDF
+            </a>
+          )}
+          <EscalateMenu
+            clientLinkId={card.id}
+            clientName={card.client_name}
+            seniors={bookkeepers}
+            onRaised={onChanged}
+            small
+          />
+        </div>
       </div>
 
       {editing && (

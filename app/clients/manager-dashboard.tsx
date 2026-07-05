@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -8,6 +8,9 @@ import {
   CheckCircle2, Circle, AlertTriangle, PlayCircle,
 } from "lucide-react";
 import { LIFECYCLE_META, type LifecycleStatus } from "@/lib/client-lifecycle";
+import { ClientBadges } from "@/components/ClientBadges";
+import { EscalateMenu } from "@/components/escalations-ui";
+import type { AttentionState } from "@/lib/client-attention-state";
 
 export interface ManagerRow {
   id: string;
@@ -78,6 +81,14 @@ export function ManagerDashboard({
   const router = useRouter();
   const [open, setOpen] = useState(true);
   const [rows, setRows] = useState(initialRows);
+  // Attention badge feed (escalated / billing / BS owed / disconnected).
+  const [attention, setAttention] = useState<Record<string, AttentionState>>({});
+  useEffect(() => {
+    fetch("/api/attention")
+      .then((r) => r.json())
+      .then((j) => setAttention(j.clients || {}))
+      .catch(() => {});
+  }, []);
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState<LifecycleStatus | "all">("all");
   const [bsOnly, setBsOnly] = useState(false);
@@ -296,14 +307,18 @@ export function ManagerDashboard({
                       <span className={`inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full ${LIFECYCLE_META[r.status].tone}`}>
                         {LIFECYCLE_META[r.status].label}
                       </span>
-                      {r.bs_owed && (
-                        <span
-                          className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800"
-                          title="Balance-sheet cleanup deferred — still owed"
-                        >
-                          <AlertTriangle size={9} /> BS owed
-                        </span>
-                      )}
+                      {/* Unified attention badges (wide table → show all); the
+                          stuck-job state keeps its richer Get-unstuck ACTION
+                          below instead of a passive badge. */}
+                      <span className="ml-1.5">
+                        <ClientBadges
+                          attention={
+                            attention[r.id] ? { ...attention[r.id], stuck_job: false } : attention[r.id]
+                          }
+                          stage="dashboard"
+                          max={5}
+                        />
+                      </span>
                       {r.paused_job_id && (
                         <button
                           onClick={() => selfFix(r.id, r.paused_job_id!)}
@@ -352,6 +367,20 @@ export function ManagerDashboard({
                         </button>
                       )}
                       {/* Mark BS done — whenever it's owed (cleanup OR production) */}
+                      <span className="mr-1.5">
+                        <EscalateMenu
+                          clientLinkId={r.id}
+                          clientName={r.client_name}
+                          seniors={bookkeepers}
+                          onRaised={() =>
+                            fetch("/api/attention")
+                              .then((res) => res.json())
+                              .then((j) => setAttention(j.clients || {}))
+                              .catch(() => {})
+                          }
+                          small
+                        />
+                      </span>
                       {canEdit && r.bs_owed && (
                         <button
                           onClick={() => bsAction(r.id, false)}

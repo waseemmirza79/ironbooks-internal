@@ -62,5 +62,22 @@ export async function POST(
     } as any,
   });
 
+  // Also raise a first-class client escalation (kind=statement) so it rides
+  // the unified queue + the red board badges. Best-effort: environments
+  // without migration 105 still get the audit-log trail above, and the
+  // partial unique index turns a duplicate raise into a no-op.
+  try {
+    await (service as any).from("client_escalations").insert({
+      client_link_id: id,
+      kind: "statement",
+      reason: "Statements look wrong",
+      note,
+      priority: "high",
+      raised_by: user.id,
+    });
+  } catch {
+    /* table missing or escalation already open */
+  }
+
   return NextResponse.json({ ok: true });
 }

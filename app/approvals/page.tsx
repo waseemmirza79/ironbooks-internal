@@ -7,6 +7,7 @@ import { ManagerReviewWidget } from "../today/manager-review-widget";
 import { StatementApprovalsWidget } from "../today/statement-approvals-widget";
 import { StatementEscalationsWidget } from "../today/statement-escalations-widget";
 import { ScoreOverridesWidget } from "../today/score-overrides-widget";
+import { EscalationStrip } from "@/components/escalations-ui";
 
 export const dynamic = "force-dynamic";
 
@@ -62,6 +63,10 @@ export default async function ApprovalsPage({
             )}
           </>
         )}
+        {/* Client escalations — the general "a senior needs to look at this"
+            queue (all kinds, incl. statement escalations going forward). */}
+        <EscalationStrip clientIds={null} alwaysOpen />
+
         {/* Transparency ledger, not a work queue — shown even when the queues are clear. */}
         <ScoreOverridesWidget rows={scoreOverrides} />
       </div>
