@@ -26,8 +26,6 @@ import { type AttentionState } from "@/lib/client-attention-state";
 interface KanbanCard {
   id: string;
   client_name: string;
-  jurisdiction: string;
-  state_province: string | null;
   stripe_connected: boolean;
   stripe_pending: boolean;
   stripe_request_sent_at: string | null;
@@ -36,7 +34,6 @@ interface KanbanCard {
   bs_recon_in_progress: boolean;
   cleanup_pdf_href: string | null;
   due_date: string | null;
-  note_count: number;
   bookkeeper: { id: string; full_name: string; avatar_url: string | null } | null;
   latest_coa_job: { id: string; status: string } | null;
   latest_reclass_job: { id: string; status: string } | null;
@@ -195,8 +192,8 @@ export function CleanupBoard() {
     setError("");
     try {
       const [kanbanRes, recRes, attRes] = await Promise.all([
-        fetch("/api/kanban/onboarding?limit=50"),
-        fetch("/api/monthly-rec"),
+        fetch("/api/kanban/onboarding"),
+        fetch("/api/monthly-rec?scope=signoffs"),
         fetch("/api/attention"),
       ]);
       const kanban = await kanbanRes.json();

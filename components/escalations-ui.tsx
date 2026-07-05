@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Flag, Loader2, CheckCircle2, AlertTriangle, ChevronDown } from "lucide-react";
+import { AGING_MS } from "@/lib/client-attention-state";
 
 /**
  * Escalation UI, shared by every board:
@@ -41,7 +42,6 @@ export interface EscalationRow {
   resolved_at?: string | null;
 }
 
-const AGING_MS = 3 * 24 * 3_600_000; // matches lib/client-attention-state.ts
 const RESOLVED_WINDOW_MS = 7 * 24 * 3_600_000;
 
 const ago = (iso: string) => {

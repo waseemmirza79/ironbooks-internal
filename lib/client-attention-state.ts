@@ -37,20 +37,13 @@ export interface AttentionState {
   stuck_job: boolean;
 }
 
-export const EMPTY_ATTENTION: AttentionState = {
-  escalations: [],
-  billing: null,
-  bs_owed: false,
-  disconnected: false,
-  stuck_job: false,
-};
-
-export function hasAttention(a: AttentionState | undefined | null): boolean {
+function hasAttention(a: AttentionState | undefined | null): boolean {
   if (!a) return false;
   return a.escalations.length > 0 || !!a.billing || a.bs_owed || a.disconnected || a.stuck_job;
 }
 
-const AGING_MS = 3 * 24 * 60 * 60 * 1000;
+/** Escalation SLA aging window (3 days): shared by board badges and the strips. */
+export const AGING_MS = 3 * 24 * 60 * 60 * 1000;
 
 /** Batched attention map for the whole active fleet (or a subset). ~6 queries total. */
 export async function getAttentionMap(

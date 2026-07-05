@@ -1,12 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { StatementApprovalRow } from "@/app/today/statement-approvals-widget";
-
-export interface ManagerReviewRow {
-  id: string;
-  client_name: string;
-  submitted_at: string | null;
-  submitted_by: string | null;
-}
+import type { StatementApprovalRow } from "@/app/approvals/statement-approvals-widget";
+import type { ManagerReviewRow } from "@/app/approvals/manager-review-widget";
 
 export interface ScoreOverrideRow {
   client_link_id: string;

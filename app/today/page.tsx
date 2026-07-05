@@ -266,7 +266,6 @@ export default async function TodayPage({
         c.cleanup_review_state !== "in_review" &&
         c.cleanup_review_state !== "complete"
     );
-    const bkIds = [...new Set(raw.map((c) => c.assigned_bookkeeper_id).filter(Boolean))];
     // Internal team only — clients (role 'client') never appear in the
     // "view as" picker; they have no access to /today at all.
     const { data: bks } = await service
@@ -286,7 +285,6 @@ export default async function TodayPage({
       overdue: !!c.due_date && String(c.due_date).slice(0, 10) < todayStr,
       bookkeeper_name: bkById.get(c.assigned_bookkeeper_id) || null,
     }));
-    void bkIds;
   } catch {
     cleanupDeadlines = [];
   }
@@ -402,7 +400,23 @@ export default async function TodayPage({
       if (monthlyByClient.has(r.client_link_id)) continue;
       const status: CloseStatus = r.status === "complete" ? "closed" : "in_progress";
       monthlyByClient.set(r.client_link_id, { status, runId: r.id });
-      if (status === "closed") monthlyClosedCount++;
+    }
+
+    // The pulse-bar "N/M closed" chip counts the CANONICAL close
+    // (monthly_rec_runs — the /production board's Completed column it
+    // links to), not the cleanup_runs catch-up flow above.
+    try {
+      const closingPeriod = `${closingYear}-${String(closingMonth + 1).padStart(2, "0")}`;
+      const { count } = await (service as any)
+        .from("monthly_rec_runs")
+        .select("client_link_id", { count: "exact", head: true })
+        .eq("period", closingPeriod)
+        .eq("kind", "production_me")
+        .eq("status", "complete")
+        .in("client_link_id", clientIds);
+      monthlyClosedCount = count || 0;
+    } catch {
+      /* pre-migration env — chip shows 0 */
     }
   }
 
@@ -439,7 +453,6 @@ export default async function TodayPage({
     pendingReclassRequests,
     inboundComms,
     cleanupDeadlines,
-    statementEscalations: [], // moved to /approvals
     pendingByClient,
     anomaliesByClient,
     clientNameById,

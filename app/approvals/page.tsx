@@ -3,9 +3,9 @@ import { TopBar } from "@/components/TopBar";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { redirect } from "next/navigation";
 import { getApprovalQueues } from "@/lib/approvals-data";
-import { ManagerReviewWidget } from "../today/manager-review-widget";
-import { StatementApprovalsWidget } from "../today/statement-approvals-widget";
-import { ScoreOverridesWidget } from "../today/score-overrides-widget";
+import { ManagerReviewWidget } from "./manager-review-widget";
+import { StatementApprovalsWidget } from "./statement-approvals-widget";
+import { ScoreOverridesWidget } from "./score-overrides-widget";
 import { EscalationStrip } from "@/components/escalations-ui";
 
 export const dynamic = "force-dynamic";
