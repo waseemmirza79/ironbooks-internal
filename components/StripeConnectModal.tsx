@@ -37,6 +37,11 @@ export function StripeConnectModal({
     client_name: string;
   } | null>(null);
   const [copied, setCopied] = useState<"url" | "email" | null>(null);
+  const [sending, setSending] = useState(false);
+  const [sentTo, setSentTo] = useState<string[] | null>(null);
+  const [needEmail, setNeedEmail] = useState(false);
+  const [overrideEmail, setOverrideEmail] = useState("");
+  const [sendError, setSendError] = useState("");
   const [disconnecting, setDisconnecting] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [disconnectMessage, setDisconnectMessage] = useState<string>("");
@@ -144,6 +149,33 @@ export function StripeConnectModal({
     }
   }
 
+  async function handleSendEmail(address?: string) {
+    if (!selectedId) return;
+    setSending(true);
+    setSendError("");
+    try {
+      const res = await fetch(`/api/clients/${selectedId}/send-stripe-request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(address ? { override_email: address } : {}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not send the email");
+      if (data.no_address) {
+        // Nothing on file — reveal the address input so the bookkeeper can supply one.
+        setNeedEmail(true);
+        if (data.error) setSendError(data.error);
+        return;
+      }
+      setSentTo(data.addresses || []);
+      setNeedEmail(false);
+    } catch (e: any) {
+      setSendError(e.message);
+    } finally {
+      setSending(false);
+    }
+  }
+
   async function copyUrl() {
     if (!generated) return;
     await navigator.clipboard.writeText(generated.url);
@@ -202,7 +234,8 @@ export function StripeConnectModal({
             </h3>
             <p className="text-xs text-ink-slate mt-1">
               Generate a one-time link for a client to connect their Stripe account.
-              Valid for 7 days. Copy and send via Double or any other channel.
+              Valid for 7 days. Send it by email straight from SNAP, or copy it to
+              send yourself.
             </p>
           </div>
           <button onClick={onClose} className="text-ink-slate hover:text-navy">
@@ -358,6 +391,66 @@ export function StripeConnectModal({
                 </div>
               </div>
 
+              {/* Direct send from SNAP (primary path) */}
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
+                  Send from SNAP
+                </label>
+                {sentTo ? (
+                  <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800 flex items-start gap-2">
+                    <CheckCircle2 size={16} className="flex-shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-semibold">Email sent to {sentTo.join(", ")}</div>
+                      <div className="text-xs mt-0.5 text-green-700">
+                        Branded connect-request with a fresh 7-day link. A copy of the ask was also posted to their portal inbox.
+                      </div>
+                    </div>
+                  </div>
+                ) : needEmail ? (
+                  <div className="space-y-2">
+                    <p className="text-xs text-amber-700">
+                      No usable email on file for this client — enter one below. It will be saved to their profile.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="email"
+                        value={overrideEmail}
+                        onChange={(e) => setOverrideEmail(e.target.value)}
+                        placeholder="client@example.com"
+                        className="flex-1 px-3 py-2 rounded-lg border border-gray-200 focus:border-teal outline-none text-sm text-navy"
+                      />
+                      <button
+                        onClick={() => handleSendEmail(overrideEmail)}
+                        disabled={sending || !overrideEmail.includes("@")}
+                        className="inline-flex items-center gap-1.5 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-xs font-semibold px-4 py-2 rounded-lg"
+                      >
+                        {sending ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+                        Send
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-xs text-ink-slate mb-2">
+                      Emails the branded connect request straight to the client's address on file — no copying needed.
+                    </p>
+                    <button
+                      onClick={() => handleSendEmail()}
+                      disabled={sending}
+                      className="w-full inline-flex items-center justify-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-60 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
+                    >
+                      {sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                      {sending ? "Sending..." : "Send Email to Client"}
+                    </button>
+                  </>
+                )}
+                {sendError && (
+                  <div className="mt-2 p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800">
+                    {sendError}
+                  </div>
+                )}
+              </div>
+
               {/* URL + copy */}
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
@@ -380,20 +473,20 @@ export function StripeConnectModal({
                 </div>
               </div>
 
-              {/* Email composer (copy/paste into Double) */}
+              {/* Email composer (copy/paste fallback) */}
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
-                  Or copy a full email to send
+                  Or copy a full email to send yourself
                 </label>
                 <p className="text-xs text-ink-slate mb-2">
-                  Includes the link with branded styling. Paste into the Double client portal email or any rich-text editor.
+                  Same branded email, copied to your clipboard — paste into Gmail or any rich-text editor if you'd rather send it from your own inbox.
                 </p>
                 <button
                   onClick={copyEmail}
                   className="w-full inline-flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
                 >
                   {copied === "email" ? <CheckCircle2 size={15} /> : <Mail size={15} />}
-                  {copied === "email" ? "Copied — paste into Double!" : "Copy Branded Email to Clipboard"}
+                  {copied === "email" ? "Copied!" : "Copy Branded Email to Clipboard"}
                 </button>
               </div>
             </div>
