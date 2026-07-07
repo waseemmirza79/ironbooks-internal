@@ -5,7 +5,11 @@ import { previousMonthPeriod } from "@/lib/monthly-rec";
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/monthly-rec?period=YYYY-MM
+ * GET /api/monthly-rec?period=YYYY-MM&scope=production|signoffs
+ *
+ * scope=production (the /production board) skips the cleanup-signoff scan;
+ * scope=signoffs (the /cleanup board) skips period runs + the bookkeeper
+ * list. No scope = full payload (back-compat).
  *
  * The Monthly Rec roster:
  *   production: clients on daily recon (promoted to production) + their
@@ -34,6 +38,7 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url);
   const period = url.searchParams.get("period") || previousMonthPeriod().period;
+  const scope = url.searchParams.get("scope"); // "production" | "signoffs" | null
 
   let clientsQ = service
     .from("client_links")
@@ -49,7 +54,7 @@ export async function GET(request: Request) {
   );
 
   const RUN_COLS =
-    "client_link_id, period, kind, status, has_concerns, concerns, checks, checks_ran_at, completed_at, sent_to_client_at, email_delivery, ai_spot_check, submitted_by, submitted_at, board_status, waiting_reasons, status_note";
+    "client_link_id, period, kind, status, has_concerns, concerns, checks, checks_ran_at, completed_at, sent_to_client_at, email_delivery, ai_spot_check, submitted_by, submitted_at, board_status, waiting_reasons, status_note, verification, verification_score, verification_ran_at, verification_override";
 
   // Run rows for the period (table may predate migration 62 in some envs)
   let runsByClient = new Map<string, any>();
@@ -57,7 +62,7 @@ export async function GET(request: Request) {
   // roster. These are the 'cleanup complete' gates.
   let cleanupSignoffs: any[] = [];
   try {
-    const ids = production.map((c) => c.id);
+    const ids = scope === "signoffs" ? [] : production.map((c) => c.id);
     if (ids.length > 0) {
       const { data: runs } = await (service as any)
         .from("monthly_rec_runs")
@@ -68,7 +73,7 @@ export async function GET(request: Request) {
       runsByClient = new Map(((runs as any[]) || []).map((r) => [r.client_link_id, r]));
     }
 
-    const allIds = all.map((c) => c.id);
+    const allIds = scope === "production" ? [] : all.map((c) => c.id);
     if (allIds.length > 0) {
       const { data: signoffs } = await (service as any)
         .from("monthly_rec_runs")
@@ -82,10 +87,9 @@ export async function GET(request: Request) {
         return {
           id: r.client_link_id,
           client_name: (c as any)?.client_name || "Unknown",
-          jurisdiction: (c as any)?.jurisdiction || "",
-          state_province: (c as any)?.state_province || null,
+          contact_name:
+            [(c as any)?.contact_first_name, (c as any)?.contact_last_name].filter(Boolean).join(" ") || null,
           paused: false,
-          last_synced_at: (c as any)?.last_synced_at || null,
           run: r,
         };
       });
@@ -97,7 +101,7 @@ export async function GET(request: Request) {
   // Assignable bookkeepers for the board's per-client assign dropdown.
   // Senior-only (only admin/lead can reassign — matches /api/clients/[id]/assign).
   let bookkeepers: Array<{ id: string; full_name: string }> = [];
-  if (isSenior) {
+  if (isSenior && scope !== "signoffs") {
     const { data: bks } = await service
       .from("users")
       .select("id, full_name")
@@ -115,10 +119,8 @@ export async function GET(request: Request) {
     production: production.map((c) => ({
       id: c.id,
       client_name: c.client_name,
-      jurisdiction: c.jurisdiction,
-      state_province: c.state_province,
+      contact_name: [c.contact_first_name, c.contact_last_name].filter(Boolean).join(" ") || null,
       paused: !!c.daily_recon_paused,
-      last_synced_at: c.last_synced_at,
       bs_enabled: c.bs_enabled !== false,
       assigned_bookkeeper_id: c.assigned_bookkeeper_id ?? null,
       run: runsByClient.get(c.id) || null,
@@ -126,8 +128,6 @@ export async function GET(request: Request) {
     eligible: eligible.map((c) => ({
       id: c.id,
       client_name: c.client_name,
-      jurisdiction: c.jurisdiction,
-      state_province: c.state_province,
       cleanup_completed_at: c.cleanup_completed_at,
     })),
   });

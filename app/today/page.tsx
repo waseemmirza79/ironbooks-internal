@@ -7,10 +7,9 @@ import { ArrowRight, Sparkles, Pause } from "lucide-react";
 import { ClientFlagsWidget } from "./client-flags-widget";
 import { ReclassRequestsWidget, type PendingReclassRequest } from "./reclass-requests-widget";
 import { ClientInboxWidget, type InboundCommRow } from "./client-inbox-widget";
-import { ManagerReviewWidget } from "./manager-review-widget";
-import { StatementApprovalsWidget, type StatementApprovalRow } from "./statement-approvals-widget";
-import { StatementEscalationsWidget, type StatementEscalationRow } from "./statement-escalations-widget";
 import { CleanupDeadlinesWidget, type CleanupDeadlineRow } from "./cleanup-deadlines-widget";
+import { ClientAnswersWidget } from "./client-answers-widget";
+import { getClientAnswers, type ClientAnswerRow } from "@/lib/client-answers";
 import { QboHealthAlert } from "@/components/QboHealthAlert";
 import { MonthlyBsCheckButton } from "./monthly-bs-check";
 import { PulseBar } from "./pulse-bar";
@@ -49,6 +48,7 @@ export default async function TodayPage({
     .eq("id", user.id)
     .single();
   const isSenior = ["admin", "lead"].includes((actor as any)?.role || "");
+  const isAdmin = (actor as any)?.role === "admin";
 
   // Seniors can view /today AS any bookkeeper (?viewas=<user_id>) — every
   // client-scoped widget below narrows to that bookkeeper's clients.
@@ -71,14 +71,18 @@ export default async function TodayPage({
   const { data: clients } = await clientsQuery.order("client_name");
   const eligibleClients = (clients || []) as any[];
 
-  // ─── Manager review queue (seniors only) ───
-  // Files a bookkeeper submitted for manager review (cleanup_review_state =
-  // 'in_review'). These land on Mike's Today page so he can review the
-  // statements and send to the client. Oldest-submitted first.
-  // Manager approvals moved to Production → Approvals (/approvals). Kept as an
-  // empty array so the rest of /today (empty-state checks, props) is unchanged
-  // and the approval widgets simply don't render here.
-  const managerReviewRows: { id: string; client_name: string; submitted_at: string | null; submitted_by: string | null }[] = [];
+  // ─── Client answers to ask-client transaction questions ───
+  // The client picked an account in their portal; the bookkeeper confirms
+  // (default) or applies an alternative. Scoped like every other widget.
+  let clientAnswers: ClientAnswerRow[] = [];
+  try {
+    clientAnswers = await getClientAnswers(service, { scopeUserId });
+  } catch {
+    clientAnswers = [];
+  }
+
+  // Manager approvals, statement approvals, and escalations all moved to
+  // Production → Approvals (/approvals) — no senior queues are fetched here.
 
   // ─── Portal transaction flags from clients ───
   // These are independent of daily-recon enrollment — surface them even
@@ -151,7 +155,10 @@ export default async function TodayPage({
         "source_account_qbo_id, source_account_name, target_account_qbo_id, target_account_name, " +
         "example_txn_id, vendor_name, client_reason, status"
       )
-      .eq("status", "pending")
+      // failed = an approve attempt errored or matched zero transactions.
+      // Those stay in the queue (decline with a note, or retry) — hiding
+      // them left the client without an answer forever.
+      .in("status", ["pending", "failed"])
       .order("requested_at", { ascending: false });
 
     let raw = (rrRows as any[]) || [];
@@ -272,7 +279,6 @@ export default async function TodayPage({
         c.cleanup_review_state !== "in_review" &&
         c.cleanup_review_state !== "complete"
     );
-    const bkIds = [...new Set(raw.map((c) => c.assigned_bookkeeper_id).filter(Boolean))];
     // Internal team only — clients (role 'client') never appear in the
     // "view as" picker; they have no access to /today at all.
     const { data: bks } = await service
@@ -292,23 +298,9 @@ export default async function TodayPage({
       overdue: !!c.due_date && String(c.due_date).slice(0, 10) < todayStr,
       bookkeeper_name: bkById.get(c.assigned_bookkeeper_id) || null,
     }));
-    void bkIds;
   } catch {
     cleanupDeadlines = [];
   }
-
-  // ─── Statements awaiting senior approval ───
-  // JR-submitted monthly closes + cleanup sign-offs (monthly_rec_runs
-  // status=pending_review). Senior-only: this is Lisa's approval queue —
-  // she reviews the statements on /monthly-rec and approves the send.
-  // Statement approvals moved to Production → Approvals (/approvals).
-  const statementApprovals: StatementApprovalRow[] = [];
-
-  // ─── Statements flagged wrong by a bookkeeper (senior-only) ───
-  // Pulled from audit_log (append-only). Show the last 30 days so resolved
-  // ones age off without needing a status column.
-  // Statement escalations moved to Production → Approvals (/approvals).
-  const statementEscalations: StatementEscalationRow[] = [];
 
   // If nothing's enabled AND no flags AND no reclass requests AND no
   // inbound messages AND no statement approvals, show the empty state
@@ -316,9 +308,8 @@ export default async function TodayPage({
     eligibleClients.length === 0 &&
     pendingFlags.length === 0 &&
     pendingReclassRequests.length === 0 &&
-    inboundComms.length === 0 &&
-    statementApprovals.length === 0 &&
-    statementEscalations.length === 0
+    clientAnswers.length === 0 &&
+    inboundComms.length === 0
   ) {
     return (
       <AppShell>
@@ -334,7 +325,7 @@ export default async function TodayPage({
               can enable pilot clients from the admin panel — once enrolled, their daily AI
               categorizations + flagged items will appear here.
             </p>
-            {isSenior && (
+            {isAdmin && (
               <Link
                 href="/admin/daily-recon"
                 className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white font-semibold px-5 py-2.5 rounded-lg"
@@ -423,7 +414,23 @@ export default async function TodayPage({
       if (monthlyByClient.has(r.client_link_id)) continue;
       const status: CloseStatus = r.status === "complete" ? "closed" : "in_progress";
       monthlyByClient.set(r.client_link_id, { status, runId: r.id });
-      if (status === "closed") monthlyClosedCount++;
+    }
+
+    // The pulse-bar "N/M closed" chip counts the CANONICAL close
+    // (monthly_rec_runs — the /production board's Completed column it
+    // links to), not the cleanup_runs catch-up flow above.
+    try {
+      const closingPeriod = `${closingYear}-${String(closingMonth + 1).padStart(2, "0")}`;
+      const { count } = await (service as any)
+        .from("monthly_rec_runs")
+        .select("client_link_id", { count: "exact", head: true })
+        .eq("period", closingPeriod)
+        .eq("kind", "production_me")
+        .eq("status", "complete")
+        .in("client_link_id", clientIds);
+      monthlyClosedCount = count || 0;
+    } catch {
+      /* pre-migration env — chip shows 0 */
     }
   }
 
@@ -460,7 +467,6 @@ export default async function TodayPage({
     pendingReclassRequests,
     inboundComms,
     cleanupDeadlines,
-    statementEscalations,
     pendingByClient,
     anomaliesByClient,
     clientNameById,
@@ -474,6 +480,7 @@ export default async function TodayPage({
   const workCount =
     pendingFlags.length +
     pendingReclassRequests.length +
+    clientAnswers.length +
     inboundComms.length +
     (scopeUserId ? cleanupDeadlines.length : 0);
   const viewAsName = viewAs
@@ -517,13 +524,6 @@ export default async function TodayPage({
           dueSoon={counts.dueToday + counts.dueSoon}
         />
 
-        {/* Manager review queue — seniors only; files submitted for review. */}
-        {isSenior && managerReviewRows.length > 0 && (
-          <section className="space-y-2">
-            <ManagerReviewWidget rows={managerReviewRows} />
-          </section>
-        )}
-
         {/* ── YOUR WORK ── the logged-in person's actionable queue ── */}
         <section id="work" className="space-y-4 scroll-mt-4">
           <h2 className="text-sm font-bold text-navy uppercase tracking-wider">
@@ -542,6 +542,7 @@ export default async function TodayPage({
               {pendingReclassRequests.length > 0 && (
                 <ReclassRequestsWidget requests={pendingReclassRequests} />
               )}
+              {clientAnswers.length > 0 && <ClientAnswersWidget rows={clientAnswers} />}
               {inboundComms.length > 0 && <ClientInboxWidget rows={inboundComms} />}
               {scopeUserId && cleanupDeadlines.length > 0 && (
                 <CleanupDeadlinesWidget rows={cleanupDeadlines} showBookkeeper={false} />
@@ -635,10 +636,6 @@ export default async function TodayPage({
           ) : (
             <section id="team" className="space-y-4 scroll-mt-4">
               <h2 className="text-sm font-bold text-navy uppercase tracking-wider">Team</h2>
-              {statementApprovals.length > 0 && <StatementApprovalsWidget rows={statementApprovals} />}
-              {statementEscalations.length > 0 && (
-                <StatementEscalationsWidget rows={statementEscalations} />
-              )}
               {cleanupDeadlines.length > 0 && (
                 <CleanupDeadlinesWidget rows={cleanupDeadlines} showBookkeeper={true} />
               )}

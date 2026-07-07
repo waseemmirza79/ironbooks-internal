@@ -13,6 +13,9 @@ export const maxDuration = 300; // bulk send — allow time for dozens of emails
  *     confirm: true            — actually SEND (default is a safe dry-run preview)
  *     include_no_account: true — also FIRST-invite active clients who have no
  *                                portal account yet (default false = resend only)
+ *     client_link_id           — single-target mode: only this client (implies
+ *                                include_no_account so a never-invited client
+ *                                gets their first invite)
  *
  * Targets are active clients only. Excludes internal @ironbooks.com addresses,
  * "test" accounts, missing emails, and hard-bounced emails. Uses the shared,
@@ -33,15 +36,20 @@ export async function POST(request: Request) {
 
   const b = await request.json().catch(() => ({}));
   const confirm = b.confirm === true;
-  const includeNoAccount = b.include_no_account === true;
+  const single = typeof b.client_link_id === "string" ? b.client_link_id : null;
+  const includeNoAccount = b.include_no_account === true || !!single;
 
-  const { data: cls } = await service
+  let clsQuery = service
     .from("client_links")
     .select("id, client_name, client_email, contact_first_name, contact_last_name, email_hard_bounced")
     .eq("is_active", true);
-  const { data: cu } = await (service as any)
+  if (single) clsQuery = clsQuery.eq("id", single);
+  const { data: cls } = await clsQuery;
+  let cuQuery = (service as any)
     .from("client_users")
     .select("client_link_id, user_id, first_login_at, last_login_at, active");
+  if (single) cuQuery = cuQuery.eq("client_link_id", single);
+  const { data: cu } = await cuQuery;
 
   const maps = ((cu as any[]) || []).filter((m) => m.active !== false);
   const loggedIn = new Set(maps.filter((m) => m.first_login_at || m.last_login_at).map((m) => m.client_link_id));
@@ -104,6 +112,24 @@ export async function POST(request: Request) {
       });
       if (r.ok) results.sent++; else results.failed++;
       results.details.push({ company: t.company, email: t.email, ok: r.ok, resend: (r as any).resend, error: (r as any).error });
+      if (r.ok) {
+        // Reminder tracking (migration 106) — best-effort so pre-migration
+        // environments still send fine.
+        try {
+          const { data: cur } = await (service as any)
+            .from("client_links")
+            .select("login_reminder_count")
+            .eq("id", t.clientLinkId)
+            .single();
+          await (service as any)
+            .from("client_links")
+            .update({
+              login_reminder_last_sent_at: new Date().toISOString(),
+              login_reminder_count: ((cur as any)?.login_reminder_count || 0) + 1,
+            })
+            .eq("id", t.clientLinkId);
+        } catch {}
+      }
     } catch (e: any) {
       results.failed++;
       results.details.push({ company: t.company, email: t.email, ok: false, error: e?.message || "threw" });
@@ -114,7 +140,7 @@ export async function POST(request: Request) {
   await service.from("audit_log").insert({
     user_id: user.id,
     event_type: "bulk_portal_login_resend",
-    request_payload: { sent: results.sent, failed: results.failed, include_no_account: includeNoAccount } as any,
+    request_payload: { sent: results.sent, failed: results.failed, include_no_account: includeNoAccount, single_client: single } as any,
   });
 
   return NextResponse.json({ ok: true, ...results });

@@ -13,10 +13,11 @@ import {
   FileText, Loader2, PlayCircle, RotateCcw, Send, Sparkles, XCircle,
 } from "lucide-react";
 import { playSound } from "@/lib/sounds";
+import { VerificationPanel, vFixLink } from "./verification-panel";
 
-export type CheckStatus = "pass" | "warn" | "fail";
+type CheckStatus = "pass" | "warn" | "fail";
 
-export interface Check {
+interface Check {
   key: string;
   label: string;
   status: CheckStatus;
@@ -31,7 +32,7 @@ interface StatementLine {
   depth: number;
 }
 
-export interface CashFlowSection {
+interface CashFlowSection {
   title: string;
   total: number;
   items: { label: string; amount: number }[];
@@ -60,14 +61,14 @@ export interface Statements {
   } | null;
 }
 
-export interface SpotCheck {
+interface SpotCheck {
   verdict: "looks_good" | "needs_review";
   summary: string;
   findings: { severity: "info" | "warn" | "flag"; area: string; note: string }[];
   error?: string;
 }
 
-export interface Run {
+interface Run {
   status: "open" | "pending_review" | "complete";
   has_concerns: boolean;
   concerns: string | null;
@@ -86,15 +87,19 @@ export interface Run {
   board_status?: "not_started" | "in_progress" | "stuck" | "waiting_client";
   waiting_reasons?: string[];
   status_note?: string | null;
+  // Books Reliability (migration 104)
+  verification?: any | null;
+  verification_score?: number | null;
+  verification_ran_at?: string | null;
+  verification_override?: { by: string; at: string; reason: string; score_at_override: number } | null;
 }
 
 export interface ProdClient {
   id: string;
   client_name: string;
-  jurisdiction: string;
-  state_province: string | null;
+  /** Contact first + last name — shown under the business name on cards. */
+  contact_name?: string | null;
   paused: boolean;
-  last_synced_at: string | null;
   bs_enabled?: boolean;
   assigned_bookkeeper_id?: string | null;
   run: Run | null;
@@ -108,29 +113,9 @@ export interface Bookkeeper {
 export interface EligibleClient {
   id: string;
   client_name: string;
-  jurisdiction: string;
-  state_province: string | null;
   cleanup_completed_at: string;
 }
 
-/** Deep link into the right fix tool for a failed check. */
-function fixLink(fix: Check["fix"], clientId: string): { href: string; label: string } | null {
-  switch (fix) {
-    case "reclass":
-      // ?client= preselects this client in the reclass form — no picker hunt
-      return { href: `/reclass/new?client=${clientId}`, label: "Open Reclassify" };
-    case "uf_audit":
-      return { href: `/balance-sheet/${clientId}/uf-audit`, label: "Open UF Audit" };
-    case "ar":
-      return { href: `/clients/${clientId}`, label: "Open client profile" };
-    case "profile":
-      return { href: `/clients/${clientId}`, label: "Open client profile" };
-    case "connections":
-      return { href: "/fleet/qbo-health", label: "QBO Connections" };
-    default:
-      return null;
-  }
-}
 
 export function shiftPeriod(period: string, delta: number): string {
   const [y, m] = period.split("-").map(Number);
@@ -254,17 +239,37 @@ export function ClientRecCard({
     }
   }
 
-  async function sendToClient() {
+  async function sendToClient(overrideReason?: string) {
     setCompleting(true);
     setError("");
     try {
       const res = await fetch(`/api/clients/${client.id}/monthly-rec`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "send", period, attested: true, concerns }),
+        body: JSON.stringify({
+          action: "send",
+          period,
+          attested: true,
+          concerns,
+          ...(overrideReason ? { override_reason: overrideReason } : {}),
+        }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      if (!res.ok) {
+        // Books Reliability gate: score below the bar — a senior can override
+        // with a written reason (recorded on the run + audited).
+        if (res.status === 409 && json.requires_override) {
+          const reason = window.prompt(
+            `${json.error}\n\nTo send anyway, enter an override reason (recorded with your name):`
+          );
+          if (reason && reason.trim()) {
+            setCompleting(false);
+            return sendToClient(reason.trim());
+          }
+          throw new Error("Send cancelled — fix the findings and re-verify, or provide an override reason.");
+        }
+        throw new Error(json.error || `HTTP ${res.status}`);
+      }
       if (json.email_delivery && !json.email_delivery.sent) {
         setSendWarning(
           json.email_delivery.reason === "no_portal_user" || json.email_delivery.reason === "no_active_email"
@@ -421,7 +426,7 @@ export function ClientRecCard({
           ) : (
             <ul className="space-y-2">
               {checks.map((c) => {
-                const link = c.fix ? fixLink(c.fix, client.id) : null;
+                const link = vFixLink(c.fix, client.id);
                 return (
                   <li
                     key={c.key}
@@ -446,6 +451,18 @@ export function ClientRecCard({
               })}
             </ul>
           )}
+
+          {/* ── BOOKS RELIABILITY ── verify → work findings → score gates the send. */}
+          <VerificationPanel
+            clientId={client.id}
+            period={period}
+            verification={(run as any)?.verification || null}
+            verificationRanAt={(run as any)?.verification_ran_at || null}
+            checksRanAt={run?.checks_ran_at || null}
+            isSenior={isSenior}
+            locked={isComplete || isPending}
+            onRun={(r) => setLocalRun(r)}
+          />
 
           {/* ── THE CLOSE GATE ──
               Step 1: review the actual financial statements.
@@ -518,7 +535,7 @@ export function ClientRecCard({
               {isSenior ? (
                 <>
                   <button
-                    onClick={sendToClient}
+                    onClick={() => sendToClient()}
                     disabled={completing || !attested}
                     title={!attested ? "Tick the attestation first" : undefined}
                     className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold px-4 py-2 rounded-lg disabled:opacity-50"

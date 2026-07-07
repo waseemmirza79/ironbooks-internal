@@ -10,6 +10,9 @@ import {
   type EligibleClient, type ProdClient, type Bookkeeper,
 } from "./rec-card";
 import { CoaUpdatesBanner } from "./coa-updates-banner";
+import { ClientBadges } from "@/components/ClientBadges";
+import { EscalateMenu, EscalationStrip } from "@/components/escalations-ui";
+import { type AttentionState } from "@/lib/client-attention-state";
 
 /**
  * /production — the month-by-month board for graduated clients.
@@ -20,11 +23,11 @@ import { CoaUpdatesBanner } from "./coa-updates-banner";
  * with no run row for the month is Not Started — which is exactly how a
  * finished month "resets": next month has no row yet.
  *
- * A month reaches Completed two ways: the full SNAP close ("send" — review,
- * attest, email statements, close QBO) OR "mark complete" for closes done
- * outside SNAP (e.g. emailed from Double) — same Completed state, no email /
- * no QBO close, badged "closed outside SNAP". Picking another status on a
- * completed card reopens it.
+ * A month reaches Completed ONE way: the rec-card close flow (run checks →
+ * review statements → attest → send). Picking "✓ Completed" on a card just
+ * opens its rec-card — after the 2026-07-04 incident (the board's own
+ * Completed path mis-fired real statement emails), the board no longer has
+ * a second close path. Picking another status on a completed card reopens it.
  *
  * "Ready for manager review" is not a stored status — submitting the
  * statement review (the rec-card flow) moves the run to pending_review,
@@ -42,7 +45,9 @@ type BoardStatus = "not_started" | "in_progress" | "stuck" | "waiting_client";
 const COLUMNS: { id: BoardStatus; title: string; icon: any; tone: string }[] = [
   { id: "not_started", title: "Not Started", icon: CircleDashed, tone: "border-gray-200" },
   { id: "in_progress", title: "In Progress", icon: PlayCircle, tone: "border-teal/40" },
-  { id: "stuck", title: "Stuck", icon: OctagonAlert, tone: "border-red-300" },
+  // "Blocked (this month)" — month-state, deliberately NOT the client-level
+  // STUCK JOB badge. A client can be blocked this month and fine as a client.
+  { id: "stuck", title: "Blocked (this month)", icon: OctagonAlert, tone: "border-red-300" },
   { id: "waiting_client", title: "Waiting on Client", icon: MailQuestion, tone: "border-amber-300" },
 ];
 
@@ -55,12 +60,29 @@ export function ProductionBoard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Picking "✓ Completed" opens the close card, which renders BELOW the
+  // columns — scroll to it and pulse it, or it reads as "nothing happened".
+  const [closePulse, setClosePulse] = useState(false);
+  function openCloseCard(id: string) {
+    setSelectedId(id);
+    setClosePulse(true);
+    setTimeout(() => {
+      document.getElementById("close-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+    setTimeout(() => setClosePulse(false), 2600);
+  }
+  // Attention states (escalated / billing / BS owed / disconnected / stuck).
+  const [attention, setAttention] = useState<Record<string, AttentionState>>({});
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
 
   async function load(p?: string) {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`/api/monthly-rec${p ? `?period=${p}` : ""}`);
+      const [res, attRes] = await Promise.all([
+        fetch(`/api/monthly-rec?scope=production${p ? `&period=${p}` : ""}`),
+        fetch("/api/attention"),
+      ]);
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       setPeriod(body.period);
@@ -68,6 +90,10 @@ export function ProductionBoard() {
       setEligible(body.eligible || []);
       setBookkeepers(body.bookkeepers || []);
       setIsSenior(!!body.is_senior);
+      if (attRes.ok) {
+        const att = await attRes.json();
+        setAttention(att.clients || {});
+      }
     } catch (e: any) {
       setError(e?.message || "Failed to load");
     } finally {
@@ -137,6 +163,17 @@ export function ProductionBoard() {
           </button>
         </div>
         <div className="flex-1" />
+        <button
+          onClick={() => setFlaggedOnly((f) => !f)}
+          className={`text-xs font-semibold px-2.5 py-1 rounded-full border transition-all ${
+            flaggedOnly
+              ? "bg-red-100 text-red-800 border-red-300 ring-2 ring-navy/40"
+              : "bg-white text-ink-slate border-gray-200 hover:border-red-200"
+          }`}
+          title="Show only clients needing intervention (escalated, billing, disconnected, reclass paused)"
+        >
+          ⚠ Flagged only
+        </button>
         {production.length > 0 && (
           <span className="text-sm text-ink-slate">
             <strong className="text-navy">{done.length}</strong> of{" "}
@@ -145,6 +182,11 @@ export function ProductionBoard() {
           </span>
         )}
       </div>
+
+      {/* Escalations — triage on the board. */}
+      {!loading && (
+        <EscalationStrip clientIds={production.map((c) => c.id)} onChanged={() => load(period)} />
+      )}
 
       {/* BS-owed banner — production clients on P&L-only service still owe
           a finished balance sheet. Don't let "in production" hide that. */}
@@ -203,11 +245,24 @@ export function ProductionBoard() {
                 tone: "border-emerald-300",
                 cards: done,
               },
-            ].map((col) => {
+            ]
+              .map((col) => ({
+                ...col,
+                // Intervention states only — bs_owed is a chronic service
+                // mode with its own banner here, not a flag to triage.
+                cards: flaggedOnly
+                  ? col.cards.filter((c) => {
+                      const a = attention[c.id];
+                      return a && (a.escalations.length > 0 || !!a.billing || a.disconnected || a.stuck_job);
+                    })
+                  : col.cards,
+              }))
+              .map((col) => {
               const Icon = col.icon;
               const isCompletedCol = col.id === "completed";
+              // no overflow-hidden on the column shell — it clips the Escalate popover
               return (
-                <div key={col.id} className={`bg-white rounded-2xl border-2 ${col.tone} overflow-hidden`}>
+                <div key={col.id} className={`bg-white rounded-2xl border-2 ${col.tone}`}>
                   <div className="px-3 py-2.5 border-b border-gray-100 flex items-center gap-2">
                     <Icon size={14} className={isCompletedCol ? "text-emerald-600" : "text-ink-slate"} />
                     <span className="text-sm font-bold text-navy">{col.title}</span>
@@ -224,8 +279,10 @@ export function ProductionBoard() {
                         period={period}
                         isSenior={isSenior}
                         bookkeepers={bookkeepers}
+                        attention={attention[c.id]}
                         selected={selectedId === c.id}
                         onSelect={() => setSelectedId(selectedId === c.id ? null : c.id)}
+                        onCloseIntent={() => openCloseCard(c.id)}
                         onChanged={() => load(period)}
                       />
                     ))}
@@ -237,7 +294,12 @@ export function ProductionBoard() {
 
           {/* ── SELECTED CLIENT: full monthly close flow ── */}
           {selected && (
-            <div className="space-y-2">
+            <div
+              id="close-card"
+              className={`space-y-2 scroll-mt-4 rounded-2xl transition-shadow duration-700 ${
+                closePulse ? "ring-4 ring-teal/50 shadow-lg" : ""
+              }`}
+            >
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-bold text-navy">
                   {selected.client_name} — {periodLabel(period)}
@@ -292,16 +354,21 @@ function BoardCard({
   period,
   isSenior,
   bookkeepers,
+  attention,
   selected,
   onSelect,
+  onCloseIntent,
   onChanged,
 }: {
   client: ProdClient;
   period: string;
   isSenior: boolean;
   bookkeepers: Bookkeeper[];
+  attention?: AttentionState;
   selected: boolean;
   onSelect: () => void;
+  /** "✓ Completed" picked — open the close card and scroll to it. */
+  onCloseIntent: () => void;
   onChanged: () => void;
 }) {
   const [togglingBs, setTogglingBs] = useState(false);
@@ -378,36 +445,6 @@ function BoardCard({
     }
   }
 
-  // Mark the month complete — this now runs the FULL close: publishes the
-  // statements to the client's portal, emails them, and sets the QuickBooks
-  // closing date. (No more no-send "closed outside SNAP" path — Double is gone.)
-  async function markComplete() {
-    if (
-      !confirm(
-        `Close & send ${client.client_name}'s ${periodLabel(period)} statements?\n\n` +
-          `This publishes their ${periodLabel(period)} statements to the client portal, ` +
-          `EMAILS the client that their books are ready, and closes the period in QuickBooks.\n\n` +
-          `This is client-facing — only do it when the month is truly done.`
-      )
-    )
-      return;
-    setSaving(true);
-    try {
-      const res = await fetch(`/api/clients/${client.id}/monthly-rec`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "mark_complete", period }),
-      });
-      if (res.ok) onChanged();
-      else {
-        const b = await res.json().catch(() => ({}));
-        alert(b.error || "Couldn't mark complete");
-      }
-    } finally {
-      setSaving(false);
-    }
-  }
-
   // Reopen a completed month back into the active board, optionally landing
   // it in a target column. Reopen clears the close, then sets the column.
   async function reopenTo(target: string) {
@@ -459,16 +496,27 @@ function BoardCard({
         selected ? "border-teal ring-1 ring-teal/30" : "border-gray-150 border-gray-200"
       }`}
     >
+      <div className="flex items-start gap-1">
+        <button onClick={onSelect} className="flex-1 min-w-0 text-left">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm font-semibold text-navy">{client.client_name}</span>
+            {client.paused && (
+              <span className="text-[9px] font-bold bg-gray-100 text-ink-slate px-1 py-0.5 rounded">PAUSED</span>
+            )}
+            <ClientBadges attention={attention} stage="production" max={2} />
+          </div>
+          {client.contact_name && (
+            <div className="text-[11px] text-gray-400 truncate">{client.contact_name}</div>
+          )}
+        </button>
+        <EscalateMenu
+          clientLinkId={client.id}
+          clientName={client.client_name}
+          onRaised={onChanged}
+          small
+        />
+      </div>
       <button onClick={onSelect} className="w-full text-left">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-sm font-semibold text-navy">{client.client_name}</span>
-          {client.paused && (
-            <span className="text-[9px] font-bold bg-gray-100 text-ink-slate px-1 py-0.5 rounded">PAUSED</span>
-          )}
-          {bsOff && (
-            <span className="text-[9px] font-bold bg-sky-100 text-sky-800 px-1 py-0.5 rounded">P&L ONLY</span>
-          )}
-        </div>
         <div className="flex items-center gap-1.5 mt-1 flex-wrap">
           {isPending ? (
             <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded">
@@ -534,7 +582,11 @@ function BoardCard({
             const v = e.target.value;
             if (v === currentStatus) return;
             if (v === "completed") {
-              markComplete();
+              // The close lives in the rec-card flow (checks -> review ->
+              // attest -> send). Opening the card IS the action here — and
+              // it renders below the columns, so scroll the user to it.
+              onCloseIntent();
+              return;
             } else if (isComplete) {
               // Leaving the Completed column = reopen, then land the column.
               reopenTo(v);
@@ -548,7 +600,7 @@ function BoardCard({
         >
           <option value="not_started">Not started</option>
           <option value="in_progress">In progress</option>
-          <option value="stuck">Stuck</option>
+          <option value="stuck">Blocked (this month)</option>
           <option value="waiting_client">Waiting on client</option>
           <option value="completed">✓ Completed</option>
         </select>
@@ -659,6 +711,7 @@ function BoardCard({
           Concerns noted for the manager
         </div>
       )}
+
     </div>
   );
 }
