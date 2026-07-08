@@ -89,11 +89,15 @@ export interface UpgradeRow {
   clientLinkId: string;
   company: string;
   contact: string | null;
-  currency: string;             // reporting currency of the books (usd/cad)
+  currency: string;             // billing currency (usd/cad)
   currentTier: ServiceTier | null;
-  currentTierExplicit: boolean; // true when set on client_links, false when inferred from MRR
-  currentFee: number | null;
-  currentMrrCents: number;
+  /** where the current tier came from: 'billing' = matched to what they
+   *  actually pay on /admin/billing (MRR or most-recent collected payment);
+   *  'assigned' = fell back to client_links.service_tier; 'none' = no billing. */
+  tierSource: "billing" | "assigned" | "none";
+  currentFee: number | null;        // tier's standard USD fee
+  actualMonthlyCents: number;       // what they ACTUALLY pay/mo (billing), their currency
+  currentMrrCents: number;          // alias of actualMonthlyCents (back-compat)
 
   monthsAvailable: number;
   recentMonths: MonthPoint[];   // most-recent first, up to RUN_RATE_MONTHS
@@ -171,7 +175,7 @@ export async function computeUpgradeSignals(
   service: any,
   opts: ComputeOpts = {}
 ): Promise<UpgradeReport> {
-  const [clientsRaw, subsRaw, runsRaw, cacheRaw, actionsRaw] = await Promise.all([
+  const [clientsRaw, subsRaw, paysRaw, runsRaw, cacheRaw, actionsRaw] = await Promise.all([
     safe<any[]>(
       service
         .from("client_links")
@@ -180,6 +184,15 @@ export async function computeUpgradeSignals(
       []
     ),
     safe<any[]>(service.from("billing_subscriptions").select("*"), []),
+    // Collected payments — the "actual" recurring amount when there's no MRR
+    // set, so the tier matches what /admin/billing actually shows.
+    safe<any[]>(
+      service
+        .from("billing_payments")
+        .select("client_link_id, period_year, period_month, amount_cents, status, currency")
+        .eq("status", "collected"),
+      []
+    ),
     safe<any[]>(
       service
         .from("monthly_rec_runs")
@@ -193,6 +206,25 @@ export async function computeUpgradeSignals(
 
   const subByClient = new Map<string, any>((subsRaw || []).map((s) => [s.client_link_id, s]));
   const actionByClient = new Map<string, any>((actionsRaw || []).map((a) => [a.client_link_id, a]));
+
+  // Most-recent collected payment per client (period desc) → the real recurring
+  // amount + currency when no MRR is set. Mirrors the billing page.
+  const latestPayByClient = new Map<string, { cents: number; currency: string | null }>();
+  for (const p of ((paysRaw || []).slice().sort((a: any, b: any) =>
+    b.period_year - a.period_year || b.period_month - a.period_month))) {
+    if (!latestPayByClient.has(p.client_link_id)) {
+      latestPayByClient.set(p.client_link_id, { cents: Number(p.amount_cents || 0), currency: p.currency || null });
+    }
+  }
+
+  // USD→CAD spot for currency-normalising fees before tier banding (same source
+  // the billing page uses). Safe fallback if the fetch fails.
+  let fxUsdToCad = 1.37;
+  try {
+    const r = await fetch("https://open.er-api.com/v6/latest/USD", { next: { revalidate: 3600 } } as any);
+    const j = await r.json();
+    if (j?.rates?.CAD && Number.isFinite(j.rates.CAD)) fxUsdToCad = j.rates.CAD;
+  } catch { /* keep fallback */ }
 
   // period → point, per client. Closed statements first (authoritative + free),
   // then QBO cache fills any period we don't already have.
@@ -236,12 +268,24 @@ export async function computeUpgradeSignals(
   for (const c of clientsRaw || []) {
     const sub = subByClient.get(c.id);
     const mrrCents = sub ? (sub.manual_mrr_cents ?? sub.mrr_cents ?? 0) : 0;
+    const latestPay = latestPayByClient.get(c.id);
 
-    let currentTier: ServiceTier | null = (c.service_tier as ServiceTier) || null;
-    let explicit = !!c.service_tier;
-    if (!currentTier && mrrCents > 0) {
-      currentTier = tierFromAmountDollars(mrrCents / 100);
-      explicit = false;
+    // TIER FROM ACTUAL BILLING (not inferred): what they actually pay per month
+    // — the set MRR, else their most-recent collected payment — matched to a
+    // tier by its USD-equivalent. Only when there's no billing at all do we fall
+    // back to the assigned service_tier column.
+    const actualMonthlyCents = mrrCents > 0 ? mrrCents : (latestPay?.cents || 0);
+    const billingCurrency = (sub?.currency as string) || latestPay?.currency || "usd";
+    const toUsd = (cents: number) => (billingCurrency === "cad" ? cents / fxUsdToCad : cents);
+
+    let currentTier: ServiceTier | null = null;
+    let tierSource: "billing" | "assigned" | "none" = "none";
+    if (actualMonthlyCents > 0) {
+      currentTier = tierFromAmountDollars(toUsd(actualMonthlyCents) / 100);
+      tierSource = "billing";
+    } else if (c.service_tier) {
+      currentTier = c.service_tier as ServiceTier;
+      tierSource = "assigned";
     }
     // Filtering: skip scale (nothing above it) and tiers not requested.
     if (currentTier === "scale") continue;
@@ -260,7 +304,7 @@ export async function computeUpgradeSignals(
     const monthsAvailable = allMonths.length;
     const company = c.legal_business_name || c.client_name || "—";
     const contact = [c.contact_first_name, c.contact_last_name].filter(Boolean).join(" ") || null;
-    const currency = (sub?.currency as string) || "usd";
+    const currency = billingCurrency;
     const action = actionByClient.get(c.id);
     const actionDecision: ActionDecision = (action?.decision as ActionDecision) || "pending";
 
@@ -317,9 +361,12 @@ export async function computeUpgradeSignals(
 
     const currentFee = tierFeeDollars(currentTier);
     const targetFee = tierFeeDollars(targetTier);
+    // Uplift = target's standard fee minus what they ACTUALLY pay today
+    // (USD-equiv). Bigger when they're on a subsidised rate below the standard.
+    const actualUsd = Math.round(toUsd(actualMonthlyCents) / 100);
     const uplift =
-      recommendation === "upgrade" && currentFee != null && targetFee != null
-        ? targetFee - currentFee
+      recommendation === "upgrade" && targetFee != null
+        ? Math.max(0, targetFee - (actualUsd || currentFee || 0))
         : 0;
 
     const sources = new Set(recentMonths.map((m) => m.source));
@@ -334,9 +381,10 @@ export async function computeUpgradeSignals(
       contact,
       currency,
       currentTier,
-      currentTierExplicit: explicit,
+      tierSource,
       currentFee,
-      currentMrrCents: mrrCents,
+      actualMonthlyCents,
+      currentMrrCents: actualMonthlyCents,
       monthsAvailable,
       recentMonths,
       streakOverCap: streak,

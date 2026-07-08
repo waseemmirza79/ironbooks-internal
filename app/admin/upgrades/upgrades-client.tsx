@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   TrendingUp, ArrowUpCircle, AlertTriangle, Eye, CheckCircle2,
-  RefreshCw, Loader2, Ban, RotateCcw, Clock, Info,
+  RefreshCw, Loader2, Ban, RotateCcw, Clock, Info, MessageSquare, Copy, X,
 } from "lucide-react";
 import type { UpgradeReport, UpgradeRow, Recommendation } from "@/lib/upgrade-signals";
 
@@ -50,6 +50,7 @@ export function UpgradesClient({ report }: { report: UpgradeReport }) {
   const [tier, setTier] = useState<string>("all");
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [msg, setMsg] = useState<{ row: UpgradeRow; message: string; usedGrain: boolean; recordingCount: number } | null>(null);
 
   const { rows, summary, thresholds } = report;
   const isResolved = (r: UpgradeRow) => r.actionDecision === "upgraded" || r.actionDecision === "dismissed";
@@ -105,6 +106,19 @@ export function UpgradesClient({ report }: { report: UpgradeReport }) {
     }
     const data = await post("/api/admin/upgrade-action", body, `act-${r.clientLinkId}`);
     if (data?.ok) router.refresh();
+  }
+
+  async function draftMessage(r: UpgradeRow) {
+    const context = {
+      currentTier: tierName(r.currentTier),
+      currentPay: r.actualMonthlyCents > 0 ? money0(r.actualMonthlyCents, r.currency) : null,
+      targetTier: tierName(r.targetTier),
+      targetPrice: r.targetFee != null ? `$${r.targetFee}` : null,
+      runRate: compact(r.annualizedRunRateCents),
+      marginPct: Math.round(r.trailingMarginPct),
+    };
+    const data = await post("/api/admin/upgrade-message", { client_link_id: r.clientLinkId, context }, `msg-${r.clientLinkId}`);
+    if (data?.message) setMsg({ row: r, message: data.message, usedGrain: !!data.usedGrain, recordingCount: data.recordingCount || 0 });
   }
 
   const tabs: { key: BucketFilter; label: string; count: number }[] = [
@@ -200,10 +214,12 @@ export function UpgradesClient({ report }: { report: UpgradeReport }) {
           </div>
         ) : (
           filtered.map((r) => (
-            <UpgradeCard key={r.clientLinkId} r={r} busy={busy} onBackfill={backfill} onAct={act} />
+            <UpgradeCard key={r.clientLinkId} r={r} busy={busy} onBackfill={backfill} onAct={act} onDraftMessage={draftMessage} />
           ))
         )}
       </div>
+
+      {msg && <MessageModal data={msg} onClose={() => setMsg(null)} />}
     </div>
   );
 }
@@ -225,12 +241,13 @@ function SummaryCard({ tone, label, value, sub }: { tone: string; label: string;
 }
 
 function UpgradeCard({
-  r, busy, onBackfill, onAct,
+  r, busy, onBackfill, onAct, onDraftMessage,
 }: {
   r: UpgradeRow;
   busy: Record<string, boolean>;
   onBackfill: (r: UpgradeRow) => void;
   onAct: (r: UpgradeRow, decision: string) => void;
+  onDraftMessage: (r: UpgradeRow) => void;
 }) {
   const meta = REC_META[r.recommendation];
   const RecIcon = meta.icon;
@@ -246,12 +263,20 @@ function UpgradeCard({
             <a href={`/clients/${r.clientLinkId}`} className="font-bold text-navy hover:text-teal truncate">{r.company}</a>
           </div>
           <div className="text-xs text-ink-slate mt-0.5">{r.contact || "—"}</div>
-          <div className="mt-2 inline-flex items-center gap-1.5">
+          <div className="mt-2 inline-flex items-center gap-1.5 flex-wrap">
             <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${TIER_COLORS[r.currentTier || "scale"] || "bg-gray-100 text-gray-600"}`}>
-              {tierName(r.currentTier)}{r.currentFee != null ? ` · $${r.currentFee}` : ""}
+              {tierName(r.currentTier)}
             </span>
-            {!r.currentTierExplicit && r.currentTier && (
-              <span className="text-[10px] text-ink-light" title="Tier inferred from billing amount, not set on the client">inferred</span>
+            {r.actualMonthlyCents > 0 && (
+              <span className="text-[11px] text-ink-slate" title="What they actually pay per month, from the billing page">
+                {money0(r.actualMonthlyCents, r.currency)}/mo
+              </span>
+            )}
+            {r.tierSource === "assigned" && (
+              <span className="text-[10px] text-ink-light" title="No billing amount on file — showing the tier assigned on the client">assigned</span>
+            )}
+            {r.tierSource === "none" && (
+              <span className="text-[10px] text-amber-600" title="No subscription, MRR, or collected payment on file">no billing</span>
             )}
           </div>
         </div>
@@ -304,6 +329,18 @@ function UpgradeCard({
             </div>
           )}
 
+          {!resolved && (r.recommendation === "upgrade" || r.recommendation === "margin_low") && (
+            <button
+              onClick={() => onDraftMessage(r)}
+              disabled={busy[`msg-${r.clientLinkId}`]}
+              className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-purple-700 border border-purple-200 hover:bg-purple-50 rounded-md px-2.5 py-1"
+              title="Draft an upgrade message using their Grain call history"
+            >
+              {busy[`msg-${r.clientLinkId}`] ? <Loader2 size={12} className="animate-spin" /> : <MessageSquare size={12} />}
+              Draft message
+            </button>
+          )}
+
           {resolved ? (
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-semibold text-ink-slate capitalize">{r.actionDecision}</span>
@@ -337,6 +374,59 @@ function UpgradeCard({
               <span className="text-[11px] text-ink-light">snoozed to {r.snoozeUntil}</span>
             ) : null
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MessageModal({
+  data, onClose,
+}: {
+  data: { row: UpgradeRow; message: string; usedGrain: boolean; recordingCount: number };
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(data.message);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard blocked — user can select the text */ }
+  }
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4"
+      style={{ backgroundColor: "rgba(15,31,46,0.6)", backdropFilter: "blur(4px)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full max-h-[88vh] flex flex-col">
+        <div className="px-5 py-4 border-b border-gray-200 flex items-start justify-between gap-3">
+          <div>
+            <h3 className="font-bold text-navy flex items-center gap-2">
+              <MessageSquare size={16} className="text-purple-600" /> Upgrade message — {data.row.company}
+            </h3>
+            <p className="text-xs text-ink-slate mt-1">
+              {data.usedGrain
+                ? `Personalised from ${data.recordingCount} Grain call${data.recordingCount === 1 ? "" : "s"} — verify the specifics before sending.`
+                : "Generic draft — no Grain calls matched this client, so it's built from their growth numbers only."}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-ink-slate hover:text-navy flex-shrink-0"><X size={18} /></button>
+        </div>
+        <div className="px-5 py-4 overflow-y-auto flex-1">
+          <textarea
+            readOnly
+            value={data.message}
+            onFocus={(e) => e.currentTarget.select()}
+            className="w-full h-80 text-sm text-navy border border-gray-200 rounded-lg p-3 whitespace-pre-wrap resize-none"
+          />
+        </div>
+        <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-between gap-3">
+          <span className="text-[11px] text-ink-light">A draft — review + edit before sending.</span>
+          <button onClick={copy} className="inline-flex items-center gap-1.5 bg-navy hover:bg-ink-light text-white text-sm font-semibold px-4 py-2 rounded-lg">
+            {copied ? <CheckCircle2 size={14} /> : <Copy size={14} />} {copied ? "Copied" : "Copy message"}
+          </button>
         </div>
       </div>
     </div>
