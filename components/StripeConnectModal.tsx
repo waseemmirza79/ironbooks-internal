@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { createBrowserClient } from "@supabase/ssr";
 import {
-  X, Loader2, CreditCard, Copy, CheckCircle2, Search, Send, Mail, Unplug,
+  X, Loader2, CreditCard, Copy, CheckCircle2, Search, Send, Mail, Unplug, Eye, EyeOff,
 } from "lucide-react";
 import type { Database } from "@/lib/database.types";
 
@@ -35,6 +35,7 @@ export function StripeConnectModal({
     url: string;
     expires_at: string;
     client_name: string;
+    contact_first_name: string | null;
   } | null>(null);
   const [copied, setCopied] = useState<"url" | "email" | null>(null);
   const [sending, setSending] = useState(false);
@@ -42,6 +43,8 @@ export function StripeConnectModal({
   const [needEmail, setNeedEmail] = useState(false);
   const [overrideEmail, setOverrideEmail] = useState("");
   const [sendError, setSendError] = useState("");
+  const [preview, setPreview] = useState<{ html: string; subject: string; recipients: string[]; no_address: boolean } | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [disconnectMessage, setDisconnectMessage] = useState<string>("");
@@ -113,7 +116,7 @@ export function StripeConnectModal({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not generate link");
-      setGenerated({ url: data.url, expires_at: data.expires_at, client_name: data.client_name });
+      setGenerated({ url: data.url, expires_at: data.expires_at, client_name: data.client_name, contact_first_name: data.contact_first_name ?? null });
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -148,6 +151,28 @@ export function StripeConnectModal({
       setDisconnecting(false);
     }
   }
+
+  async function loadPreview(address?: string) {
+    if (!selectedId) return;
+    try {
+      const res = await fetch(`/api/clients/${selectedId}/preview-stripe-email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(address ? { override_email: address } : {}),
+      });
+      const data = await res.json();
+      if (res.ok) setPreview(data);
+    } catch {
+      /* preview is best-effort */
+    }
+  }
+
+  // Fetch the preview as soon as a link exists, so the recipient + rendered
+  // email are visible before the bookkeeper sends.
+  useEffect(() => {
+    if (generated) loadPreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [generated]);
 
   async function handleSendEmail(address?: string) {
     if (!selectedId) return;
@@ -185,7 +210,7 @@ export function StripeConnectModal({
 
   async function copyEmail() {
     if (!generated) return;
-    const firstName = generated.client_name.split(" ")[0] || "there";
+    const firstName = (generated.contact_first_name || "").trim() || generated.client_name.split(" ")[0] || "there";
     const html = buildEmailHtml(firstName, generated.url, generated.client_name);
     const plain = buildEmailPlainText(firstName, generated.url, generated.client_name);
     try {
@@ -431,16 +456,41 @@ export function StripeConnectModal({
                   </div>
                 ) : (
                   <>
-                    <p className="text-xs text-ink-slate mb-2">
-                      Emails the branded connect request straight to the client's address on file — no copying needed.
-                    </p>
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <p className="text-xs text-ink-slate">
+                        {preview?.recipients?.length
+                          ? <>Will send to <strong className="text-navy">{preview.recipients.join(", ")}</strong></>
+                          : "Emails the branded connect request straight to the client's address on file."}
+                      </p>
+                      <button
+                        onClick={() => setShowPreview((v) => !v)}
+                        disabled={!preview}
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-teal hover:text-teal-dark disabled:opacity-40 flex-shrink-0"
+                      >
+                        {showPreview ? <EyeOff size={13} /> : <Eye size={13} />}
+                        {showPreview ? "Hide preview" : "Preview email"}
+                      </button>
+                    </div>
+                    {showPreview && preview && (
+                      <div className="mb-2 rounded-lg border border-gray-200 overflow-hidden">
+                        <div className="px-3 py-1.5 bg-gray-50 border-b border-gray-200 text-[11px] text-ink-slate">
+                          <span className="font-semibold text-navy">Subject:</span> {preview.subject}
+                        </div>
+                        <iframe
+                          title="Email preview"
+                          srcDoc={preview.html}
+                          className="w-full h-72 bg-white"
+                          sandbox=""
+                        />
+                      </div>
+                    )}
                     <button
                       onClick={() => handleSendEmail()}
                       disabled={sending}
                       className="w-full inline-flex items-center justify-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-60 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
                     >
                       {sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-                      {sending ? "Sending..." : "Send Email to Client"}
+                      {sending ? "Sending..." : preview?.recipients?.length ? `Send to ${preview.recipients.length > 1 ? `${preview.recipients.length} recipients` : preview.recipients[0]}` : "Send Email to Client"}
                     </button>
                   </>
                 )}
