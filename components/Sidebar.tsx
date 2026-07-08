@@ -6,7 +6,7 @@ import {
   Sparkles, Users, LogOut, BookOpen, Clock,
   Shield, CreditCard, ChevronDown, ChevronRight, Sun, TrendingUp,
   Volume2, VolumeX, HeartPulse, Gauge, BadgeCheck,
-  ClipboardCheck, ListChecks, UserPlus, GraduationCap, Settings as SettingsIcon, Inbox, ListTodo, LifeBuoy, ExternalLink,
+  ClipboardCheck, ListChecks, UserPlus, GraduationCap, Settings as SettingsIcon, Inbox, ListTodo, LifeBuoy, ExternalLink, Landmark,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
