@@ -43,6 +43,7 @@ interface ExecutionStats {
   renamed: number;
   merged: number;
   reclassified: number;
+  reparented: number;
   inactivated: number;
   duration_seconds: number;
 }
@@ -60,7 +61,7 @@ interface ExecutionStats {
 export interface ManualCleanupItem {
   account_id: string | null;
   account_name: string;
-  intended_action: "rename" | "inactivate" | "create";
+  intended_action: "rename" | "inactivate" | "create" | "merge" | "reparent";
   reason: string;
   suggestion: string;
   qbo_response?: string;
@@ -275,7 +276,7 @@ export async function executeJob(jobId: string): Promise<{
   // Each entry has the exact request body + QBO error + account snapshot.
   const pendingFailures: FailureContext[] = [];
   const stats: ExecutionStats = {
-    created: 0, renamed: 0, merged: 0, reclassified: 0, inactivated: 0, duration_seconds: 0,
+    created: 0, renamed: 0, merged: 0, reclassified: 0, reparented: 0, inactivated: 0, duration_seconds: 0,
   };
 
   const { data: job, error: jobErr } = await supabase
@@ -1346,6 +1347,103 @@ export async function executeJob(jobId: string): Promise<{
       await logProgress(ctx, "stage_complete",
         `Merges complete: ${stats.merged} merged`,
         { stage: "merge", merged: stats.merged });
+    }
+
+    // STAGE 3.8: Re-parent — nest EXISTING flat accounts under master headings.
+    // Stages 1–3 only nested newly-created accounts; a client account that
+    // already existed flat but matches a master leaf (post-rename) stayed
+    // orphaned, so statements never got the Heading → Sub structure. The
+    // master COA defines parent_account_name per leaf, so this is fully
+    // deterministic — no AI field involved. Guards: parent must exist in the
+    // chart with the same AccountType (QBO 6000s otherwise); accounts that
+    // are themselves parents are left alone (no subtree moves).
+    try {
+      const { data: masterLeaves } = await ctx.supabase
+        .from("master_coa")
+        .select("account_name, parent_account_name, is_parent, qbo_account_type")
+        .eq("jurisdiction", clientLink.jurisdiction || "US")
+        .eq("is_parent", false)
+        .not("parent_account_name", "is", null);
+
+      const normName = (s: string) => String(s || "").toLowerCase().trim();
+      const parentByLeaf = new Map<string, { parent: string; type: string }>(
+        ((masterLeaves as any[]) || []).map((m) => [
+          normName(m.account_name),
+          { parent: m.parent_account_name, type: m.qbo_account_type },
+        ])
+      );
+
+      if (parentByLeaf.size > 0) {
+        const fresh = await qbo.fetchAllAccounts(ctx.realmId, ctx.accessToken);
+        const byName = new Map(fresh.map((a) => [normName(a.Name), a]));
+        const hasChildren = new Set(
+          fresh.filter((a) => a.ParentRef?.value).map((a) => a.ParentRef!.value)
+        );
+
+        const toReparent = fresh.filter((acct) => {
+          if (acct.Active === false) return false;
+          const m = parentByLeaf.get(normName(acct.Name));
+          if (!m) return false;
+          const parent = byName.get(normName(m.parent));
+          if (!parent || parent.Id === acct.Id) return false;
+          if (parent.AccountType !== acct.AccountType) return false;
+          if (acct.ParentRef?.value === parent.Id) return false; // already right
+          if (hasChildren.has(acct.Id)) return false; // it's a parent itself
+          return true;
+        });
+
+        if (toReparent.length > 0) {
+          await logProgress(ctx, "stage_start",
+            `Re-parenting ${toReparent.length} existing accounts under master headings`,
+            { stage: "reparent", total: toReparent.length });
+
+          for (const acct of toReparent) {
+            checkBudget(startTime);
+            if (await shouldCancel(ctx)) {
+              await logProgress(ctx, "cancellation_acknowledged", "Cancelled mid-run — exiting re-parent stage cleanly");
+              return { success: false, errors, stats };
+            }
+            const target = byName.get(normName(parentByLeaf.get(normName(acct.Name))!.parent))!;
+            try {
+              await qbo.reparentAccount(
+                ctx.realmId, ctx.accessToken,
+                acct.Id, (acct as any).SyncToken, target.Id
+              );
+              stats.reparented++;
+              await logActionResult(ctx, null, "qbo_reparent",
+                { name: acct.Name, parent: target.Name });
+            } catch (e: any) {
+              // Never fatal — collect for the manual-cleanup AI plan like the
+              // other stages do when QBO rejects a structural change.
+              pendingFailures.push({
+                intended_action: "reparent",
+                account_id: acct.Id,
+                account_name: acct.Name,
+                request_body: { Id: acct.Id, ParentRef: { value: target.Id }, SubAccount: true },
+                qbo_error: String(e?.message || e),
+                account_snapshot: {
+                  Name: acct.Name,
+                  AccountType: acct.AccountType,
+                  AccountSubType: acct.AccountSubType,
+                  SubAccount: acct.SubAccount,
+                  ParentRef: acct.ParentRef,
+                  CurrentBalance: acct.CurrentBalance,
+                  Active: acct.Active,
+                } as any,
+              });
+              await logProgress(ctx, "warning",
+                `Re-parent "${acct.Name}" → "${target.Name}" routed to manual cleanup`,
+                { reason: String(e?.message || e).slice(0, 200) });
+            }
+          }
+          await logProgress(ctx, "stage_complete",
+            `Re-parenting complete: ${stats.reparented} nested`,
+            { stage: "reparent", reparented: stats.reparented });
+        }
+      }
+    } catch (e: any) {
+      // Master fetch / listing failure — skip the stage, never the job.
+      await logProgress(ctx, "warning", `Re-parent stage skipped: ${e?.message}`, {});
     }
 
     // STAGE 4: Inactivate

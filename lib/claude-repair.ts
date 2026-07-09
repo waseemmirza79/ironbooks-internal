@@ -30,7 +30,7 @@ const MODEL = 'claude-opus-4-7';
  * needs to write a sensible repair plan — request, response, account state.
  */
 export interface FailureContext {
-  intended_action: 'rename' | 'inactivate' | 'create';
+  intended_action: 'rename' | 'inactivate' | 'create' | 'merge' | 'reparent';
   account_id: string | null;
   account_name: string;
   /** The body we sent to QBO, exactly as it went out. */
@@ -46,7 +46,7 @@ export interface FailureContext {
 
 interface ClaudeRepairItem {
   account_name: string;
-  intended_action: 'rename' | 'inactivate' | 'create';
+  intended_action: 'rename' | 'inactivate' | 'create' | 'merge' | 'reparent';
   account_id: string | null;
   /** One-sentence plain-English explanation, no API jargon. */
   reason: string;
@@ -83,7 +83,7 @@ Output schema (strict):
   "items": [
     {
       "account_name": "string",
-      "intended_action": "rename" | "inactivate" | "create",
+      "intended_action": "rename" | "inactivate" | "create" | "merge" | "reparent",
       "account_id": "string or null",
       "reason": "one sentence, plain English",
       "steps": ["Step 1", "Step 2", "..."],
