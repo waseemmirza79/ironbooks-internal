@@ -118,12 +118,54 @@ export function ClientAnswersWidget({ rows: initial }: { rows: ClientAnswerRow[]
   );
 }
 
+type CoaAccount = { id: string; name: string; type: string; section: string };
+
+// Statement-order groupings for the full-chart picker.
+const PNL_GROUPS: { type: string; label: string }[] = [
+  { type: "Income", label: "Revenue" },
+  { type: "Cost of Goods Sold", label: "COGS" },
+  { type: "Expense", label: "Expenses" },
+  { type: "Other Income", label: "Other Income" },
+  { type: "Other Expense", label: "Other Expenses" },
+];
+const BS_GROUPS: { type: string; label: string }[] = [
+  { type: "Bank", label: "Bank" },
+  { type: "Accounts Receivable", label: "Accounts Receivable" },
+  { type: "Other Current Asset", label: "Other Current Assets" },
+  { type: "Fixed Asset", label: "Fixed Assets" },
+  { type: "Other Asset", label: "Other Assets" },
+  { type: "Accounts Payable", label: "Accounts Payable" },
+  { type: "Credit Card", label: "Credit Card" },
+  { type: "Other Current Liability", label: "Other Current Liabilities" },
+  { type: "Long Term Liability", label: "Long-Term Liabilities" },
+  { type: "Equity", label: "Equity" },
+];
+
+/** Order the full chart into statement sections — P&L: Revenue → COGS →
+ *  Expenses → Other; Balance Sheet: Assets → Liabilities → Equity — names A–Z
+ *  within each. Unknown types fall into a trailing "Other". */
+function groupAccounts(all: CoaAccount[], view: "pnl" | "bs") {
+  const groups = view === "pnl" ? PNL_GROUPS : BS_GROUPS;
+  const inView = all.filter((a) => a.section === view);
+  const out: { label: string; items: CoaAccount[] }[] = [];
+  const claimed = new Set<string>();
+  for (const g of groups) {
+    const items = inView.filter((a) => a.type === g.type).sort((a, b) => a.name.localeCompare(b.name));
+    items.forEach((i) => claimed.add(i.id));
+    if (items.length) out.push({ label: g.label, items });
+  }
+  const rest = inView.filter((a) => !claimed.has(a.id)).sort((a, b) => a.name.localeCompare(b.name));
+  if (rest.length) out.push({ label: "Other", items: rest });
+  return out;
+}
+
 function AnswerRow({ row, onDone }: { row: ClientAnswerRow; onDone: (id: string) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState(row.error || "");
   const [open, setOpen] = useState(false);
   const [sugg, setSugg] = useState<Array<{ id: string; name: string; reason: string }> | null>(null);
-  const [all, setAll] = useState<Array<{ id: string; name: string }>>([]);
+  const [all, setAll] = useState<CoaAccount[]>([]);
+  const [coaView, setCoaView] = useState<"pnl" | "bs">("pnl");
   const [pickOther, setPickOther] = useState("");
 
   async function act(body: any, busyKey: string) {
@@ -255,27 +297,48 @@ function AnswerRow({ row, onDone }: { row: ClientAnswerRow; onDone: (id: string)
             ))
           )}
           {all.length > 0 && (
-            <div className="flex items-center gap-1.5 pt-1">
-              <select
-                value={pickOther}
-                onChange={(e) => setPickOther(e.target.value)}
-                className="flex-1 text-xs px-2 py-1.5 rounded-lg border border-gray-200 bg-white text-ink-slate"
-              >
-                <option value="">Full chart of accounts…</option>
-                {all.map((a) => (
-                  <option key={a.id} value={a.id}>{a.name}</option>
+            <div className="pt-1 space-y-1.5">
+              {/* P&L / Balance Sheet toggle */}
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-ink-light mr-1">Full chart</span>
+                {([["pnl", "P&L"], ["bs", "Balance Sheet"]] as const).map(([v, label]) => (
+                  <button
+                    key={v}
+                    onClick={() => { setCoaView(v); setPickOther(""); }}
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                      coaView === v ? "bg-navy text-white border-navy" : "bg-white text-ink-slate border-gray-200 hover:border-gray-300"
+                    }`}
+                  >
+                    {label}
+                  </button>
                 ))}
-              </select>
-              <button
-                onClick={() => {
-                  const acc = all.find((a) => a.id === pickOther);
-                  if (acc) act({ action: "approve_as", account_id: acc.id, account_name: acc.name }, "other");
-                }}
-                disabled={!pickOther || !!busy}
-                className="text-xs font-bold text-teal border border-teal/30 hover:bg-teal/5 rounded-lg px-2.5 py-1.5 disabled:opacity-40"
-              >
-                {busy === "other" ? <Loader2 size={11} className="animate-spin" /> : "Apply"}
-              </button>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={pickOther}
+                  onChange={(e) => setPickOther(e.target.value)}
+                  className="flex-1 text-xs px-2 py-1.5 rounded-lg border border-gray-200 bg-white text-ink-slate"
+                >
+                  <option value="">{coaView === "pnl" ? "P&L accounts (Revenue → COGS → Expenses)…" : "Balance Sheet accounts…"}</option>
+                  {groupAccounts(all, coaView).map((g) => (
+                    <optgroup key={g.label} label={g.label}>
+                      {g.items.map((a) => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <button
+                  onClick={() => {
+                    const acc = all.find((a) => a.id === pickOther);
+                    if (acc) act({ action: "approve_as", account_id: acc.id, account_name: acc.name }, "other");
+                  }}
+                  disabled={!pickOther || !!busy}
+                  className="text-xs font-bold text-teal border border-teal/30 hover:bg-teal/5 rounded-lg px-2.5 py-1.5 disabled:opacity-40"
+                >
+                  {busy === "other" ? <Loader2 size={11} className="animate-spin" /> : "Apply"}
+                </button>
+              </div>
             </div>
           )}
         </div>

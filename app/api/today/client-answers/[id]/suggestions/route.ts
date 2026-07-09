@@ -44,14 +44,21 @@ export async function GET(_req: Request, context: { params: Promise<{ id: string
   const accessToken = await getValidToken(clientLink.id, service as any);
   const accounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
   const PNL = new Set(["Income", "Expense", "Cost of Goods Sold", "Other Income", "Other Expense"]);
-  const candidates = accounts
-    .filter(
-      (a: any) =>
-        a.Active !== false &&
-        PNL.has(a.AccountType) &&
-        !/ask my accountant|uncategor/i.test(a.Name)
-    )
+  const active = accounts.filter(
+    (a: any) => a.Active !== false && !/ask my accountant|uncategor/i.test(a.Name)
+  );
+  // AI ranks against P&L accounts only — that's what a categorization targets.
+  const candidates = active
+    .filter((a: any) => PNL.has(a.AccountType))
     .map((a: any) => ({ id: a.Id, name: a.Name, type: a.AccountType }));
+  // The full picker offers EVERY account, tagged pnl/bs so the UI can group +
+  // order it (P&L: Revenue → COGS → Expenses; or the Balance Sheet accounts).
+  const all = active.map((a: any) => ({
+    id: a.Id,
+    name: a.Name,
+    type: a.AccountType,
+    section: PNL.has(a.AccountType) ? "pnl" : "bs",
+  }));
 
   const pick = row.client_response_account || row.client_response_note || "";
   let suggestions: Array<{ id: string; name: string; reason: string }> = [];
@@ -100,5 +107,5 @@ ${candidates.map((c: { name: string; type: string }) => `${c.name} · ${c.type}`
       .map((c: any) => ({ id: c.id, name: c.name, reason: "similar name" }));
   }
 
-  return NextResponse.json({ ok: true, suggestions, all: candidates });
+  return NextResponse.json({ ok: true, suggestions, all });
 }
