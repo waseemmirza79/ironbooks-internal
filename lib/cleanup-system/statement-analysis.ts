@@ -11,7 +11,7 @@
  * PDF text extraction needed.
  */
 
-import { fetchAllAccounts, type QBOAccount } from "@/lib/qbo";
+import { fetchAllAccounts, qboRequest, type QBOAccount } from "@/lib/qbo";
 
 const MODEL = "claude-opus-4-7";
 
@@ -33,7 +33,7 @@ async function callClaudePdf(content: any[]): Promise<string> {
     },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 4096,
+      max_tokens: 8192, // ending balances + per-statement transaction lines
       messages: [{ role: "user", content }],
     }),
   });
@@ -55,11 +55,19 @@ export interface UploadedStatement {
   base64: string;
 }
 
+export interface StatementLine {
+  date: string | null; // YYYY-MM-DD
+  description: string | null;
+  /** Signed: deposits/credits positive, withdrawals/debits negative. */
+  amount: number;
+}
+
 export interface ExtractedStatement {
   filename: string;
   institution: string | null;
   account_label: string | null;
   last4: string | null;
+  statement_start_date: string | null; // YYYY-MM-DD
   statement_end_date: string | null; // YYYY-MM-DD
   ending_balance: number | null;
   account_kind: "bank" | "credit_card" | "loan" | "unknown";
@@ -67,6 +75,8 @@ export interface ExtractedStatement {
   matched_qbo_account_id: string | null;
   match_confidence: "high" | "medium" | "low" | "none";
   notes: string | null;
+  /** Individual statement transactions — drives line-level clearing. */
+  lines: StatementLine[];
 }
 
 export interface StatementReconResult {
@@ -124,7 +134,18 @@ const EXTRACTION_SCHEMA = `Return ONLY valid JSON, no prose, shaped exactly:
                                  that best matches this statement, by last4
                                  first, then name/institution, then type+amount>,
       "match_confidence": <"high"|"medium"|"low"|"none">,
-      "notes": <string|null, one short line if anything is ambiguous>
+      "notes": <string|null, one short line if anything is ambiguous>,
+      "statement_start_date": <"YYYY-MM-DD"|null, the statement period's start>,
+      "lines": [
+        {
+          "date": <"YYYY-MM-DD"|null>,
+          "description": <string|null, the transaction description as printed>,
+          "amount": <number, SIGNED: deposits/credits positive, withdrawals/
+                     debits/cheques negative>
+        }
+        // one entry per transaction line on the statement, up to the 300 most
+        // recent per statement; [] if the statement has no transaction table
+      ]
     }
   ]
 }`;
@@ -171,19 +192,152 @@ ${EXTRACTION_SCHEMA}`;
 
   return statements.map((s, i) => {
     const r = rows.find((x) => x.index === i) || rows[i] || {};
+    const lines: StatementLine[] = (Array.isArray(r.lines) ? r.lines : [])
+      .filter((l: any) => typeof l?.amount === "number" && Math.abs(l.amount) > 0.005)
+      .slice(0, 300)
+      .map((l: any) => ({
+        date: l.date ?? null,
+        description: l.description ? String(l.description).slice(0, 160) : null,
+        amount: Number(l.amount),
+      }));
     return {
       filename: s.filename,
       institution: r.institution ?? null,
       account_label: r.account_label ?? null,
       last4: r.last4 ? String(r.last4).slice(-4) : null,
+      statement_start_date: r.statement_start_date ?? null,
       statement_end_date: r.statement_end_date ?? null,
       ending_balance: typeof r.ending_balance === "number" ? r.ending_balance : null,
       account_kind: ["bank", "credit_card", "loan"].includes(r.account_kind) ? r.account_kind : "unknown",
       matched_qbo_account_id: r.matched_qbo_account_id ? String(r.matched_qbo_account_id) : null,
       match_confidence: ["high", "medium", "low", "none"].includes(r.match_confidence) ? r.match_confidence : "none",
       notes: r.notes ?? null,
+      lines,
     };
   });
+}
+
+// ─── Line-level clearing ────────────────────────────────────────────────────
+
+export interface QboWindowTxn {
+  txn_id: string;
+  txn_type: string; // Purchase | Deposit
+  date: string;
+  /** Signed like statement lines: deposits positive, money out negative. */
+  amount: number;
+  description: string | null;
+}
+
+export interface OutstandingItem extends QboWindowTxn {
+  age_days: number; // at statement end
+  stale: boolean; // older than STALE_DAYS at statement end
+}
+
+export const STALE_DAYS = 60;
+
+/**
+ * Match QBO transactions against the statement's lines: a QBO txn "clears"
+ * when a statement line has the same absolute amount (±1¢) within ±5 days
+ * and hasn't already been claimed. What doesn't clear:
+ *   - QBO-only  → OUTSTANDING (never hit the bank) — stale when old. These
+ *     are Lisa's "old items left on the reconciliation report".
+ *   - Statement-only → missing from QBO (unrecorded activity).
+ */
+export function matchStatementLines(
+  qboTxns: QboWindowTxn[],
+  lines: StatementLine[],
+  statementEndDate: string
+): { outstanding: OutstandingItem[]; missingInQbo: StatementLine[]; clearedCount: number } {
+  const claimed = new Set<number>();
+  const outstanding: OutstandingItem[] = [];
+  let clearedCount = 0;
+
+  const dayDiff = (a: string | null, b: string | null) =>
+    !a || !b ? Number.POSITIVE_INFINITY : Math.abs(new Date(a).getTime() - new Date(b).getTime()) / 86_400_000;
+
+  for (const tx of qboTxns) {
+    let hit = -1;
+    let best = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < lines.length; i++) {
+      if (claimed.has(i)) continue;
+      if (Math.abs(Math.abs(lines[i].amount) - Math.abs(tx.amount)) > 0.01) continue;
+      const d = dayDiff(lines[i].date, tx.date);
+      if (d <= 5 && d < best) {
+        best = d;
+        hit = i;
+      }
+    }
+    if (hit >= 0) {
+      claimed.add(hit);
+      clearedCount++;
+    } else {
+      const age = Math.floor(dayDiff(tx.date, statementEndDate));
+      outstanding.push({
+        ...tx,
+        age_days: Number.isFinite(age) ? age : 0,
+        stale: Number.isFinite(age) && age > STALE_DAYS,
+      });
+    }
+  }
+
+  const missingInQbo = lines.filter((_, i) => !claimed.has(i));
+  return { outstanding, missingInQbo, clearedCount };
+}
+
+/**
+ * QBO activity on a bank/CC account in the statement window, signed like
+ * statement lines. Coverage: Purchases (cheques/expenses/card charges paid
+ * FROM the account — the classic stale item) + Deposits INTO it. Transfers,
+ * JEs, and BillPayment cheques aren't line-account-queryable via the API —
+ * they simply won't flag, which errs safe (fewer false outstanding items).
+ */
+export async function fetchQboWindowTxns(
+  realmId: string,
+  accessToken: string,
+  accountId: string,
+  startDate: string,
+  endDate: string
+): Promise<QboWindowTxn[]> {
+  const q = async (sql: string) => {
+    const data: any = await qboRequest(
+      realmId,
+      accessToken,
+      `/query?query=${encodeURIComponent(sql)}`,
+      { method: "GET" }
+    );
+    return data?.QueryResponse || {};
+  };
+
+  const out: QboWindowTxn[] = [];
+  try {
+    const res = await q(
+      `SELECT * FROM Purchase WHERE AccountRef = '${accountId}' AND TxnDate >= '${startDate}' AND TxnDate <= '${endDate}' MAXRESULTS 1000`
+    );
+    for (const p of res.Purchase || []) {
+      out.push({
+        txn_id: String(p.Id),
+        txn_type: "Purchase",
+        date: String(p.TxnDate || ""),
+        amount: -Math.abs(Number(p.TotalAmt || 0)), // money out
+        description: p.EntityRef?.name || p.DocNumber || p.PrivateNote || null,
+      });
+    }
+  } catch { /* best-effort */ }
+  try {
+    const res = await q(
+      `SELECT * FROM Deposit WHERE DepositToAccountRef = '${accountId}' AND TxnDate >= '${startDate}' AND TxnDate <= '${endDate}' MAXRESULTS 1000`
+    );
+    for (const d of res.Deposit || []) {
+      out.push({
+        txn_id: String(d.Id),
+        txn_type: "Deposit",
+        date: String(d.TxnDate || ""),
+        amount: Math.abs(Number(d.TotalAmt || 0)), // money in
+        description: d.PrivateNote || null,
+      });
+    }
+  } catch { /* best-effort */ }
+  return out;
 }
 
 /**
@@ -282,6 +436,52 @@ export async function analyzeAndReconcile(
       await service.from("bank_recon_jobs").insert(row as any);
     }
     reconRowsWritten++;
+
+    // Line-level clearing: which QBO transactions never hit the bank
+    // (outstanding/stale), and which statement lines never made it into QBO.
+    // Fail-soft twice over: the QBO window pull is best-effort, and the
+    // persistence columns arrive with migration 111 (pre-migration the update
+    // just errors quietly and the balance tie-out above still stands).
+    if (ex.lines.length > 0 && ex.statement_end_date) {
+      try {
+        const start =
+          ex.statement_start_date ||
+          new Date(new Date(ex.statement_end_date).getTime() - 35 * 86_400_000)
+            .toISOString()
+            .slice(0, 10);
+        const windowTxns = await fetchQboWindowTxns(
+          params.qboRealmId,
+          params.accessToken,
+          acct.id,
+          start,
+          ex.statement_end_date
+        );
+        const { outstanding, missingInQbo, clearedCount } = matchStatementLines(
+          windowTxns,
+          ex.lines,
+          ex.statement_end_date
+        );
+        await service
+          .from("bank_recon_jobs")
+          .update({
+            statement_lines: ex.lines,
+            outstanding_items: outstanding,
+            line_match_summary: {
+              cleared: clearedCount,
+              outstanding: outstanding.length,
+              stale: outstanding.filter((o) => o.stale).length,
+              missing_in_qbo: missingInQbo.length,
+              missing_lines: missingInQbo.slice(0, 50),
+              window: { start, end: ex.statement_end_date },
+            },
+          } as any)
+          .eq("client_link_id", params.clientLinkId)
+          .eq("qbo_account_id", acct.id)
+          .eq("cleanup_run_id", params.runId);
+      } catch (e: any) {
+        console.warn(`[statement-analysis] line-level clearing skipped for ${acct.name}: ${e?.message}`);
+      }
+    }
 
     results.push({
       filename: ex.filename,

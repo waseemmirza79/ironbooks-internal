@@ -52,33 +52,60 @@ export async function discoverBankReconModule(
   let proposed = 0;
   for (const recon of recons || []) {
     const gap = Number((recon as any).gap_amount || 0);
-    if (Math.abs(gap) < 0.01) continue;
+    if (Math.abs(gap) >= 0.01) {
+      await createProposedEntry(service, {
+        runId,
+        clientLinkId,
+        module: "bank_recon",
+        entryType: "journal_entry",
+        amount: Math.abs(gap),
+        txnDate: (recon as any).statement_as_of_date,
+        memo: `Bank recon gap for ${(recon as any).qbo_account_name}`,
+        jeLines: [
+          {
+            side: gap > 0 ? "debit" : "credit",
+            account_hint: (recon as any).qbo_account_name,
+            amount: Math.abs(gap),
+            description: "Statement reconciliation adjustment",
+          },
+          {
+            side: gap > 0 ? "credit" : "debit",
+            account_hint: "Balance Sheet Cleanup Clearing",
+            amount: Math.abs(gap),
+            description: "Clearing offset",
+          },
+        ],
+        periodImpact: "clearing_entry",
+      });
+      proposed++;
+    }
 
-    await createProposedEntry(service, {
-      runId,
-      clientLinkId,
-      module: "bank_recon",
-      entryType: "journal_entry",
-      amount: Math.abs(gap),
-      txnDate: (recon as any).statement_as_of_date,
-      memo: `Bank recon gap for ${(recon as any).qbo_account_name}`,
-      jeLines: [
-        {
-          side: gap > 0 ? "debit" : "credit",
-          account_hint: (recon as any).qbo_account_name,
-          amount: Math.abs(gap),
-          description: "Statement reconciliation adjustment",
-        },
-        {
-          side: gap > 0 ? "credit" : "debit",
-          account_hint: "Balance Sheet Cleanup Clearing",
-          amount: Math.abs(gap),
-          description: "Clearing offset",
-        },
-      ],
-      periodImpact: "clearing_entry",
-    });
-    proposed++;
+    // Stale outstanding items from line-level clearing (statement upload):
+    // QBO transactions that never appeared on the bank statement and are
+    // >60 days old — Lisa's "old items left on the reconciliation report".
+    // QBO's API can't mark items cleared, so these surface as flagged work
+    // items (void the stale cheque / investigate), never auto-posts.
+    const outstanding: any[] = Array.isArray((recon as any).outstanding_items)
+      ? (recon as any).outstanding_items
+      : [];
+    for (const o of outstanding.filter((x) => x?.stale).slice(0, 15)) {
+      await createProposedEntry(service, {
+        runId,
+        clientLinkId,
+        module: "bank_recon",
+        entryType: "journal_entry",
+        amount: Math.abs(Number(o.amount || 0)),
+        txnDate: o.date || (recon as any).statement_as_of_date,
+        memo: `Stale uncleared ${o.txn_type} on ${(recon as any).qbo_account_name}: ${o.description || "(no description)"} $${Math.abs(Number(o.amount || 0)).toFixed(2)} dated ${o.date} never appeared on the bank statement (${o.age_days}d old). Typical causes: duplicate entry, failed/replaced cheque, or a deposit recorded twice. Void or correct it in QBO — the API can't mark items cleared.`,
+        qboTransactionId: String(o.txn_id || ""),
+        qboTransactionType: String(o.txn_type || ""),
+        fromAccountName: (recon as any).qbo_account_name,
+        decisionOverride: "flagged",
+        confidenceOverride: 0,
+        aiReasoning: JSON.stringify({ v: 1, type: "stale_outstanding", item: o }),
+      });
+      proposed++;
+    }
   }
 
   await service
