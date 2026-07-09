@@ -1357,6 +1357,82 @@ export async function fetchOpenInvoicesForCustomer(
   }));
 }
 
+/**
+ * Link an existing BillPayment to a Bill — the AP mirror of
+ * applyPaymentToInvoices. Used by the cleanup engine to clear "paid but
+ * never applied" vendor payments so bills stop showing open.
+ *
+ * CRITICAL difference from the AR side: a BillPayment may already be linked
+ * to OTHER bills, and QBO's sparse update REPLACES Line[] wholesale — so we
+ * fetch the current lines and append the new link instead of clobbering
+ * existing applications.
+ */
+export async function applyBillPaymentToBills(
+  realmId: string,
+  accessToken: string,
+  params: {
+    billPaymentId: string;
+    billLinks: Array<{ billId: string; amountApplied: number }>;
+    privateNote?: string;
+  }
+): Promise<{ Id: string; SyncToken: string }> {
+  if (params.billLinks.length === 0) {
+    throw new Error("applyBillPaymentToBills: billLinks is empty");
+  }
+  const query = encodeURIComponent(
+    `SELECT * FROM BillPayment WHERE Id = '${params.billPaymentId}' MAXRESULTS 1`
+  );
+  const fetchData: any = await qboRequest(realmId, accessToken, `/query?query=${query}`, {
+    method: "GET",
+  });
+  const existing = fetchData?.QueryResponse?.BillPayment?.[0];
+  if (!existing) {
+    throw new Error(`BillPayment ${params.billPaymentId} not found in QBO`);
+  }
+
+  const existingLines: any[] = Array.isArray(existing.Line) ? existing.Line : [];
+  const alreadyApplied = existingLines.reduce((s, l) => s + Number(l.Amount || 0), 0);
+  const newlyApplied = params.billLinks.reduce((s, l) => s + l.amountApplied, 0);
+  const total = Number(existing.TotalAmt || 0);
+  if (alreadyApplied + newlyApplied - total > 0.01) {
+    throw new Error(
+      `BillPayment ${params.billPaymentId} over-applied: $${(alreadyApplied + newlyApplied).toFixed(2)} linked vs $${total.toFixed(2)} paid`
+    );
+  }
+  const alreadyLinkedBillIds = new Set(
+    existingLines.flatMap((l) => (l.LinkedTxn || []).map((t: any) => String(t.TxnId)))
+  );
+  const freshLinks = params.billLinks.filter((l) => !alreadyLinkedBillIds.has(String(l.billId)));
+  if (freshLinks.length === 0) {
+    // Idempotent: everything requested is already linked.
+    return { Id: existing.Id, SyncToken: existing.SyncToken };
+  }
+
+  const body: any = {
+    Id: params.billPaymentId,
+    SyncToken: existing.SyncToken,
+    sparse: true,
+    Line: [
+      // Preserve prior applications…
+      ...existingLines.map((l) => ({ Amount: l.Amount, LinkedTxn: l.LinkedTxn })),
+      // …and append the new ones.
+      ...freshLinks.map((l) => ({
+        Amount: Number(l.amountApplied.toFixed(2)),
+        LinkedTxn: [{ TxnId: l.billId, TxnType: "Bill" }],
+      })),
+    ],
+  };
+  if (params.privateNote) body.PrivateNote = params.privateNote;
+
+  const data = await qboRequest<{ BillPayment: { Id: string; SyncToken: string } }>(
+    realmId,
+    accessToken,
+    "/billpayment?minorversion=70",
+    { method: "POST", body: JSON.stringify(body) }
+  );
+  return data.BillPayment;
+}
+
 // ============== TRANSACTIONS ==============
 
 /**

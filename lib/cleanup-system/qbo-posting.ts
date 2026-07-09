@@ -2,7 +2,7 @@
  * QBO write helpers for BS cleanup proposed entries.
  */
 
-import { applyPaymentToInvoices, createJournalEntry } from "@/lib/qbo";
+import { applyPaymentToInvoices, applyBillPaymentToBills, createJournalEntry } from "@/lib/qbo";
 
 const QBO_BASE =
   process.env.QBO_ENVIRONMENT === "production"
@@ -75,6 +75,26 @@ export async function applyUfPaymentToInvoice(
     privateNote: `Ironbooks BS Cleanup UF→A/R — ${idempotencyToken}`,
   });
   return result?.Id || params.paymentId;
+}
+
+export async function applyApPaymentToBill(
+  realmId: string,
+  accessToken: string,
+  params: {
+    billPaymentId: string;
+    billId: string;
+    amount: number;
+    runId: string;
+    entryId: string;
+  }
+): Promise<string> {
+  const idempotencyToken = `SNAP-CLEANUP-AP-${params.runId}-${params.entryId}`;
+  const result = await applyBillPaymentToBills(realmId, accessToken, {
+    billPaymentId: params.billPaymentId,
+    billLinks: [{ billId: params.billId, amountApplied: params.amount }],
+    privateNote: `Ironbooks BS Cleanup payment→Bill — ${idempotencyToken}`,
+  });
+  return result?.Id || params.billPaymentId;
 }
 
 export { createJournalEntry };

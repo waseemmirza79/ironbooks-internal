@@ -9,7 +9,7 @@ import {
   SUPPORTED_TX_TYPES,
   type SupportedTxType,
 } from "@/lib/qbo-reclass";
-import { applyUfPaymentToInvoice, createJournalEntry, voidQboInvoice } from "./qbo-posting";
+import { applyUfPaymentToInvoice, applyApPaymentToBill, createJournalEntry, voidQboInvoice } from "./qbo-posting";
 import { parseEntryMeta } from "./entry-meta";
 
 export async function executeProposedEntries(
@@ -90,6 +90,27 @@ export async function executeProposedEntries(
         qboResultId = await applyUfPaymentToInvoice(realmId, accessToken, {
           paymentId: entry.qbo_transaction_id,
           invoiceId,
+          amount,
+          runId,
+          entryId: entry.id,
+        });
+        handled = true;
+      } else if (entry.entry_type === "bill_payment" && entry.qbo_transaction_id) {
+        // AP mirror of receive_payment: link an existing BillPayment to the
+        // proposed (or bookkeeper-overridden) Bill.
+        const meta = parseEntryMeta(entry.ai_reasoning);
+        const billId =
+          entry.bookkeeper_override_target_id ||
+          entry.to_account_id ||
+          (meta?.type === "ap_match" ? meta.proposed_bill_id : null);
+        const amount = Number(entry.amount || 0);
+        if (!billId || amount <= 0) {
+          skipped++;
+          continue;
+        }
+        qboResultId = await applyApPaymentToBill(realmId, accessToken, {
+          billPaymentId: entry.qbo_transaction_id,
+          billId,
           amount,
           runId,
           entryId: entry.id,

@@ -90,18 +90,115 @@ export async function discoverBankReconModule(
   return { proposed };
 }
 
+/**
+ * Accounts Payable — supplier payments applied to bills (the AP mirror of the
+ * UF→AR matcher), unapplied vendor credits, and bills paid outside AP.
+ * See lib/cleanup-system/ap-discovery.ts for the matching rules.
+ */
 export async function discoverAccountsPayableModule(
   service: SupabaseClient,
   runId: string,
   clientLinkId: string
 ): Promise<{ proposed: number }> {
-  // Scaffold: AP discovery pulls open bills with payments — extend when QBO bill fetch wired
+  let proposed = 0;
+
+  try {
+    const { fetchApState, matchApPayments, findPaidOutsideAp, fetchDuplicateCandidatePurchases } =
+      await import("./ap-discovery");
+    const { serializeMeta } = await import("./entry-meta");
+    const { realmId, accessToken, bills, payments, credits } = await fetchApState(
+      service,
+      clientLinkId
+    );
+
+    // 1. Payment → bill applications.
+    const matches = matchApPayments(bills, payments);
+    for (const m of matches) {
+      if (m.kind === "unmatched" || !m.bill) {
+        // Only surface unmatched payments that are old enough to be a real
+        // problem (fresh ones are just mid-cycle).
+        continue;
+      }
+      await createProposedEntry(service, {
+        runId,
+        clientLinkId,
+        module: "accounts_payable",
+        entryType: "bill_payment",
+        amount: m.amountApplied,
+        txnDate: m.payment.txnDate,
+        memo: `Apply ${m.payment.vendorName || "vendor"} payment ($${m.amountApplied.toFixed(2)}, ${m.payment.txnDate}) to bill ${m.bill.docNumber || m.bill.id} — ${m.reasoning}`,
+        qboTransactionId: m.payment.id,
+        qboTransactionType: "BillPayment",
+        toAccountId: m.bill.id,
+        toAccountName: m.bill.docNumber || `Bill ${m.bill.id}`,
+        periodImpact: "current",
+        decisionOverride: "needs_review",
+        confidenceOverride: m.confidence,
+        aiReasoning: serializeMeta({
+          v: 1,
+          type: "ap_match",
+          kind: m.kind,
+          reasoning: m.reasoning,
+          vendor_name: m.payment.vendorName,
+          bill_payment_id: m.payment.id,
+          proposed_bill_id: m.bill.id,
+          proposed_doc_number: m.bill.docNumber,
+          amount_applied: m.amountApplied,
+        }),
+      });
+      proposed++;
+    }
+
+    // 2. Vendor credits sitting unapplied while the vendor has open bills.
+    for (const c of credits) {
+      const vendorOpen = bills.filter((b) => b.vendorId && b.vendorId === c.vendorId);
+      if (vendorOpen.length === 0) continue;
+      await createProposedEntry(service, {
+        runId,
+        clientLinkId,
+        module: "accounts_payable",
+        entryType: "journal_entry",
+        amount: c.balance,
+        txnDate: c.txnDate,
+        memo: `Unapplied vendor credit — ${c.vendorName || "vendor"} has a $${c.balance.toFixed(2)} credit (${c.txnDate}) while ${vendorOpen.length} bill(s) sit open. Apply the credit in QBO (Pay Bills → set credits).`,
+        qboTransactionId: c.id,
+        qboTransactionType: "VendorCredit",
+        decisionOverride: "flagged",
+        confidenceOverride: 0,
+        aiReasoning: JSON.stringify({ v: 1, type: "ap_vendor_credit", vendor: c.vendorName, open_bills: vendorOpen.map((b) => b.docNumber || b.id) }),
+      });
+      proposed++;
+    }
+
+    // 3. Bills also paid by a direct Purchase (paid outside AP — double count).
+    const purchases = await fetchDuplicateCandidatePurchases(realmId, accessToken, bills);
+    for (const dup of findPaidOutsideAp(bills, purchases)) {
+      await createProposedEntry(service, {
+        runId,
+        clientLinkId,
+        module: "accounts_payable",
+        entryType: "journal_entry",
+        amount: dup.bill.totalAmt,
+        txnDate: dup.bill.txnDate,
+        memo: `Bill ${dup.bill.docNumber || dup.bill.id} (${dup.bill.vendorName || "vendor"}, $${dup.bill.totalAmt.toFixed(2)}) appears ALSO paid by direct purchase ${dup.purchaseId} on ${dup.purchaseDate} — expense double-counted and the bill still open. Fix: delete the duplicate purchase and pay the bill properly, or delete the bill if the purchase is the real record.`,
+        qboTransactionId: dup.bill.id,
+        qboTransactionType: "Bill",
+        decisionOverride: "flagged",
+        confidenceOverride: 0.6,
+        aiReasoning: JSON.stringify({ v: 1, type: "ap_paid_outside", bill_id: dup.bill.id, purchase_id: dup.purchaseId }),
+      });
+      proposed++;
+    }
+  } catch (err: any) {
+    console.warn(`[accounts_payable] discovery failed: ${err?.message}`);
+  }
+
   await service
     .from("cleanup_run_modules")
-    .update({ status: "reviewing", proposed_count: 0 } as any)
+    .update({ status: "reviewing", proposed_count: proposed } as any)
     .eq("run_id", runId)
     .eq("module", "accounts_payable");
-  return { proposed: 0 };
+  return { proposed };
 }
 
 /**

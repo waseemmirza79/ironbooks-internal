@@ -31,17 +31,32 @@ export interface ArDuplicateMeta {
   confidence: number;
 }
 
-export function serializeMeta(meta: UfEntryMeta | ArDuplicateMeta): string {
+export interface ApMatchMeta {
+  v: 1;
+  type: "ap_match";
+  kind: string; // exact_amount | amount_within_window | unmatched
+  reasoning: string;
+  vendor_name: string | null;
+  bill_payment_id: string;
+  proposed_bill_id: string | null;
+  proposed_doc_number: string | null;
+  amount_applied: number;
+}
+
+export function serializeMeta(meta: UfEntryMeta | ArDuplicateMeta | ApMatchMeta): string {
   return JSON.stringify(meta);
 }
 
 export function parseEntryMeta(
   aiReasoning: string | null | undefined
-): UfEntryMeta | ArDuplicateMeta | null {
+): UfEntryMeta | ArDuplicateMeta | ApMatchMeta | null {
   if (!aiReasoning) return null;
   try {
     const parsed = JSON.parse(aiReasoning);
-    if (parsed?.v === 1 && (parsed.type === "uf_match" || parsed.type === "ar_duplicate")) {
+    if (
+      parsed?.v === 1 &&
+      (parsed.type === "uf_match" || parsed.type === "ar_duplicate" || parsed.type === "ap_match")
+    ) {
       return parsed;
     }
   } catch {
