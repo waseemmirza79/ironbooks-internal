@@ -1681,12 +1681,21 @@ function BSTab({
         <div>
           As of <span className="font-semibold text-navy">{bs.asOfDate}</span>
         </div>
-        <Link
-          href={`/balance-sheet/${clientLinkId}`}
-          className="font-semibold text-teal hover:text-teal-dark inline-flex items-center gap-1"
-        >
-          Open full BS workspace <ExternalLink size={11} />
-        </Link>
+        <div className="flex items-center gap-4">
+          <Link
+            href={`/clients/${clientLinkId}/cpa`}
+            className="font-semibold text-teal hover:text-teal-dark inline-flex items-center gap-1"
+            title="Diff the CPA's closing TB against QBO, enter their AJEs, tie out filed tax amounts"
+          >
+            CPA round-trip <ExternalLink size={11} />
+          </Link>
+          <Link
+            href={`/balance-sheet/${clientLinkId}`}
+            className="font-semibold text-teal hover:text-teal-dark inline-flex items-center gap-1"
+          >
+            Open full BS workspace <ExternalLink size={11} />
+          </Link>
+        </div>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <KPICard label="Total assets" value={bs.totalAssets} />
