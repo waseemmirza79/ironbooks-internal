@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
-  AlertTriangle, ArrowUpRight, CheckCircle2, ChevronDown, ChevronRight,
+  AlertCircle, AlertTriangle, ArrowUpRight, CheckCircle2, ChevronDown, ChevronRight,
   FileText, Loader2, PlayCircle, RotateCcw, Send, Sparkles, XCircle,
 } from "lucide-react";
 import { playSound } from "@/lib/sounds";
@@ -92,6 +92,10 @@ interface Run {
   verification_score?: number | null;
   verification_ran_at?: string | null;
   verification_override?: { by: string; at: string; reason: string; score_at_override: number } | null;
+  // TEMPORARY manager-review gate (migration 113) — remove alongside the
+  // gate in app/api/clients/[id]/monthly-rec/route.ts when no longer needed.
+  manager_reviewed_at?: string | null;
+  manager_review_override?: { by: string; at: string; reason: string } | null;
 }
 
 export interface ProdClient {
@@ -170,6 +174,13 @@ export function ClientRecCard({
   const overall = run?.checks?.overall;
   const isComplete = run?.status === "complete";
   const isPending = run?.status === "pending_review";
+  // TEMPORARY manager-review gate — informational only (server always
+  // re-checks); cleanup sign-off is a different queue and is never gated.
+  const needsManagerReview =
+    !isComplete &&
+    run?.kind !== "cleanup" &&
+    !run?.manager_reviewed_at &&
+    !run?.manager_review_override;
   const isCleanupKind = run?.kind === "cleanup";
   const [spotChecking, setSpotChecking] = useState(false);
 
@@ -241,7 +252,7 @@ export function ClientRecCard({
     }
   }
 
-  async function sendToClient(overrideReason?: string) {
+  async function sendToClient(overrideReason?: string, managerOverrideReason?: string) {
     setCompleting(true);
     setError("");
     try {
@@ -254,6 +265,7 @@ export function ClientRecCard({
           attested: true,
           concerns,
           ...(overrideReason ? { override_reason: overrideReason } : {}),
+          ...(managerOverrideReason ? { manager_override_reason: managerOverrideReason } : {}),
         }),
       });
       const json = await res.json();
@@ -266,9 +278,21 @@ export function ClientRecCard({
           );
           if (reason && reason.trim()) {
             setCompleting(false);
-            return sendToClient(reason.trim());
+            return sendToClient(reason.trim(), managerOverrideReason);
           }
           throw new Error("Send cancelled — fix the findings and re-verify, or provide an override reason.");
+        }
+        // TEMPORARY manager-review gate — Kedma hasn't reviewed this run yet.
+        // Any senior can still push it through with a written reason.
+        if (res.status === 409 && json.requires_manager_review) {
+          const reason = window.prompt(
+            `${json.error}\n\nTo send anyway, enter an override reason (recorded with your name):`
+          );
+          if (reason && reason.trim()) {
+            setCompleting(false);
+            return sendToClient(overrideReason, reason.trim());
+          }
+          throw new Error("Send cancelled — ask Kedma to review, or provide an override reason.");
         }
         throw new Error(json.error || `HTTP ${res.status}`);
       }
@@ -544,6 +568,12 @@ export function ClientRecCard({
 
               {isSenior ? (
                 <>
+                  {needsManagerReview && (
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5">
+                      <AlertCircle size={12} />
+                      Awaiting Kedma&apos;s review this month — she can send it herself, or you can send with a written override.
+                    </div>
+                  )}
                   <button
                     onClick={() => sendToClient()}
                     disabled={completing || !attested}

@@ -23,6 +23,17 @@ import { deliverPackagesBulk } from "@/lib/month-end/send";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
+// ── TEMPORARY: manager-review gate (Mike, 2026-07-10) ───────────────────────
+// Kedma reviews before this month's PRODUCTION P&Ls go out (kind !==
+// "cleanup" — new-client cleanup sign-off is a different queue and stays
+// untouched). Fails OPEN (no gate) if this account can't be found, so a typo
+// or a deactivated account never freezes sends for the whole team.
+//
+// TO REMOVE once no longer needed: delete this const + the gate block inside
+// the "send"/"mark_complete" handler below (search MANAGER_REVIEW_EMAIL).
+// Migration 113's 3 columns are harmless to leave unused.
+const MANAGER_REVIEW_EMAIL = "kedma@ironbooks.com";
+
 /**
  * POST /api/clients/[id]/monthly-rec
  *
@@ -83,6 +94,8 @@ export async function POST(
     status_note?: string;
     /** Books Reliability gate: senior's reason for sending below threshold. */
     override_reason?: string;
+    /** TEMPORARY manager-review gate: reason for sending without Kedma's sign-off. */
+    manager_override_reason?: string;
     /** dismiss_finding / undismiss_finding */
     check_key?: string;
     fingerprint?: string;
@@ -451,7 +464,7 @@ export async function POST(
     }
     let { data: existing } = await (service as any)
       .from("monthly_rec_runs")
-      .select("id, checks_ran_at, statements, status, kind, attested_by, attested_at, verification_score, verification_ran_at")
+      .select("id, checks_ran_at, statements, status, kind, attested_by, attested_at, verification_score, verification_ran_at, manager_reviewed_by, manager_reviewed_at")
       .eq("client_link_id", clientLinkId)
       .eq("period", period)
       .maybeSingle();
@@ -487,7 +500,7 @@ export async function POST(
               },
               { onConflict: "client_link_id,period" }
             )
-            .select("id, checks_ran_at, statements, status, kind, attested_by, attested_at, verification_score, verification_ran_at")
+            .select("id, checks_ran_at, statements, status, kind, attested_by, attested_at, verification_score, verification_ran_at, manager_reviewed_by, manager_reviewed_at")
             .single();
           if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 });
           existing = up;
@@ -543,6 +556,45 @@ export async function POST(
           at: new Date().toISOString(),
           reason: overrideReason.slice(0, 1000),
           score_at_override: vScore,
+        };
+      }
+    }
+
+    // ── TEMPORARY MANAGER-REVIEW GATE — see MANAGER_REVIEW_EMAIL above ──
+    // Production closes only; cleanup sign-off (new-client, one-time) shares
+    // this handler but is a different queue and stays ungated.
+    let managerReviewStamp: { by: string; at: string } | null = null;
+    let managerOverrideRecord: { by: string; at: string; reason: string } | null = null;
+    if (MANAGER_REVIEW_EMAIL && existing?.kind !== "cleanup") {
+      const { data: reviewer } = await service
+        .from("users")
+        .select("id")
+        .ilike("email", MANAGER_REVIEW_EMAIL)
+        .eq("is_active", true)
+        .maybeSingle();
+      if (!reviewer) {
+        console.warn(
+          `[monthly-rec] manager-review gate: no active user for "${MANAGER_REVIEW_EMAIL}" — gate skipped this send`
+        );
+      } else if (user.id === (reviewer as any).id) {
+        // She's the one sending — that IS the review.
+        managerReviewStamp = { by: user.id, at: new Date().toISOString() };
+      } else if (!existing?.manager_reviewed_at) {
+        const reason = (body.manager_override_reason || "").trim();
+        if (!reason) {
+          return NextResponse.json(
+            {
+              error:
+                "Awaiting Kedma's review before this can be sent this month. She can review & send it herself, or you can override with a reason.",
+              requires_manager_review: true,
+            },
+            { status: 409 }
+          );
+        }
+        managerOverrideRecord = {
+          by: user.id,
+          at: new Date().toISOString(),
+          reason: reason.slice(0, 1000),
         };
       }
     }
@@ -683,6 +735,10 @@ export async function POST(
         month_end_package_id: packageId,
         qbo_close_error: qboCloseError,
         ...(overrideRecord ? { verification_override: overrideRecord } : {}),
+        ...(managerReviewStamp
+          ? { manager_reviewed_by: managerReviewStamp.by, manager_reviewed_at: managerReviewStamp.at }
+          : {}),
+        ...(managerOverrideRecord ? { manager_review_override: managerOverrideRecord } : {}),
       })
       .eq("id", existing.id)
       .select("*")
@@ -701,6 +757,22 @@ export async function POST(
             period,
             score: overrideRecord.score_at_override,
             reason: overrideRecord.reason,
+            overridden_by: user.id,
+          },
+        });
+      } catch {
+        /* best-effort */
+      }
+    }
+    if (managerOverrideRecord) {
+      try {
+        await (service as any).from("audit_log").insert({
+          event_type: "manager_review_override",
+          request_payload: {
+            client_link_id: clientLinkId,
+            client_name: clientName,
+            period,
+            reason: managerOverrideRecord.reason,
             overridden_by: user.id,
           },
         });
