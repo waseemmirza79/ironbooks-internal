@@ -319,11 +319,33 @@ export async function aiSpotCheckStatements(params: {
   const MODEL = "claude-opus-4-7";
   const { pl, bs, cfs } = params.statements;
 
+  // ── Deterministic P&L reconciliation ──────────────────────────────────
+  // Never let the LLM do the arithmetic — it was miscalling ties because it
+  // only got total_income/total_expenses/net (total_expenses EXCLUDES COGS),
+  // so income − total_expenses ≠ net and it flagged a false "doesn't tie".
+  // Compute the identity in code + hand the AI COGS/gross-profit explicitly.
+  const r2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
+  const cogsAmt = r2(pl.cogs);
+  const grossProfitAmt = r2(pl.grossProfit ?? pl.totalIncome - cogsAmt);
+  const groupSum = (re: RegExp) =>
+    r2(pl.lineItems.filter((l) => re.test(String(l.group || ""))).reduce((s, l) => s + (Number(l.amount) || 0), 0));
+  const otherIncomeAmt = groupSum(/other.*inc/i);
+  const otherExpenseAmt = groupSum(/other.*exp/i);
+  // Standard P&L identity: net = income − COGS − operating expenses (± other).
+  const computedNet = r2(pl.totalIncome - cogsAmt - pl.totalExpenses + otherIncomeAmt - otherExpenseAmt);
+  const plReconciles = Math.abs(computedNet - r2(pl.netIncome)) <= 1; // $1 rounding tolerance
+
   const compact = {
     profit_and_loss: {
       total_income: pl.totalIncome,
-      total_expenses: pl.totalExpenses,
+      cogs: cogsAmt,
+      gross_profit: grossProfitAmt,
+      total_operating_expenses: pl.totalExpenses, // EXCLUDES COGS
+      other_income: otherIncomeAmt,
+      other_expense: otherExpenseAmt,
       net_income: pl.netIncome,
+      // Verified in code — do NOT re-derive the arithmetic:
+      reconciliation: { computed_net: computedNet, reported_net: r2(pl.netIncome), reconciles: plReconciles },
       lines: pl.lineItems.slice(0, 120),
     },
     balance_sheet: bs
@@ -353,6 +375,10 @@ Spot-check against painting-industry standards and general bookkeeping hygiene:
 - Note month-over-month sanity only from what's visible (one month of data) — don't invent trends.
 - If balance_sheet is null, this client is on P&L-only service while their balance sheet cleanup finishes — review the P&L only and don't flag the missing BS.
 
+P&L COMPOSITION — read carefully before commenting on any totals:
+- The identity is: net_income = total_income − cogs − total_operating_expenses (± other_income/other_expense). "total_operating_expenses" is OPERATING EXPENSES ONLY and does NOT include COGS.
+- The reconciliation has ALREADY been verified in code (see profit_and_loss.reconciliation). Do NOT re-derive the arithmetic yourself and do NOT raise a "P&L doesn't tie / math doesn't add up / net income doesn't equal…" finding when reconciliation.reconciles is true — it ties; asserting otherwise is wrong. ONLY raise a math-tie finding if reconciliation.reconciles is false, and if so quote computed_net vs reported_net.
+
 Statements (JSON):
 ${JSON.stringify(compact)}
 
@@ -373,9 +399,16 @@ Use "flag" only for things that should stop the send until checked. 0-8 findings
     const match = text.match(/\{[\s\S]*\}/);
     if (!match) throw new Error("No JSON in response");
     const parsed = JSON.parse(match[0]);
+    // Belt-and-suspenders: when the code-verified identity ties, drop any
+    // finding that still claims the P&L math doesn't reconcile. The model
+    // occasionally re-derives net from income − operating-expenses (forgetting
+    // COGS is separate) and flags a phantom discrepancy — never show that to
+    // the reviewer once code has confirmed the tie.
+    const MATH_TIE_RE = /(does\s*n['o]?t|doesn'?t|not)\s+(tie|equal|add|reconcile|match|balance)|math\s+(doesn|does\s*n|not|error)|net\s+income\s+(does|doesn|≠|!=|isn)|p&?l\s+(doesn|does\s*n|not).*(tie|add|reconcile|equal)/i;
     const findings: SpotCheckFinding[] = Array.isArray(parsed.findings)
       ? parsed.findings
           .filter((f: any) => f && f.note)
+          .filter((f: any) => !(plReconciles && MATH_TIE_RE.test(String(f.note) + " " + String(f.area || ""))))
           .slice(0, 10)
           .map((f: any) => ({
             severity: ["info", "warn", "flag"].includes(f.severity) ? f.severity : "info",
