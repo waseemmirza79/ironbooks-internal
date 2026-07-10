@@ -165,6 +165,17 @@ export default async function BankRulesFromReclassPage({
     return norm === "" || norm === "unknown vendor" || norm === "unknown";
   }
 
+  // "Uncategorized" is the reclass-review dropdown's pinned "flag for senior
+  // review" action (MasterAccountSelect), not a real QBO account — a row
+  // whose only target is that sentinel has NO confident categorization and
+  // must never count as one here (was silently treated as a valid target,
+  // pre-ticking rows that actually need a human to pick a real account).
+  function isRealTarget(name: string | null | undefined): name is string {
+    if (!name) return false;
+    const norm = name.trim().toLowerCase();
+    return norm !== "" && norm !== "uncategorized";
+  }
+
   const groupMap = new Map<
     string,
     {
@@ -182,6 +193,15 @@ export default async function BankRulesFromReclassPage({
     // candidate instead of all collapsing into one row.
     const unknownVendor = isUnknownVendor(row.vendor_name);
     const descriptionKey = (row.description || "").trim();
+
+    // No real vendor AND no description to fall back on — there's no usable
+    // pattern to build a rule from (matches this page's own stated intent:
+    // "without a vendor name there's no pattern to build a rule from"). This
+    // previously fell through to the `else` branch below and grouped every
+    // such row under the literal sentinel "Unknown vendor" / "UNKNOWN
+    // VENDOR" — a bogus rule keyed on QBO's own fallback LABEL text, which
+    // can never match real bank-feed text.
+    if (unknownVendor && !descriptionKey) continue;
 
     let groupKey: string;
     let vendorDisplay: string;
@@ -215,7 +235,7 @@ export default async function BankRulesFromReclassPage({
     // proposedRules with an empty target so the bookkeeper can fill it in.
     const targetId = row.bookkeeper_override_target_id || row.to_account_id;
     const targetName = row.bookkeeper_override_target_name || row.to_account_name;
-    if (targetName) {
+    if (isRealTarget(targetName)) {
       const existing = group.targetCounts.get(targetId);
       if (existing) {
         existing.count += 1;

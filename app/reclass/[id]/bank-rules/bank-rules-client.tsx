@@ -205,38 +205,46 @@ export function BankRulesFromReclassClient({
   }
 
   async function handleSubmit() {
+    // Only send vendors where the bookkeeper has either:
+    //   - the AI's original target still in the overrides map, OR
+    //   - manually picked a target via the dropdown
+    // Selected-but-no-target vendors would otherwise be silently dropped —
+    // "Create N Bank Rules" already reflects the true count via readyCount,
+    // but a bookkeeper who ticked "select all" expecting every selected row
+    // to become a rule gets no on-screen explanation for the shortfall
+    // (previously just a browser-console warning nobody sees). Surface it
+    // with a confirm before submitting anything.
+    const overridesPayload: Record<string, { id: string; name: string }> = {};
+    const selectedVendorsPayload: string[] = [];
+    const droppedNoTarget: string[] = [];
+    for (const vendorPattern of selected) {
+      const o = overrides.get(vendorPattern);
+      if (o && o.id && o.name) {
+        overridesPayload[vendorPattern] = o;
+        selectedVendorsPayload.push(vendorPattern);
+      } else {
+        droppedNoTarget.push(vendorPattern);
+      }
+    }
+    if (droppedNoTarget.length > 0) {
+      const proceed = confirm(
+        `${droppedNoTarget.length} selected vendor${droppedNoTarget.length === 1 ? "" : "s"} ` +
+          `${droppedNoTarget.length === 1 ? "has" : "have"} no target account picked and will be SKIPPED — ` +
+          `only ${selectedVendorsPayload.length} rule${selectedVendorsPayload.length === 1 ? "" : "s"} will actually be created.\n\n` +
+          `Cancel to go pick targets for the skipped rows first, or OK to continue with just the ${selectedVendorsPayload.length} ready now.`
+      );
+      if (!proceed) return;
+    }
+    if (selectedVendorsPayload.length === 0) {
+      setError(
+        "Every selected vendor needs a target account. Pick one from the dropdown next to each ticked row."
+      );
+      return;
+    }
+
     setSubmitting(true);
     setError("");
     try {
-      // Only send vendors where the bookkeeper has either:
-      //   - the AI's original target still in the overrides map, OR
-      //   - manually picked a target via the dropdown
-      // Selected-but-no-target vendors are silently dropped here with a
-      // visible warning above the table — we never POST a rule without
-      // a destination account.
-      const overridesPayload: Record<string, { id: string; name: string }> = {};
-      const selectedVendorsPayload: string[] = [];
-      const droppedNoTarget: string[] = [];
-      for (const vendorPattern of selected) {
-        const o = overrides.get(vendorPattern);
-        if (o && o.id && o.name) {
-          overridesPayload[vendorPattern] = o;
-          selectedVendorsPayload.push(vendorPattern);
-        } else {
-          droppedNoTarget.push(vendorPattern);
-        }
-      }
-      if (droppedNoTarget.length > 0) {
-        console.warn(
-          `[bank-rules] Dropping ${droppedNoTarget.length} selected vendors with no target picked: ${droppedNoTarget.join(", ")}`
-        );
-      }
-      if (selectedVendorsPayload.length === 0) {
-        throw new Error(
-          "Every selected vendor needs a target account. Pick one from the dropdown next to each ticked row."
-        );
-      }
-
       const res = await fetch("/api/rules/from-reclass", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

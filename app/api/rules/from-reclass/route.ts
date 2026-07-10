@@ -56,13 +56,28 @@ export async function POST(request: Request) {
     }
   >();
 
+  // "Unknown vendor" is QBO's own literal fallback label for e-transfers/ACH
+  // with no identifiable payee (lib/qbo-reclass.ts) — it has no real pattern
+  // to key a bank rule on and can never match actual bank-feed text. This
+  // route has no description fallback (that's the bank-rules review page's
+  // job); just skip it rather than create an unmatchable rule.
+  const UNKNOWN_VENDOR_KEYS = new Set(["unknown vendor", "unknown", ""]);
+  // "Uncategorized" is the reclass-review dropdown's "flag for senior
+  // review" sentinel, not a real QBO account — never a valid rule target.
+  function isRealTarget(name: string | null | undefined): name is string {
+    if (!name) return false;
+    const norm = name.trim().toLowerCase();
+    return norm !== "" && norm !== "uncategorized";
+  }
+
   for (const row of (rows || []) as ReclassRow[]) {
     const groupKey = row.vendor_pattern_normalized || row.vendor_name || "";
     if (!groupKey) continue;
+    if (UNKNOWN_VENDOR_KEYS.has(groupKey.trim().toLowerCase())) continue;
 
     const targetId = row.bookkeeper_override_target_id || row.to_account_id;
     const targetName = row.bookkeeper_override_target_name || row.to_account_name;
-    if (!targetName) continue;
+    if (!isRealTarget(targetName)) continue;
 
     if (!groupMap.has(groupKey)) {
       groupMap.set(groupKey, {
