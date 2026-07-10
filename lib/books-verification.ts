@@ -492,15 +492,30 @@ export async function runBooksVerification(params: RunParams): Promise<Verificat
 
   // ── Categorization ──────────────────────────────────────────────────
   {
-    // QBO's default "Uncategorized Income/Expense/Asset" accounts (match by
-    // name), counted via a SINGLE period pull bucketed by account id — not a
-    // per-account refetch, whose ignored `account=` filter tripled the count
-    // (XPaint reported 972 / $524k with nothing actually uncategorized).
+    // Postings that actually landed in QBO's "Uncategorized Income/Expense"
+    // accounts, counted straight off the period P&L detail — the SAME
+    // period-scoped dataset that powers the (trusted) duplicate + deposit
+    // checks. This is deliberately not a per-account TransactionList refetch:
+    // that path's `account=` filter is silently IGNORED by QBO, so it returned
+    // the whole period once PER uncategorized account — reporting ~3× the
+    // entire month as uncategorized when nothing actually was (XPaint 972/$524k
+    // and Make It Happen 1992/$1.38M, 2026-07-09). Counting off plDetail can't
+    // over-count: no uncategorized postings ⇒ no matching rows ⇒ 0.
     const uncatAccounts = accounts.filter((a: any) => active(a) && /uncategor/i.test(a.Name));
-    const uncatIds = new Set(uncatAccounts.map((a: any) => String(a.Id)));
-    const { count: uncatCount, amount: uncatAmount } = await track(
-      fetchActivityForAccounts(realmId, accessToken, uncatIds, periodStart, periodEnd)
-    );
+    let uncatCount = 0;
+    let uncatAmount = 0;
+    if (plDetail) {
+      const rows = plDetail.filter((r: any) => /uncategor/i.test(String(r.account || "")));
+      uncatCount = rows.length;
+      uncatAmount = rows.reduce((s: number, r: any) => s + Math.abs(Number(r.amount || 0)), 0);
+    } else {
+      // P&L detail unavailable — fall back to the id-bucketed pull (also
+      // catches the Uncategorized Asset balance-sheet account).
+      const uncatIds = new Set(uncatAccounts.map((a: any) => String(a.Id)));
+      const a = await track(fetchActivityForAccounts(realmId, accessToken, uncatIds, periodStart, periodEnd));
+      uncatCount = a.count;
+      uncatAmount = a.amount;
+    }
     checks.push({
       key: "uncategorized",
       label: "Uncategorized transactions",
