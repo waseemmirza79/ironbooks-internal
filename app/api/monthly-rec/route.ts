@@ -56,6 +56,20 @@ export async function GET(request: Request) {
   const RUN_COLS =
     "client_link_id, period, kind, status, has_concerns, concerns, checks, checks_ran_at, completed_at, sent_to_client_at, email_delivery, ai_spot_check, submitted_by, submitted_at, board_status, waiting_reasons, status_note, verification, verification_score, verification_ran_at, verification_override, manager_reviewed_at, manager_review_override";
 
+  // Named-column selects 400 when a column's migration hasn't been applied
+  // yet — and supabase-js doesn't throw, it returns {error} with null data,
+  // which silently blanked the whole production board to "Not started" when
+  // migration 113 was pending (2026-07-10; same class as the migration-21
+  // stripe picker incident). Fall back to * so a pending migration degrades
+  // to missing NEW fields, never missing ROWS.
+  const selectRuns = async (build: (q: any) => any): Promise<any[]> => {
+    const named = await build((service as any).from("monthly_rec_runs").select(RUN_COLS));
+    if (!named.error) return (named.data as any[]) || [];
+    console.warn("[monthly-rec] named-column select failed (pending migration?) — falling back to *:", named.error.message);
+    const star = await build((service as any).from("monthly_rec_runs").select("*"));
+    return ((star.data as any[]) || []);
+  };
+
   // Run rows for the period (table may predate migration 62 in some envs)
   let runsByClient = new Map<string, any>();
   // Cleanup sign-offs awaiting review/send — any period, scoped like the
@@ -64,23 +78,17 @@ export async function GET(request: Request) {
   try {
     const ids = scope === "signoffs" ? [] : production.map((c) => c.id);
     if (ids.length > 0) {
-      const { data: runs } = await (service as any)
-        .from("monthly_rec_runs")
-        .select(RUN_COLS)
-        .eq("period", period)
-        .eq("kind", "production_me")
-        .in("client_link_id", ids);
-      runsByClient = new Map(((runs as any[]) || []).map((r) => [r.client_link_id, r]));
+      const runs = await selectRuns((q: any) =>
+        q.eq("period", period).eq("kind", "production_me").in("client_link_id", ids)
+      );
+      runsByClient = new Map(runs.map((r) => [r.client_link_id, r]));
     }
 
     const allIds = scope === "production" ? [] : all.map((c) => c.id);
     if (allIds.length > 0) {
-      const { data: signoffs } = await (service as any)
-        .from("monthly_rec_runs")
-        .select(RUN_COLS)
-        .eq("kind", "cleanup")
-        .neq("status", "complete")
-        .in("client_link_id", allIds);
+      const signoffs = await selectRuns((q: any) =>
+        q.eq("kind", "cleanup").neq("status", "complete").in("client_link_id", allIds)
+      );
       const byId = new Map(all.map((c) => [c.id, c]));
       cleanupSignoffs = ((signoffs as any[]) || []).map((r) => {
         const c = byId.get(r.client_link_id);
