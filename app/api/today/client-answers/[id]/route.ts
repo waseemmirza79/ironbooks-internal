@@ -3,6 +3,7 @@ import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import {
   reclassifyTransactionLines,
   buildAuditMemo,
+  describeReclassError,
   getValidToken,
   type SupportedTxType,
 } from "@/lib/qbo-reclass";
@@ -126,11 +127,20 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       auditMemo: buildAuditMemo(actorName, "Client answer confirmed"),
     });
   } catch (err: any) {
+    const { blocked, message } = describeReclassError(err);
+    // A "blocked" transaction (matched to a bank-feed download, or in a closed
+    // period) isn't a failure — it's waiting on a manual step in QBO, after
+    // which the bookkeeper re-approves. Keep the row answered + approvable
+    // rather than marking it failed; just stamp the actionable reason.
     await (service as any)
       .from("reclassifications")
-      .update({ status: "failed", error_message: err.message })
+      .update(
+        blocked
+          ? { error_message: `Blocked — ${blocked === "matched_download" ? "matched to a bank-feed download; unmatch in QBO, then approve again" : "in a closed period"}.` }
+          : { status: "failed", error_message: err.message }
+      )
       .eq("id", id);
-    return NextResponse.json({ error: `QuickBooks rejected the update: ${err.message}` }, { status: 502 });
+    return NextResponse.json({ error: message, blocked }, { status: 502 });
   }
 
   await (service as any)

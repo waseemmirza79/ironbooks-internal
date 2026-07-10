@@ -162,6 +162,7 @@ function groupAccounts(all: CoaAccount[], view: "pnl" | "bs") {
 function AnswerRow({ row, onDone }: { row: ClientAnswerRow; onDone: (id: string) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState(row.error || "");
+  const [blocked, setBlocked] = useState(false);
   const [open, setOpen] = useState(false);
   const [sugg, setSugg] = useState<Array<{ id: string; name: string; reason: string }> | null>(null);
   const [all, setAll] = useState<CoaAccount[]>([]);
@@ -171,6 +172,7 @@ function AnswerRow({ row, onDone }: { row: ClientAnswerRow; onDone: (id: string)
   async function act(body: any, busyKey: string) {
     setBusy(busyKey);
     setError("");
+    setBlocked(false);
     try {
       const res = await fetch(`/api/today/client-answers/${row.id}`, {
         method: "POST",
@@ -178,7 +180,13 @@ function AnswerRow({ row, onDone }: { row: ClientAnswerRow; onDone: (id: string)
         body: JSON.stringify(body),
       });
       const j = await res.json();
-      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      if (!res.ok) {
+        // A "blocked" item (matched bank-feed download / closed period) isn't a
+        // failure — it needs a manual step in QBO, then re-approve. Show it
+        // amber + keep the row so the bookkeeper can retry.
+        if (j.blocked) { setBlocked(true); setError(j.error || "Blocked in QuickBooks"); return; }
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
       onDone(row.id);
     } catch (e: any) {
       setError(e?.message || "Failed");
@@ -231,7 +239,12 @@ function AnswerRow({ row, onDone }: { row: ClientAnswerRow; onDone: (id: string)
             )}
             {row.answer_note && <span className="italic"> — “{row.answer_note}”</span>}
           </div>
-          {error && <div className="text-xs text-red-700 mt-1">{error}</div>}
+          {error && (
+            <div className={`text-xs mt-1 ${blocked ? "text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5" : "text-red-700"}`}>
+              {blocked && <span className="font-semibold">Needs a step in QuickBooks — </span>}
+              {error}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5 flex-shrink-0">

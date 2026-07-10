@@ -797,6 +797,44 @@ export function buildAuditMemo(
   return `[Ironbooks reclass ${dateStr} by ${bookkeeperName}: ${trimmedReason}]`;
 }
 
+export type ReclassBlockReason = "matched_download" | "closed_period" | null;
+
+/**
+ * Translate a raw QBO write error into a bookkeeper-facing explanation for the
+ * cases we hit constantly, so the UI shows a next step instead of raw JSON.
+ *
+ * The big one: QBO refuses to change the account on a transaction that's
+ * MATCHED to a bank-feed downloaded transaction (Business Validation Error
+ * code 6000, "...matched to a downloaded transaction... unmatch the
+ * transaction first"). There is no supported QBO API to unmatch — it can only
+ * be undone in the QBO UI — so we hand the bookkeeper the exact steps.
+ */
+export function describeReclassError(err: any): { blocked: ReclassBlockReason; message: string } {
+  const raw = String(err?.message || err || "");
+  const is6000 = raw.includes('"code":"6000"') || /business validation error/i.test(raw);
+
+  if (
+    (is6000 && (/matched to a downloaded transaction/i.test(raw) || /unmatch the transaction first/i.test(raw))) ||
+    /matched to a downloaded transaction/i.test(raw)
+  ) {
+    return {
+      blocked: "matched_download",
+      message:
+        "QuickBooks won't recategorize this — it's matched to a bank-feed download, and QBO locks the account until it's unmatched. In QuickBooks: Transactions → Bank transactions → Categorized, find this transaction → Undo (that unmatches it), then approve here again. If it shouldn't move at all, reject it.",
+    };
+  }
+
+  if (is6000 && (/closed|closing date|change is within the closed/i.test(raw))) {
+    return {
+      blocked: "closed_period",
+      message:
+        "QuickBooks blocked this because it falls in a closed period. Reopen the period in QBO (or have it re-opened) before recategorizing, or leave it as-is.",
+    };
+  }
+
+  return { blocked: null, message: raw };
+}
+
 // ============== GROUP HELPERS (for scrub mode) ==============
 
 export interface VendorGroup {

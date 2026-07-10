@@ -4,6 +4,7 @@ import { after } from "next/server";
 import {
   reclassifyTransactionLines,
   buildAuditMemo,
+  describeReclassError,
   getValidToken,
   type SupportedTxType,
 } from "@/lib/qbo-reclass";
@@ -411,14 +412,15 @@ async function executeReclass(jobId: string, portalOrigin: string, isContinuatio
       }
     } catch (err: any) {
       failed += t.lines.length;
-      errors.push(`${t.tx_type}/${t.tx_id}: ${err.message}`);
+      const { blocked, message } = describeReclassError(err);
+      errors.push(`${t.tx_type}/${t.tx_id}: ${blocked === "matched_download" ? "matched to a bank-feed download — unmatch in QBO first" : message}`);
 
       for (const line of t.lines) {
         await service
           .from("reclassifications")
           .update({
             status: "failed",
-            error_message: err.message,
+            error_message: blocked ? message : err.message,
           } as any)
           .eq("id", line.reclass_row_id);
       }
