@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ClipboardCheck, Shuffle, Zap, KanbanSquare, CreditCard, Wallet, Scale, Landmark, ArrowRight } from "lucide-react";
+import { ClipboardCheck, Shuffle, Zap, KanbanSquare, CreditCard, Wallet, Scale, Landmark, ArrowRight, RefreshCw } from "lucide-react";
 
 /**
  * Client-profile "Cleanup" tab (SNAP V2) — the single place to launch any
@@ -42,6 +42,22 @@ export function CleanupTab({
         </Link>
         .
       </p>
+      <Link
+        href={`/jobs/new?client=${clientLinkId}&redo=1`}
+        className="flex items-center gap-3 rounded-xl border border-teal bg-teal-light/40 px-4 py-3 hover:bg-teal-light transition-colors"
+      >
+        <div className="p-2 rounded-lg bg-teal text-white">
+          <RefreshCw size={16} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-navy">Re-run COA Cleanup (updated master chart)</div>
+          <div className="text-[11px] text-ink-slate">
+            Redo an already-cleaned client — applies the latest master COA and re-categorizes. Skips the redo checkbox.
+          </div>
+        </div>
+        <ArrowRight size={14} className="text-teal" />
+      </Link>
+
       <div className="grid gap-2 sm:grid-cols-2">
         {ENGINES.map((e) => {
           const Icon = e.icon;

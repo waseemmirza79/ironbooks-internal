@@ -500,7 +500,7 @@ export function NewJobForm({
         </div>
       </div>
 
-      <RedoWarning clientId={selected?.id ?? null} kind="coa" onAllowChange={setRedoAllowed} />
+      <RedoWarning clientId={selected?.id ?? null} kind="coa" onAllowChange={setRedoAllowed} preAcknowledged={searchParams.get("redo") === "1"} />
 
       <div className="flex items-center justify-between gap-3">
         <button
