@@ -784,9 +784,46 @@ async function runFullCategorization(
     );
   }
 
+  // Owner self-payment detection. A payment whose counterparty text contains
+  // the client's own contact name is almost always the owner paying themself —
+  // equity (draw/contribution), not P&L. These must land on the balance sheet
+  // (JP audit, Dominion Painters: "Kevin Casson" e-transfers were the owner).
+  // Requires BOTH first and last name in the text so business names sharing
+  // the owner's surname don't trip it. Never auto-categorized: suggest the
+  // client's draw-style equity account and route to ask_client to confirm.
+  const ownerFirst = String((clientLink as any).contact_first_name || "").trim().toLowerCase();
+  const ownerLast = String((clientLink as any).contact_last_name || "").trim().toLowerCase();
+  const ownerDrawAccount =
+    availableAccounts.find((a) => /owner'?s?\s+draw/i.test(a.account_name)) ||
+    availableAccounts.find(
+      (a) =>
+        (a.account_type || "").toLowerCase() === "equity" &&
+        /draw|distribut|shareholder|withdraw/i.test(a.account_name)
+    ) ||
+    null;
+  function isOwnerPayment(line: ReclassLine): boolean {
+    if (ownerFirst.length < 3 || ownerLast.length < 3) return false;
+    const blob = `${line.vendor_name || ""} ${line.description || ""}`.toLowerCase();
+    return blob.includes(ownerFirst) && blob.includes(ownerLast);
+  }
+
   for (const line of inScopeLines) {
     const refId = `${line.transaction_id}::${line.line_id}`;
     const absAmount = Math.abs(line.transaction_amount);
+
+    // -1) Owner self-payment — suggest equity, confirm with client.
+    if (isOwnerPayment(line)) {
+      preMatched.set(refId, {
+        ref_id: refId,
+        target_account_id: ownerDrawAccount?.qbo_account_id || null,
+        target_account_name: ownerDrawAccount?.account_name || null,
+        confidence: 0.6,
+        reasoning: `Counterparty matches the client's owner (${(clientLink as any).contact_first_name} ${(clientLink as any).contact_last_name}) — likely an owner draw or contribution (equity, not P&L). Confirm with the client before posting.`,
+        decision: "ask_client",
+      });
+      stats.askClient++;
+      continue;
+    }
 
     // 0) Bank-transfer pre-check — never auto-categorize, always ask_client.
     if (isBankTransfer(line)) {
@@ -806,21 +843,35 @@ async function runFullCategorization(
     const kbMatch = lookupVendor(line.vendor_name, line.description, line.transaction_amount, industry);
     if (kbMatch) {
       const account = kbMatch.account ? accountByName.get(kbMatch.account.toLowerCase()) : undefined;
-      // Apply the KB decision EVEN IF the suggested account isn't in the client's
-      // current QBO COA — the COA cleanup step may have removed it or this client
-      // may need it added. The bookkeeper can override via the dropdown.
-      const resolvedAccountId = account?.qbo_account_id || uncategorizedAccount?.qbo_account_id || null;
-      const resolvedAccountName = account?.account_name || kbMatch.account;
-      preMatched.set(refId, {
-        ref_id: refId,
-        target_account_id: resolvedAccountId,
-        target_account_name: resolvedAccountName,
-        confidence: kbMatch.confidence,
-        reasoning: kbMatch.reasoning + (account ? "" : ` (suggest creating "${kbMatch.account}")`),
-        // Pre-matched from the knowledge base → pre-approve; bookkeeper reviews
-        // the one list and can change any row before posting.
-        decision: "auto_approve",
-      });
+      if (account) {
+        preMatched.set(refId, {
+          ref_id: refId,
+          target_account_id: account.qbo_account_id,
+          target_account_name: account.account_name,
+          confidence: kbMatch.confidence,
+          reasoning: kbMatch.reasoning,
+          // Pre-matched from the knowledge base → pre-approve; bookkeeper reviews
+          // the one list and can change any row before posting.
+          decision: "auto_approve",
+        });
+      } else {
+        // The KB's suggested account doesn't exist in this client's live QBO
+        // chart. Never substitute a fallback account while displaying the
+        // intended name — that silently posts to Uncategorized under a label
+        // that says "Fuel" (Dominion Painters, 2026-07-10: 5 fuel transactions
+        // executed to "Uncategorized Expenses" while our records said
+        // "Fuel – Admin & Sales Vehicles"; 1,554 rows fleet-wide). Land
+        // honestly on the real Uncategorized account, under its real name,
+        // and force bookkeeper review so nothing posts unseen.
+        preMatched.set(refId, {
+          ref_id: refId,
+          target_account_id: uncategorizedAccount?.qbo_account_id || null,
+          target_account_name: uncategorizedAccount?.account_name || null,
+          confidence: kbMatch.confidence,
+          reasoning: `${kbMatch.reasoning} — suggested account "${kbMatch.account}" is not in this client's QBO chart of accounts. Create it (or pick an existing account) before approving.`,
+          decision: uncategorizedAccount ? "needs_review" : "flagged",
+        });
+      }
       kbHits++;
       continue;
     }
