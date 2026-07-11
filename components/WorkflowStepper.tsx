@@ -15,12 +15,16 @@ interface StepDef {
 
 const STEPS: StepDef[] = [
   {
+    // A step pill is only ever a link when the step is already complete/skipped
+    // (see StepPill), so navigating back to COA or Reclass always means "redo an
+    // already-finished step" — carry redo=1 so the redo guard is pre-acknowledged
+    // and Start is enabled on arrival (no checkbox hunt).
     key: "coa", num: 1, label: "COA Cleanup",
-    href: (cid) => cid ? `/jobs/new?client=${cid}` : "/jobs/new",
+    href: (cid) => cid ? `/jobs/new?client=${cid}&redo=1` : "/jobs/new",
   },
   {
     key: "reclass", num: 2, label: "Reclass",
-    href: (cid) => cid ? `/reclass/new?client=${cid}&workflow=full_categorization` : "/reclass/new",
+    href: (cid) => cid ? `/reclass/new?client=${cid}&workflow=full_categorization&redo=1` : "/reclass/new",
   },
   {
     key: "rules", num: 3, label: "Bank Rules",

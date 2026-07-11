@@ -49,7 +49,7 @@ export default async function ReclassReviewPage({
           title={`Reclassification: ${job.client_name}`}
           subtitle={`Discovery in progress · ${job.workflow}`}
         />
-        <WorkflowStepper currentStep="reclass" currentState="active" completedSteps={["coa"]} />
+        <WorkflowStepper currentStep="reclass" currentState="active" completedSteps={["coa"]} clientLinkId={(job as any).client_link_id} />
         <div className="px-8 py-6 max-w-4xl">
           <ReclassDiscoveryPending
             jobId={id}
@@ -205,7 +205,7 @@ export default async function ReclassReviewPage({
             : "AI Scrub"
         }`}
       />
-      <WorkflowStepper currentStep="reclass" currentState="active" completedSteps={["coa"]} />
+      <WorkflowStepper currentStep="reclass" currentState="active" completedSteps={["coa"]} clientLinkId={(job as any).client_link_id} />
       <div className="px-8 py-6 space-y-3">
         {industryWarnings.length > 0 && (
           <div className="rounded-xl border-2 border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
