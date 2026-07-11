@@ -14,6 +14,7 @@
  *    if stale at execution time.
  */
 
+import { findOrCreateVendor } from "./qbo";
 import { qboRateLimiter, getValidToken, sourceFromRequest } from "./qbo";
 
 const QBO_BASE =
@@ -581,6 +582,10 @@ export async function reclassifyTransactionLines(
       new_account_name?: string;
     }>;
     auditMemo: string;       // appended to PrivateNote
+    /** Canonical payee to set as the QBO vendor when the transaction has
+     *  none (Purchase-family only; Bills always carry a VendorRef).
+     *  Best-effort — failures never block the reclass. */
+    vendorName?: string | null;
   }
 ): Promise<ReclassResult> {
   // Step 1: Refetch fresh transaction (get current SyncToken)
@@ -661,6 +666,25 @@ export async function reclassifyTransactionLines(
     })
     .filter(Boolean);
 
+  // Step 4.5: Payee (best-effort). Bank-fed Purchases often carry no vendor
+  // even when the description identifies one — set the KB's canonical payee
+  // so QBO shows who was paid. Purchase-family only (Bills/VendorCredits
+  // require a VendorRef already); any failure here never blocks the reclass.
+  let entityRefPatch: { EntityRef: { value: string; type: string } } | null = null;
+  if (
+    params.vendorName &&
+    params.txType === "Purchase" &&
+    !(tx as any).EntityRef &&
+    !(tx as any).VendorRef
+  ) {
+    try {
+      const vendorId = await findOrCreateVendor(realmId, accessToken, params.vendorName);
+      if (vendorId) entityRefPatch = { EntityRef: { value: vendorId, type: "Vendor" } };
+    } catch {
+      // best-effort only
+    }
+  }
+
   // Step 5: Build payload — explicitly exclude QBO read-only / computed fields
   // (MetaData, domain, TotalAmt) so they can't trigger unexpected validation.
   const { MetaData: _meta, domain: _domain, TotalAmt: _total, ...txCore } = tx as any;
@@ -669,6 +693,7 @@ export async function reclassifyTransactionLines(
     Line: safeLines,
     PrivateNote: newMemo,
     sparse: false,
+    ...(entityRefPatch || {}),
   };
 
   let data: any;
