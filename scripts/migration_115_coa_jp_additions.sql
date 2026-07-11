@@ -24,7 +24,7 @@ from (values
 ) as v(account_name, parent_account_name, is_parent, is_required, qbo_account_type, qbo_account_subtype, jurisdiction, section, sort_order, industry)
 where not exists (
   select 1 from master_coa m
-  where m.account_name = v.account_name and m.jurisdiction = v.jurisdiction and m.industry = v.industry
+  where m.account_name = v.account_name and m.jurisdiction = v.jurisdiction::jurisdiction_code and m.industry = v.industry
 );
 
 -- Reparent + retype existing Gifts under Marketing (advertising/promotional).

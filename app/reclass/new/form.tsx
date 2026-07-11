@@ -801,7 +801,7 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
 
         {clientLinkId && (
           <>
-            <RedoWarning clientId={clientLinkId} kind="reclass" onAllowChange={setRedoAllowed} />
+            <RedoWarning clientId={clientLinkId} kind="reclass" onAllowChange={setRedoAllowed} preAcknowledged={searchParams.get("redo") === "1"} />
             <button
               onClick={handleSubmit}
               disabled={!canSubmit || preflightChecking || !!preflightWarning || !redoAllowed}

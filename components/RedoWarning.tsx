@@ -22,10 +22,18 @@ export function RedoWarning({
   clientId,
   kind,
   onAllowChange,
+  preAcknowledged = false,
 }: {
   clientId: string | null | undefined;
   kind: "coa" | "reclass" | "rules";
   onAllowChange?: (allowed: boolean) => void;
+  /**
+   * When the caller arrived via a deliberate "re-run" entry (e.g. the fleet
+   * remediation button that appends ?redo=1), the redo is already an intentional
+   * choice — start the override ticked so the user isn't hunting for the
+   * checkbox. The warning banner still renders (honest that this is a redo).
+   */
+  preAcknowledged?: boolean;
 }) {
   const [status, setStatus] = useState<{
     alreadyCleanedUp: boolean;
@@ -36,11 +44,11 @@ export function RedoWarning({
     lastRangeEnd: string | null;
     usesStripe: boolean | null;
   } | null>(null);
-  const [override, setOverride] = useState(false);
+  const [override, setOverride] = useState(preAcknowledged);
 
   useEffect(() => {
     setStatus(null);
-    setOverride(false);
+    setOverride(preAcknowledged);
     if (!clientId) {
       onAllowChange?.(true);
       return;
