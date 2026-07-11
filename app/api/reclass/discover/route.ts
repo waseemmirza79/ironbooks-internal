@@ -868,7 +868,7 @@ async function runFullCategorization(
           target_account_id: uncategorizedAccount?.qbo_account_id || null,
           target_account_name: uncategorizedAccount?.account_name || null,
           confidence: kbMatch.confidence,
-          reasoning: `${kbMatch.reasoning} — suggested account "${kbMatch.account}" is not in this client's QBO chart of accounts. Create it (or pick an existing account) before approving.`,
+          reasoning: `KB suggested account "${kbMatch.account}" which does not exist in this client's QBO — create it or pick another account before approving.`,
           decision: uncategorizedAccount ? "needs_review" : "flagged",
         });
       }
@@ -1043,51 +1043,11 @@ async function runFullCategorization(
     const refId = `${line.transaction_id}::${line.line_id}`;
     const decision = decisionByRef.get(refId);
 
-    if (!decision) {
-      const row = buildReclassRow(jobId, line, {
-        target_account_id: uncategorizedAccount?.qbo_account_id || null,
-        target_account_name: uncategorizedAccount?.account_name || null,
-        decision: uncategorizedAccount ? "needs_review" : "flagged",
-        confidence: 0,
-        reasoning: uncategorizedAccount
-          ? "AI did not return a decision — needs bookkeeper review before executing."
-          : "AI did not return a decision for this line.",
-      });
-      reclassRows.push(row);
-      if (row.decision === "skip") stats.skipAlreadyCorrect++;
-      else if (uncategorizedAccount) stats.needsReview++;
-      else stats.flagged++;
-      continue;
-    }
-
-    // ask_client decisions (bank transfers) need explicit human review — never auto-route.
-    // flagged decisions (AI confidence < 60%, no good target) also need explicit review —
-    // do NOT escalate to auto_approve just because an Uncategorized Expenses account exists.
-    // Only needs_review rows without a target get a soft landing to Uncategorized Expenses
-    // so the bookkeeper can batch-handle them in QBO after execution.
-    const isAskClient = decision.decision === "ask_client";
-    const isFlagged = decision.decision === "flagged";
-    const resolvedTargetId = isAskClient || isFlagged
-      ? (decision.target_account_id || null)
-      : decision.target_account_id || uncategorizedAccount?.qbo_account_id || null;
-    const resolvedTargetName = isAskClient || isFlagged
-      ? (decision.target_account_name || null)
-      : decision.target_account_name || uncategorizedAccount?.account_name || null;
-    const resolvedDecision = isAskClient
-      ? "ask_client"
-      : isFlagged
-        ? "flagged"
-        : !decision.target_account_id && uncategorizedAccount
-          ? "needs_review"
-          : decision.decision;
-
-    const row = buildReclassRow(jobId, line, {
-      target_account_id: resolvedTargetId,
-      target_account_name: resolvedTargetName,
-      decision: resolvedDecision,
-      confidence: decision.confidence,
-      reasoning: decision.flagged_reason || decision.reasoning,
-    });
+    // Single source of truth for AI-decision → row resolution (also used by the
+    // chunked path). Handles the no-decision case, honest Uncategorized
+    // soft-landing (real id + real name, needs_review), and never auto-executes
+    // a fallback.
+    const row = buildRowFromAiDecision(jobId, line, decision, uncategorizedAccount);
     reclassRows.push(row);
 
     if (row.decision === "skip") stats.skipAlreadyCorrect++;
@@ -1192,27 +1152,54 @@ function buildRowFromAiDecision(
   }
   const isAskClient = decision.decision === "ask_client";
   const isFlagged = decision.decision === "flagged";
-  const resolvedTargetId =
-    isAskClient || isFlagged
-      ? decision.target_account_id || null
-      : decision.target_account_id || uncategorizedAccount?.qbo_account_id || null;
-  const resolvedTargetName =
-    isAskClient || isFlagged
-      ? decision.target_account_name || null
-      : decision.target_account_name || uncategorizedAccount?.account_name || null;
-  const resolvedDecision = isAskClient
-    ? "ask_client"
-    : isFlagged
-      ? "flagged"
-      : !decision.target_account_id && uncategorizedAccount
-        ? "needs_review"
-        : decision.decision;
+  const baseReasoning = decision.flagged_reason || decision.reasoning;
+
+  // ask_client / flagged keep their own (possibly null) target — never soft-land.
+  if (isAskClient || isFlagged) {
+    return buildReclassRow(jobId, line, {
+      target_account_id: decision.target_account_id || null,
+      target_account_name: decision.target_account_name || null,
+      decision: decision.decision,
+      confidence: decision.confidence,
+      reasoning: baseReasoning,
+    });
+  }
+
+  // Resolved AI target present → use its id+name verbatim (matched pair).
+  if (decision.target_account_id) {
+    return buildReclassRow(jobId, line, {
+      target_account_id: decision.target_account_id,
+      target_account_name: decision.target_account_name || null,
+      decision: decision.decision,
+      confidence: decision.confidence,
+      reasoning: baseReasoning,
+    });
+  }
+
+  // No resolved target. Soft-land on the client's real Uncategorized account —
+  // but under its REAL name (never the AI's unresolved intended name, which
+  // would display an account the row won't post to) — and force needs_review so
+  // no fallback ever auto-executes. Preserve the intended name in the reasoning.
+  if (uncategorizedAccount) {
+    const intended = decision.target_account_name;
+    return buildReclassRow(jobId, line, {
+      target_account_id: uncategorizedAccount.qbo_account_id,
+      target_account_name: uncategorizedAccount.account_name,
+      decision: "needs_review",
+      confidence: decision.confidence,
+      reasoning: intended
+        ? `AI suggested "${intended}" which could not be resolved to an account in this client's QBO — create it or pick another account before approving. (${baseReasoning})`
+        : baseReasoning,
+    });
+  }
+
+  // No Uncategorized account to land on either → flag with no target.
   return buildReclassRow(jobId, line, {
-    target_account_id: resolvedTargetId,
-    target_account_name: resolvedTargetName,
-    decision: resolvedDecision,
+    target_account_id: null,
+    target_account_name: null,
+    decision: "flagged",
     confidence: decision.confidence,
-    reasoning: decision.flagged_reason || decision.reasoning,
+    reasoning: baseReasoning,
   });
 }
 
