@@ -47,6 +47,12 @@ interface VendorPattern {
 // Order matters: more specific patterns first. First match wins.
 
 const PATTERNS: VendorPattern[] = [
+  // ══════════════════ PERSONAL / OWNER DRAW ══════════════════
+  // Child support, alimony, and similar court-ordered personal obligations
+  // paid from the business account are owner draws (equity, below net profit),
+  // never a business expense. No payee (not a vendor).
+  { pattern: /child\s*support|family\s*support|alimony|maintenance\s+enforcement|fmep\b|\bmep\b/i, account: "Owner's Draw", confidence: 0.9, reasoning: "Child/family support → Owner's Draw (personal obligation, equity)" },
+
   // ══════════════ REVIEWED FLEET VENDORS (from 85K-txn mining, Mike/Lisa reviewed 2026-07) ══════════════
   { pattern: /vistaprint/i, account: "Online Advertising - Ad Spend", confidence: 0.9, reasoning: "VISTAPRINT → Online Advertising - Ad Spend (reviewed)", vendor: "Vistaprint" },
   { pattern: /indeed/i, account: "Recruiting", confidence: 0.9, reasoning: "INDEED → Recruiting (reviewed)", vendor: "Indeed" },
