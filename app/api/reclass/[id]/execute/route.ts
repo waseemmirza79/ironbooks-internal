@@ -9,6 +9,7 @@ import {
   type SupportedTxType,
 } from "@/lib/qbo-reclass";
 import { fetchAllAccounts, createAccount } from "@/lib/qbo";
+import { lookupVendor } from "@/lib/vendor-knowledge";
 import { normalizeAccountName } from "@/lib/account-name";
 import { postReclassComplete } from "@/lib/double";
 import { sendAskClientQuestions } from "@/lib/reclass-ask-client";
@@ -289,6 +290,7 @@ async function executeReclass(jobId: string, portalOrigin: string, isContinuatio
         new_account_name: string;
         reclass_row_id: string;
       }>;
+      vendor_name?: string | null;
     }
   >();
 
@@ -375,6 +377,15 @@ async function executeReclass(jobId: string, portalOrigin: string, isContinuatio
         tx_type: row.qbo_transaction_type as SupportedTxType,
         tx_id: row.qbo_transaction_id,
         lines: [],
+        // Canonical payee from the KB (e.g. "Petro-Canada") — set on the QBO
+        // transaction at write time when it has no vendor (bookkeeper ask).
+        vendor_name:
+          lookupVendor(
+            row.vendor_name || "",
+            row.description || "",
+            row.transaction_amount || 0,
+            ((clientLink as any).industry as string) || "painters"
+          )?.vendor || null,
       };
       txMap.set(key, entry);
     }
@@ -440,6 +451,7 @@ async function executeReclass(jobId: string, portalOrigin: string, isContinuatio
           txId: t.tx_id,
           lineUpdates: t.lines,
           auditMemo,
+          vendorName: t.vendor_name || null,
         }
       );
 

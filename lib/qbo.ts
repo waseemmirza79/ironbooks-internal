@@ -780,6 +780,40 @@ export async function fetchAllAccounts(realmId: string, accessToken: string): Pr
 }
 
 /**
+ * Find a QBO Vendor by display name, creating it if absent. Returns the
+ * vendor Id, or null on ANY failure — setting a payee is best-effort and
+ * must never break the reclass write that carries it. (QBO display names
+ * are unique across vendors/customers/employees, so creation can 6240 if
+ * e.g. a customer holds the name — that returns null too.)
+ */
+export async function findOrCreateVendor(
+  realmId: string,
+  accessToken: string,
+  displayName: string
+): Promise<string | null> {
+  const name = (displayName || "").trim();
+  if (!name || name.length > 60) return null;
+  try {
+    const q = encodeURIComponent(
+      `SELECT Id, DisplayName FROM Vendor WHERE DisplayName = '${name.replace(/'/g, "''")}'`
+    );
+    const found = await qboRequest<{ QueryResponse: { Vendor?: Array<{ Id: string }> } }>(
+      realmId, accessToken, `/query?query=${q}`
+    );
+    const existing = found.QueryResponse.Vendor?.[0];
+    if (existing) return existing.Id;
+    const created = await qboRequest<{ Vendor: { Id: string } }>(
+      realmId, accessToken, '/vendor?minorversion=70',
+      { method: 'POST', body: JSON.stringify({ DisplayName: name }) }
+    );
+    return created.Vendor.Id;
+  } catch (err: any) {
+    console.warn(`[qbo] findOrCreateVendor("${name}") failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Create a new account in QBO.
  * For sub-accounts, set parentRef to the parent's QBO ID.
  */
