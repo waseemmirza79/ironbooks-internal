@@ -23,6 +23,7 @@ import {
   type FullCategorizationDecision,
 } from "@/lib/claude-reclass";
 import { lookupVendor, normalizeVendorForLookup } from "@/lib/vendor-knowledge";
+import { runWebSearchAuto } from "@/lib/web-search-runner";
 import { normalizeAccountName } from "@/lib/account-name";
 import { getClientEndCloses, type DoubleEndCloseSummary } from "@/lib/double";
 
@@ -1089,9 +1090,11 @@ async function runFullCategorization(
 
   const uniqueVendors = new Set(lines.map((l) => l.vendor_name).filter(Boolean)).size;
 
-  // 8. AI done. If there are vendors that could benefit from web search, pause
-  //    at web_search_paused with the count — the bookkeeper picks "Web search"
-  //    or "Skip to manual review" from the UI. Otherwise go straight to in_review.
+  // 8. AI done. If there are vendors that could benefit from web search, run
+  //    it AUTOMATICALLY (no human gate — bulk runs have no page open to click,
+  //    and parked jobs read as "stuck"). The runner is budget-capped (10 min),
+  //    skippable from the review page within 2s, and always lands at
+  //    in_review. Otherwise go straight to in_review.
   const wsCount = uniqueWsVendors.size;
   const baseUpdate: any = {
     transactions_pulled: transactionsPulled,
@@ -1107,7 +1110,7 @@ async function runFullCategorization(
     warnings: aiResult.warnings.length > 0 ? (aiResult.warnings as any) : null,
   };
   const finalState: any = wsCount > 0
-    ? { ...baseUpdate, status: "web_search_paused", error_message: `[ws_pending] ${wsCount}` }
+    ? { ...baseUpdate, status: "executing", error_message: `[phase] web search (${wsCount} vendors)` }
     : { ...baseUpdate, status: "in_review", error_message: null };
 
   const { error: finalErr } = await service
@@ -1115,7 +1118,8 @@ async function runFullCategorization(
     .update(finalState)
     .eq("id", jobId);
   if (finalErr) throw new Error(`Final status update failed: ${finalErr.message}`);
-  console.log(`[reclass ${jobId}] DONE — moved to ${finalState.status}${wsCount > 0 ? ` (${wsCount} vendors pending web search)` : ""}`);
+  console.log(`[reclass ${jobId}] AI done${wsCount > 0 ? ` — auto-running web search (${wsCount} vendors)` : " — moved to in_review"}`);
+  if (wsCount > 0) await runWebSearchAuto(jobId);
 }
 
 // ============== CHUNKED AI CATEGORIZATION (large jobs) ==============
@@ -1251,14 +1255,15 @@ async function finalizeFullCategorization(
   };
   const finalState: any =
     wsCount > 0
-      ? { ...baseUpdate, status: "web_search_paused", error_message: `[ws_pending] ${wsCount}` }
+      ? { ...baseUpdate, status: "executing", error_message: `[phase] web search (${wsCount} vendors)` }
       : { ...baseUpdate, status: "in_review", error_message: null };
 
   const { error } = await service.from("reclass_jobs").update(finalState).eq("id", jobId);
   if (error) throw new Error(`Final status update failed: ${error.message}`);
   console.log(
-    `[reclass ${jobId}] DONE (chunked) — moved to ${finalState.status}${wsCount > 0 ? ` (${wsCount} vendors pending web search)` : ""}`
+    `[reclass ${jobId}] AI done (chunked)${wsCount > 0 ? ` — auto-running web search (${wsCount} vendors)` : " — moved to in_review"}`
   );
+  if (wsCount > 0) await runWebSearchAuto(jobId);
 }
 
 /**

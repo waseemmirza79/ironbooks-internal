@@ -339,22 +339,24 @@ export function ReclassDiscoveryPending({
     );
   }
 
-  // ── WEB SEARCH CHOICE PROMPT ───────────────────────────────────────────
-  // AI categorization just finished and there are N vendors that could benefit
-  // from web search. Bookkeeper decides: run it, or skip to manual review.
+  // ── WEB SEARCH CHOICE PROMPT (legacy) ─────────────────────────────────
+  // Discovery now auto-runs web search, so this state only appears on jobs
+  // parked before the change or after a web-search error. Never waits
+  // indefinitely: a 2-minute countdown auto-continues to manual review.
   if (status === "web_search_paused" && !wsStarting) {
     const n = wsPendingCount ?? 0;
     return (
       <div className="bg-white rounded-2xl border border-gray-100 p-8 space-y-5">
-        <div className="flex items-start gap-3 p-4 bg-teal-lighter/50 text-navy rounded-lg border border-teal/20">
-          <CheckCircle2 className="flex-shrink-0 mt-0.5 text-teal" size={20} />
+        <div className="flex items-start gap-3 p-4 bg-amber-50 text-navy rounded-lg border border-amber-200">
+          <CheckCircle2 className="flex-shrink-0 mt-0.5 text-amber-600" size={20} />
           <div>
-            <div className="font-semibold mb-1">AI categorization complete</div>
+            <div className="font-semibold mb-1">AI categorization complete — waiting on you</div>
             <div className="text-sm text-ink-slate">
               {n > 0
                 ? `There ${n === 1 ? "is" : "are"} ${n} uncategorized vendor${n === 1 ? "" : "s"} the AI couldn't confidently place. Web search can look them up online and try to upgrade them automatically.`
                 : "Some vendors couldn't be confidently categorized. Run web search to try to upgrade them, or skip to manual review."}
             </div>
+            <WsAutoContinue seconds={120} onExpire={skipWebSearch} />
           </div>
         </div>
 
@@ -697,6 +699,41 @@ export function ReclassDiscoveryPending({
         Page auto-refreshes when discovery completes. If anything goes wrong, click Cancel job
         and start a fresh one.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Countdown that auto-continues a parked web-search gate. Nobody should ever
+ * wait on a paused job (Mike, 2026-07-13: "max wait time should be like 2
+ * minutes") — after `seconds` with no click, we skip web search and land the
+ * job at in_review; the unsearched vendors just stay needs_review.
+ */
+function WsAutoContinue({ seconds, onExpire }: { seconds: number; onExpire: () => void }) {
+  const [left, setLeft] = useState(seconds);
+  const firedRef = useRef(false);
+  useEffect(() => {
+    const iv = setInterval(() => {
+      setLeft((s) => {
+        if (s <= 1) {
+          clearInterval(iv);
+          if (!firedRef.current) {
+            firedRef.current = true;
+            onExpire();
+          }
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const mm = Math.floor(left / 60);
+  const ss = String(left % 60).padStart(2, "0");
+  return (
+    <div className="text-xs font-semibold text-amber-700 mt-2">
+      No action needed — continuing to manual review automatically in {mm}:{ss}.
     </div>
   );
 }

@@ -65,12 +65,12 @@ const STARTED_STALE_MS = 45 * 60 * 1000;
 const COA_SILENT_MS = 10 * 60 * 1000;
 const COA_MIN_AGE_MS = 10 * 60 * 1000;
 
-// 6 hours of bookkeeper inactivity in `web_search_paused` → unpark the job
-// to `in_review` so the same-client concurrency guard doesn't permanently
-// block new reclass runs. The AI work is already done; this just hands
-// the row back to the bookkeeper as a normal review-ready job. Never
-// fails it — the work is real.
-const WEB_SEARCH_PAUSED_IDLE_MS = 6 * 60 * 60 * 1000;
+// 10 minutes in `web_search_paused` → unpark to `in_review`. Discovery now
+// auto-runs web search (no human gate), so this state only appears on legacy
+// jobs or after a web-search error park; nobody should ever wait on it.
+// The AI work is already done — unparking just hands the row back as a
+// normal review-ready job. Never fails it; the work is real.
+const WEB_SEARCH_PAUSED_IDLE_MS = 10 * 60 * 1000;
 
 type SweepResult = {
   coa_failed: number;
