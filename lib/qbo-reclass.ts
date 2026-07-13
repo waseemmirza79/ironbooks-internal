@@ -580,6 +580,12 @@ export async function reclassifyTransactionLines(
       line_id: string;
       new_account_id: string;
       new_account_name?: string;
+      /** STALE GUARD (vendor remediation): only apply this line if its
+       *  CURRENT QBO account still matches this name. If a bookkeeper (or
+       *  anyone) moved the line since we scanned, we skip it instead of
+       *  overwriting a human decision. Compared normalized + leaf-name
+       *  tolerant ("Parent:Child" matches "Child"). */
+      expected_current_account_name?: string | null;
     }>;
     auditMemo: string;       // appended to PrivateNote
     /** Canonical payee to set as the QBO vendor when the transaction has
@@ -591,10 +597,51 @@ export async function reclassifyTransactionLines(
   // Step 1: Refetch fresh transaction (get current SyncToken)
   const tx = await refetchTransaction(realmId, accessToken, params.txType, params.txId);
 
+  // Step 1.5: Stale guard — drop line updates whose current account no longer
+  // matches what the caller scanned. Never overwrite a human's later change.
+  const normName = (s: string | null | undefined) =>
+    (s || "").toLowerCase().replace(/[–—−]/g, "-").replace(/\s+/g, " ").trim();
+  const accountsMatch = (currentFull: string | null | undefined, expected: string): boolean => {
+    const cur = normName(currentFull);
+    const exp = normName(expected);
+    if (!cur || !exp) return false;
+    if (cur === exp) return true;
+    const curLeaf = cur.split(":").pop() || cur;
+    const expLeaf = exp.split(":").pop() || exp;
+    return curLeaf === expLeaf;
+  };
+  const staleSkipped: ReclassResult["lines_not_applied"] = [];
+  const txLineById = new Map<string, any>();
+  for (const l of (tx.Line ?? []) as any[]) if (l.Id) txLineById.set(String(l.Id), l);
+  const effectiveUpdates = params.lineUpdates.filter((u) => {
+    if (!u.expected_current_account_name) return true;
+    const line = txLineById.get(String(u.line_id));
+    const currentName = line?.AccountBasedExpenseLineDetail?.AccountRef?.name ?? null;
+    if (accountsMatch(currentName, u.expected_current_account_name)) return true;
+    staleSkipped.push({
+      line_id: u.line_id,
+      requested_account_id: String(u.new_account_id),
+      actual_account_id: line?.AccountBasedExpenseLineDetail?.AccountRef?.value != null
+        ? String(line.AccountBasedExpenseLineDetail.AccountRef.value)
+        : null,
+      reason: `stale: current account "${currentName ?? "(none)"}" no longer matches expected "${u.expected_current_account_name}" — skipped to preserve the later change`,
+    });
+    return false;
+  });
+  if (effectiveUpdates.length === 0) {
+    // Every requested line is stale — nothing to write; leave QBO untouched.
+    return {
+      tx,
+      lines_requested: params.lineUpdates.length,
+      lines_applied: 0,
+      lines_not_applied: staleSkipped,
+    };
+  }
+
   // Step 2: Mutate matching lines.
   // Build a completely clean AccountBasedExpenseLineDetail for updated lines — no fallback
   // empty-string AccountRef, no stray fields from the original that could confuse QBO.
-  const lineUpdateMap = new Map(params.lineUpdates.map((u) => [u.line_id, u]));
+  const lineUpdateMap = new Map(effectiveUpdates.map((u) => [u.line_id, u]));
   const updatedLines = (tx.Line ?? []).map((line: any) => {
     if (!line.Id) return line;
     const update = lineUpdateMap.get(line.Id);
@@ -736,8 +783,8 @@ export async function reclassifyTransactionLines(
   }
 
   let applied = 0;
-  const notApplied: ReclassResult["lines_not_applied"] = [];
-  for (const update of params.lineUpdates) {
+  const notApplied: ReclassResult["lines_not_applied"] = [...staleSkipped];
+  for (const update of effectiveUpdates) {
     const expected = String(update.new_account_id);
     const returnedLine = returnedLineMap.get(String(update.line_id));
     if (!returnedLine) {
@@ -770,7 +817,7 @@ export async function reclassifyTransactionLines(
   if (notApplied.length > 0) {
     console.warn(
       `[qbo-reclass] partial apply — ${params.txType}/${params.txId}: ` +
-      `${applied}/${params.lineUpdates.length} lines confirmed, ${notApplied.length} not applied. ` +
+      `${applied}/${effectiveUpdates.length} attempted lines confirmed (${staleSkipped.length} stale-skipped), ${notApplied.length} not applied. ` +
       `Details: ${JSON.stringify(notApplied)}`
     );
   }
@@ -784,9 +831,10 @@ export async function reclassifyTransactionLines(
   // and let the caller route the transaction to review/failed. The lines
   // that DID apply are already saved in QBO; a retry re-applies the same
   // targets (a no-op for the moved lines) and re-attempts the stragglers.
-  if (applied < params.lineUpdates.length && params.lineUpdates.length > 0) {
+  const attempted = effectiveUpdates.length;
+  if (applied < attempted && attempted > 0) {
     throw new Error(
-      `QBO accepted the update but applied only ${applied}/${params.lineUpdates.length} lines for ${params.txType}/${params.txId}. ` +
+      `QBO accepted the update but applied only ${applied}/${attempted} attempted lines for ${params.txType}/${params.txId}. ` +
       `Not applied: ${notApplied.map((n) => `${n.line_id} (${n.reason})`).join("; ")}`
     );
   }
