@@ -1,5 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
+import { buildRuleCandidates, type RuleSourceRow } from "@/lib/rules-eligibility";
 
 export async function POST(request: Request) {
   const supabase = await createServerSupabase();
@@ -23,90 +24,33 @@ export async function POST(request: Request) {
 
   const service = createServiceSupabase();
 
-  // Include every decision type that came in with a vendor + target. The
-  // page surfaces them all; the POST has to accept them all too, otherwise
-  // selected vendors silently drop out at create time.
+  // SHARED grouping + eligibility (lib/rules-eligibility.ts, D14): the exact
+  // same function the candidates page uses, so what the page shows is what
+  // this route creates — no filter drift, ever. Pull ALL rows (decision
+  // filtering lives inside the shared predicate; unknown-vendor rows group by
+  // bank description exactly like the page).
   const { data: rows } = await service
     .from("reclassifications")
     .select(
-      "vendor_name, vendor_pattern_normalized, to_account_id, to_account_name, bookkeeper_override_target_id, bookkeeper_override_target_name, transaction_amount"
+      "vendor_name, vendor_pattern_normalized, description, decision, to_account_id, to_account_name, bookkeeper_override_target_id, bookkeeper_override_target_name, transaction_amount"
     )
-    .eq("reclass_job_id", reclass_job_id)
-    .in("decision", ["auto_approve", "approved", "needs_review", "flagged", "ask_client"])
-    .not("vendor_name", "is", null);
+    .eq("reclass_job_id", reclass_job_id);
 
-  type ReclassRow = {
-    vendor_name: string | null;
-    vendor_pattern_normalized: string | null;
-    to_account_id: string;
-    to_account_name: string | null;
-    bookkeeper_override_target_id: string | null;
-    bookkeeper_override_target_name: string | null;
-    transaction_amount: number | null;
-  };
+  const { candidates } = buildRuleCandidates((rows || []) as RuleSourceRow[]);
+  const candidateByKey = new Map(candidates.map((c) => [c.vendorPattern, c]));
 
-  const groupMap = new Map<
-    string,
-    {
-      vendorDisplay: string;
-      targetCounts: Map<string, { id: string; name: string; count: number }>;
-      txCount: number;
-      totalAmount: number;
-      sampleDescriptions: string[];
-    }
-  >();
+  // Existing rules for created-vs-updated classification in the response.
+  const { data: existingPatterns } = await service
+    .from("bank_rules")
+    .select("vendor_pattern")
+    .eq("client_link_id", client_link_id);
+  const existedBefore = new Set(
+    ((existingPatterns || []) as Array<{ vendor_pattern: string | null }>)
+      .map((r) => r.vendor_pattern)
+      .filter(Boolean) as string[]
+  );
 
-  // "Unknown vendor" is QBO's own literal fallback label for e-transfers/ACH
-  // with no identifiable payee (lib/qbo-reclass.ts) — it has no real pattern
-  // to key a bank rule on and can never match actual bank-feed text. This
-  // route has no description fallback (that's the bank-rules review page's
-  // job); just skip it rather than create an unmatchable rule.
-  const UNKNOWN_VENDOR_KEYS = new Set(["unknown vendor", "unknown", ""]);
-  // "Uncategorized" is the reclass-review dropdown's "flag for senior
-  // review" sentinel, not a real QBO account — never a valid rule target.
-  function isRealTarget(name: string | null | undefined): name is string {
-    if (!name) return false;
-    const norm = name.trim().toLowerCase();
-    return norm !== "" && norm !== "uncategorized";
-  }
-
-  for (const row of (rows || []) as ReclassRow[]) {
-    const groupKey = row.vendor_pattern_normalized || row.vendor_name || "";
-    if (!groupKey) continue;
-    if (UNKNOWN_VENDOR_KEYS.has(groupKey.trim().toLowerCase())) continue;
-
-    const targetId = row.bookkeeper_override_target_id || row.to_account_id;
-    const targetName = row.bookkeeper_override_target_name || row.to_account_name;
-    if (!isRealTarget(targetName)) continue;
-
-    if (!groupMap.has(groupKey)) {
-      groupMap.set(groupKey, {
-        vendorDisplay: row.vendor_name || groupKey,
-        targetCounts: new Map(),
-        txCount: 0,
-        totalAmount: 0,
-        sampleDescriptions: [],
-      });
-    }
-
-    const group = groupMap.get(groupKey)!;
-    group.txCount += 1;
-    group.totalAmount += row.transaction_amount || 0;
-
-    if (row.vendor_name && group.sampleDescriptions.length < 3) {
-      if (!group.sampleDescriptions.includes(row.vendor_name)) {
-        group.sampleDescriptions.push(row.vendor_name);
-      }
-    }
-
-    const existing = group.targetCounts.get(targetId);
-    if (existing) {
-      existing.count += 1;
-    } else {
-      group.targetCounts.set(targetId, { id: targetId, name: targetName, count: 1 });
-    }
-  }
-
+  const skipped: Array<{ vendorPattern: string; reason: string }> = [];
   const selectedSet = new Set(selected_vendors);
   // NOTE: `pushed_to_qbo` deliberately excluded — Supabase upsert generates
   // `ON CONFLICT DO UPDATE SET col=excluded.col` for every column in the
@@ -129,25 +73,26 @@ export async function POST(request: Request) {
     created_by: string;
   }> = [];
 
-  for (const [vendorPattern, group] of groupMap.entries()) {
-    if (!selectedSet.has(vendorPattern)) continue;
+  for (const vendorPattern of selectedSet) {
+    const candidate = candidateByKey.get(vendorPattern);
+    if (!candidate) {
+      // Selected on the page but no eligible rows server-side — with the
+      // shared predicate this only happens on a stale page (rows changed
+      // since load). Named, never silent.
+      skipped.push({ vendorPattern, reason: "no eligible transactions (rejected/no-vendor rows can't become rules)" });
+      continue;
+    }
 
     // Prefer the bookkeeper's override (set in the dropdown); fall back to
-    // the most-frequent AI-picked target.
-    let bestTarget = { id: "", name: "" };
+    // the most-frequent observed real target.
     const override = overrides?.[vendorPattern];
-    if (override?.name) {
-      bestTarget = { id: override.id || "", name: override.name };
-    } else {
-      let bestCount = 0;
-      for (const t of group.targetCounts.values()) {
-        if (t.count > bestCount) {
-          bestCount = t.count;
-          bestTarget = { id: t.id, name: t.name };
-        }
-      }
+    const bestTarget = override?.name
+      ? { id: override.id || "", name: override.name }
+      : { id: candidate.targetAccountId, name: candidate.targetAccountName };
+    if (!bestTarget.name) {
+      skipped.push({ vendorPattern, reason: "no target account picked" });
+      continue;
     }
-    if (!bestTarget.name) continue;
 
     rulesToUpsert.push({
       client_link_id,
@@ -158,15 +103,15 @@ export async function POST(request: Request) {
       ai_confidence: null,
       ai_reasoning: null,
       requires_approval: false,
-      sample_descriptions: group.sampleDescriptions,
-      transaction_count: group.txCount,
-      total_amount: group.totalAmount,
+      sample_descriptions: candidate.sampleDescriptions,
+      transaction_count: candidate.txCount,
+      total_amount: candidate.totalAmount,
       created_by: user.id, // UUID — bank_rules.created_by FKs to users.id
     });
   }
 
   if (rulesToUpsert.length === 0) {
-    return NextResponse.json({ created: 0, rules: [] });
+    return NextResponse.json({ created: 0, rules: [], created_new: [], updated_existing: [], skipped, coverage: 0 });
   }
 
   const { data: upserted, error } = await service
@@ -219,9 +164,28 @@ export async function POST(request: Request) {
     } as any,
   });
 
+  // Transparency (D14): split brand-new rules from refreshed existing ones,
+  // attach per-rule coverage ("covers N transactions from this job"), and
+  // name every skipped selection with its reason — no silent drops.
+  const describe = (r: (typeof upsertedRows)[number]) => {
+    const c = candidateByKey.get(r.vendor_pattern);
+    return {
+      vendorPattern: r.vendor_pattern,
+      targetAccountName: r.target_account_name,
+      coversTransactions: c?.txCount ?? 0,
+    };
+  };
+  const createdNew = upsertedRows.filter((r) => !existedBefore.has(r.vendor_pattern)).map(describe);
+  const updatedExisting = upsertedRows.filter((r) => existedBefore.has(r.vendor_pattern)).map(describe);
+  const coverage = [...createdNew, ...updatedExisting].reduce((s, r) => s + r.coversTransactions, 0);
+
   return NextResponse.json({
     created: upsertedRows.length,
     rules: upsertedRows,
+    created_new: createdNew,
+    updated_existing: updatedExisting,
+    skipped,
+    coverage,
     pushed: idsToActivate.length,    // legacy key kept for UI compat
     activated: idsToActivate.length,
     push_failed: 0,

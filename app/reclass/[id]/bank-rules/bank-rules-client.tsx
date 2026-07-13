@@ -42,6 +42,10 @@ interface Props {
   clientLinkId: string;
   clientName: string;
   proposedRules: ProposedRule[];
+  /** Row counts that can never become rules, by reason (shared predicate —
+   *  lib/rules-eligibility.ts). Shown as a collapsed "why" panel so the
+   *  vendor-consolidated list reads as consolidation, not loss. */
+  excluded: { rejected: number; no_vendor: number };
   availableAccounts: AvailableAccount[];
   /** The cleanup's date range (from the reclass job). Used to ask QBO
    *  whether there are any Stripe-tagged deposits in that window — if
@@ -56,6 +60,7 @@ export function BankRulesFromReclassClient({
   clientLinkId,
   clientName,
   proposedRules,
+  excluded,
   availableAccounts,
   cleanupRangeStart,
   cleanupRangeEnd,
@@ -88,6 +93,15 @@ export function BankRulesFromReclassClient({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [created, setCreated] = useState<number | null>(null);
+  // D14 transparency: created-vs-updated split, per-rule coverage, and named
+  // skip reasons from the POST — drives the "5 rules covering 46
+  // transactions · 0 skipped" summary.
+  const [outcome, setOutcome] = useState<{
+    createdNew: Array<{ vendorPattern: string; coversTransactions: number }>;
+    updatedExisting: Array<{ vendorPattern: string; coversTransactions: number }>;
+    skipped: Array<{ vendorPattern: string; reason: string }>;
+    coverage: number;
+  } | null>(null);
   // QBO push outcome — populated after a real create (not a skip). Drives
   // the "X of Y pushed to QBO" copy on the success screen and surfaces any
   // per-rule push errors so the bookkeeper isn't blind to a silent partial.
@@ -258,6 +272,12 @@ export function BankRulesFromReclassClient({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to create bank rules");
       setCreated(data.created);
+      setOutcome({
+        createdNew: Array.isArray(data.created_new) ? data.created_new : [],
+        updatedExisting: Array.isArray(data.updated_existing) ? data.updated_existing : [],
+        skipped: Array.isArray(data.skipped) ? data.skipped : [],
+        coverage: typeof data.coverage === "number" ? data.coverage : 0,
+      });
       // The endpoint pushes to QBO inline now. Capture the outcome so the
       // success screen tells the truth — anything else and we repeat the
       // LT Woodworks confusion where rules were "created" but never landed.
@@ -443,6 +463,32 @@ export function BankRulesFromReclassClient({
             : "SNAP's daily-recon engine applies these rules to new transactions and posts the categorization to QBO automatically. (QBO's public API doesn't support creating bank rules — see the download below to add them to QBO's native Rules tab too.)"}
         </p>
 
+        {/* Coverage math (D14): rules ↔ transactions, so vendor consolidation
+            reads as consolidation, not loss. */}
+        {!skipped && outcome && (
+          <div className="max-w-md mx-auto text-sm text-navy font-semibold">
+            {outcome.createdNew.length} new rule{outcome.createdNew.length === 1 ? "" : "s"}
+            {outcome.updatedExisting.length > 0 && <> ({outcome.updatedExisting.length} existing refreshed)</>}
+            {" "}covering {outcome.coverage} transaction{outcome.coverage === 1 ? "" : "s"} from this job
+            {" "}· {outcome.skipped.length} skipped
+          </div>
+        )}
+        {!skipped && outcome && outcome.skipped.length > 0 && (
+          <div className="max-w-md mx-auto bg-amber-50 border border-amber-200 rounded-lg p-3 text-left">
+            <div className="text-xs font-bold text-amber-800 mb-1">
+              Skipped ({outcome.skipped.length}) — why
+            </div>
+            <ul className="text-[11px] text-amber-800 space-y-0.5 max-h-32 overflow-auto">
+              {outcome.skipped.slice(0, 10).map((s, i) => (
+                <li key={i} className="leading-snug">• {s.vendorPattern}: {s.reason}</li>
+              ))}
+              {outcome.skipped.length > 10 && (
+                <li className="italic">…{outcome.skipped.length - 10} more</li>
+              )}
+            </ul>
+          </div>
+        )}
+
         {pushErrors.length > 0 && (
           <div className="max-w-md mx-auto bg-red-50 border border-red-200 rounded-lg p-3 text-left">
             <div className="text-xs font-bold text-red-800 mb-1">
@@ -537,6 +583,32 @@ export function BankRulesFromReclassClient({
             )}
           </p>
         </div>
+
+        {/* Rows that can NEVER become rules — shown with reasons (D14) so the
+            vendor-consolidated candidate list reads as consolidation, not
+            "it lost my rules". Same predicate the create endpoint uses. */}
+        {excluded.rejected + excluded.no_vendor > 0 && (
+          <details className="mt-3">
+            <summary className="text-xs font-semibold text-ink-slate cursor-pointer hover:text-navy">
+              {excluded.rejected + excluded.no_vendor} transaction
+              {excluded.rejected + excluded.no_vendor === 1 ? "" : "s"} can&apos;t become rules — why
+            </summary>
+            <ul className="mt-2 text-xs text-ink-slate space-y-1 pl-4">
+              {excluded.no_vendor > 0 && (
+                <li>
+                  • <strong>{excluded.no_vendor}</strong> ha{excluded.no_vendor === 1 ? "s" : "ve"} no
+                  vendor name and no bank description — nothing to pattern-match a rule on.
+                </li>
+              )}
+              {excluded.rejected > 0 && (
+                <li>
+                  • <strong>{excluded.rejected}</strong> {excluded.rejected === 1 ? "was" : "were"} rejected
+                  during review — a rejected mapping is never turned into a rule.
+                </li>
+              )}
+            </ul>
+          </details>
+        )}
       </div>
 
       <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">

@@ -4,6 +4,7 @@ import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { fetchAllAccounts, getValidToken, QBOReauthRequiredError } from "@/lib/qbo";
 import { redirect } from "next/navigation";
+import { buildRuleCandidates, type RuleSourceRow } from "@/lib/rules-eligibility";
 import { BankRulesFromReclassClient } from "./bank-rules-client";
 
 export default async function BankRulesFromReclassPage({
@@ -142,108 +143,12 @@ export default async function BankRulesFromReclassPage({
     )
     .eq("reclass_job_id", id);
 
-  type ReclassRow = {
-    vendor_name: string | null;
-    vendor_pattern_normalized: string | null;
-    description: string | null;
-    to_account_id: string;
-    to_account_name: string | null;
-    bookkeeper_override_target_id: string | null;
-    bookkeeper_override_target_name: string | null;
-    transaction_amount: number | null;
-    decision: string;
-  };
-
-  // QBO emits e-transfers, ACH withdrawals, and cash-app transactions
-  // with vendor_name = "Unknown vendor" (literal). When 200+ rows share
-  // that one vendor name, the description field — which holds the
-  // actual bank-feed descriptor (e.g. "MENARDS #3014", "ACE HW DENVER")
-  // — is the only thing distinguishing them.
-  function isUnknownVendor(v: string | null | undefined): boolean {
-    if (!v) return true;
-    const norm = v.trim().toLowerCase();
-    return norm === "" || norm === "unknown vendor" || norm === "unknown";
-  }
-
-  // "Uncategorized" is the reclass-review dropdown's pinned "flag for senior
-  // review" action (MasterAccountSelect), not a real QBO account — a row
-  // whose only target is that sentinel has NO confident categorization and
-  // must never count as one here (was silently treated as a valid target,
-  // pre-ticking rows that actually need a human to pick a real account).
-  function isRealTarget(name: string | null | undefined): name is string {
-    if (!name) return false;
-    const norm = name.trim().toLowerCase();
-    return norm !== "" && norm !== "uncategorized";
-  }
-
-  const groupMap = new Map<
-    string,
-    {
-      vendorDisplay: string;
-      targetCounts: Map<string, { id: string; name: string; count: number }>;
-      txCount: number;
-      totalAmount: number;
-    }
-  >();
-
-  for (const row of (rows || []) as ReclassRow[]) {
-    // Fallback to description when vendor_name is the generic "Unknown
-    // vendor" — pulls the bank descriptor out so each unique payee
-    // (whatever QBO mis-attributed as unknown) becomes its own rule
-    // candidate instead of all collapsing into one row.
-    const unknownVendor = isUnknownVendor(row.vendor_name);
-    const descriptionKey = (row.description || "").trim();
-
-    // No real vendor AND no description to fall back on — there's no usable
-    // pattern to build a rule from (matches this page's own stated intent:
-    // "without a vendor name there's no pattern to build a rule from"). This
-    // previously fell through to the `else` branch below and grouped every
-    // such row under the literal sentinel "Unknown vendor" / "UNKNOWN
-    // VENDOR" — a bogus rule keyed on QBO's own fallback LABEL text, which
-    // can never match real bank-feed text.
-    if (unknownVendor && !descriptionKey) continue;
-
-    let groupKey: string;
-    let vendorDisplay: string;
-    if (unknownVendor && descriptionKey) {
-      // Uppercase + collapsed-whitespace normalization mirrors how QBO
-      // surfaces the descriptor in incoming bank feeds — keeps case
-      // variations from splintering the same payee.
-      groupKey = descriptionKey.toUpperCase().replace(/\s+/g, " ");
-      vendorDisplay = descriptionKey;
-    } else {
-      groupKey = row.vendor_pattern_normalized || row.vendor_name || "";
-      vendorDisplay = row.vendor_name || groupKey;
-    }
-    if (!groupKey) continue;
-
-    if (!groupMap.has(groupKey)) {
-      groupMap.set(groupKey, {
-        vendorDisplay,
-        targetCounts: new Map(),
-        txCount: 0,
-        totalAmount: 0,
-      });
-    }
-
-    const group = groupMap.get(groupKey)!;
-    group.txCount += 1;
-    group.totalAmount += row.transaction_amount || 0;
-
-    // Count this row's target only when one exists — but still count the
-    // tx itself. Groups with zero target observations still surface in
-    // proposedRules with an empty target so the bookkeeper can fill it in.
-    const targetId = row.bookkeeper_override_target_id || row.to_account_id;
-    const targetName = row.bookkeeper_override_target_name || row.to_account_name;
-    if (isRealTarget(targetName)) {
-      const existing = group.targetCounts.get(targetId);
-      if (existing) {
-        existing.count += 1;
-      } else {
-        group.targetCounts.set(targetId, { id: targetId, name: targetName, count: 1 });
-      }
-    }
-  }
+  // SHARED grouping + eligibility (lib/rules-eligibility.ts, D14) — the same
+  // function the POST route uses, so what this page shows is exactly what
+  // creating will do: unknown-vendor rows group by bank description, `skip`
+  // (already-correct) rows count as proven-right rule seeds, `rejected` and
+  // no-vendor/no-description rows are excluded WITH visible counts.
+  const { candidates, excluded } = buildRuleCandidates((rows || []) as RuleSourceRow[]);
 
   // Pull existing bank rules for this client so we can exclude vendors that
   // already have a rule pushed to QBO — no point re-creating the same rule.
@@ -278,27 +183,17 @@ export default async function BankRulesFromReclassPage({
   //   1. Targeted + not in QBO yet  (the primary action)
   //   2. No target yet              (needs bookkeeper attention)
   //   3. Already in QBO              (reference / re-create if needed)
-  const proposedRules = Array.from(groupMap.entries())
-    .map(([vendorPattern, group]) => {
-      let bestTarget = { id: "", name: "" };
-      let bestCount = 0;
-      for (const t of group.targetCounts.values()) {
-        if (t.count > bestCount) {
-          bestCount = t.count;
-          bestTarget = { id: t.id, name: t.name };
-        }
-      }
-      return {
-        vendorPattern,
-        vendorDisplay: group.vendorDisplay,
-        targetAccountId: bestTarget.id, // "" when no AI pick
-        targetAccountName: bestTarget.name, // "" when no AI pick
-        txCount: group.txCount,
-        totalAmount: group.totalAmount,
-        hasTarget: !!bestTarget.name,
-        alreadyInQbo: alreadyInQbo.has(normalizePattern(vendorPattern)),
-      };
-    })
+  const proposedRules = candidates
+    .map((c) => ({
+      vendorPattern: c.vendorPattern,
+      vendorDisplay: c.vendorDisplay,
+      targetAccountId: c.targetAccountId, // "" when no AI pick
+      targetAccountName: c.targetAccountName, // "" when no AI pick
+      txCount: c.txCount,
+      totalAmount: c.totalAmount,
+      hasTarget: c.hasTarget,
+      alreadyInQbo: alreadyInQbo.has(normalizePattern(c.vendorPattern)),
+    }))
     .sort((a, b) => {
       // Group order: ready → needs target → already in QBO
       const rank = (r: typeof a) => (r.alreadyInQbo ? 2 : r.hasTarget ? 0 : 1);
@@ -364,6 +259,7 @@ export default async function BankRulesFromReclassPage({
           clientLinkId={job.client_link_id}
           clientName={clientName}
           proposedRules={proposedRules}
+          excluded={excluded}
           availableAccounts={availableAccountsForDropdown}
           cleanupRangeStart={(job as any).date_range_start || null}
           cleanupRangeEnd={(job as any).date_range_end || null}
