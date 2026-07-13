@@ -39,8 +39,40 @@ ok(acct("GOOGLE *YOUTUBE", 14) !== "Online Advertising - Ad Spend", "GOOGLE *YOU
 ok(acct("FACEBOOK MARKETPLACE", 60) !== "Online Advertising - Ad Spend", "FB Marketplace excluded from ads fallback");
 ok(acct("META QUEST STORE", 500) !== "Online Advertising - Ad Spend", "Meta Quest excluded from ads fallback");
 
+// ── Reviewed-KB rebuild: recategorizations (2026-07) ──
+// groceries → Meals 50% (was Employee Benefits / Job Supplies)
+ok(acct("SOBEYS #1123", 40) === "Meals (50% deductible)", "Sobeys → Meals");
+ok(acct("CO-OP FOOD STORE", 55) === "Meals (50% deductible)", "Co-op Food → Meals");
+ok(acct("SAFEWAY #4410", 30) === "Meals (50% deductible)", "Safeway → Meals (was Job Supplies)");
+ok(acct("SAVE ON FOODS", 25) === "Meals (50% deductible)", "Save-On-Foods → Meals");
+// telecom → Utilities (was Software Subscriptions); hyphen-safe
+ok(acct("T-MOBILE WEB PAYMENT", 90) === "Utilities", "T-Mobile → Utilities (hyphen)");
+ok(acct("COMCAST XFINITY", 120) === "Utilities", "Comcast → Utilities");
+ok(acct("FIDO MOBILE", 65) === "Utilities", "Fido → Utilities");
+ok(acct("XFINITY MOBILE", 70) === "Utilities", "Xfinity Mobile → Utilities");
+// drugstores → Office Supplies (was Job Supplies)
+ok(acct("CVS/PHARMACY 8842", 18) === "Office Supplies", "CVS → Office Supplies");
+ok(acct("SHOPPERS DRUG MART", 22) === "Office Supplies", "Shoppers → Office Supplies");
+// field-service software → Software Subscriptions (was Marketing Tools)
+ok(acct("JOBBER GETJOBBER.COM", 99) === "Software Subscriptions", "Jobber → Software");
+ok(acct("BUILDERTREND", 199) === "Software Subscriptions", "BuilderTrend → Software");
+ok(acct("SERVICETITAN INC", 350) === "Software Subscriptions", "ServiceTitan → Software");
+// EZ Pass → Tolls; PlayStation → Owner's Draw
+ok(acct("EZ PASS REBILL", 40) === "Tolls", "EZ Pass → Tolls (was Permit Fees)");
+ok(acct("PLAYSTATION NETWORK", 17) === "Owner's Draw", "PlayStation → Owner's Draw (was Software)");
+// split bundles resolve to their own vendors, same account
+ok(acct("SLACK T12345", 12) === "Software Subscriptions", "Slack → Software (split)");
+ok(acct("FEDEX 774120", 45) === "Postage & Delivery", "FedEx → Postage (split)");
+ok(acct("PUROLATOR", 30) === "Postage & Delivery", "Purolator → Postage (split)");
+ok(lookupVendor("OPENAI CHATGPT SUBSCR", "", 20, "painters")?.vendor === "OpenAI", "OpenAI split names correctly");
+// bank fees: explicit "fee" wording is Bank Charges at ANY amount; bare e-transfer is not
+ok(acct("INTERAC E-TRANSFER FEE", 50) === "Bank Charges", "e-transfer FEE at $50 → Bank Charges (no amount gate)");
+ok(acct("SEND E-TFR FEE", 500) === "Bank Charges", "e-tfr FEE at $500 → Bank Charges");
+ok(acct("E-TRANSFER TO JOHN", 500) !== "Bank Charges", "bare $500 e-transfer is NOT a bank fee");
+
 // ── Sanity: nothing above broke ──
-ok(acct("SHERWIN WILLIAMS 703581", 214) === "Job Supplies & Materials", "Sherwin-Williams intact");
+ok(acct("SHERWIN WILLIAMS 703581", 214) === "Job Supplies & Materials", "Sherwin-Williams intact (painters)");
+ok(lookupVendor("SHERWIN WILLIAMS 703581", "", 214, "plumbers")?.account == null, "Sherwin painter-scoped: no match for non-painter industry");
 ok(acct("TIM HORTONS #3320", 8) === "Meals (50% deductible)", "Tim Hortons intact");
 
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
