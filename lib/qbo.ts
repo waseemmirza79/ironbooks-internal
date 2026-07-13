@@ -45,6 +45,8 @@ export interface QBOAccount {
   ParentRef?: { value: string; name?: string };
   CurrentBalance: number;
   CurrentBalanceWithSubAccounts: number;
+  /** Bank/CC account number as entered in QBO — often carries the last 4. */
+  AcctNum?: string;
   CurrencyRef: { value: string; name?: string };
   Description?: string;
   TaxCodeRef?: { value: string };
