@@ -159,7 +159,8 @@ export async function POST(
         accessToken,
         a.Id,
         startDate,
-        endDate
+        endDate,
+        a.Name
       );
       accountsByPayroll.push({
         account_id: a.Id,

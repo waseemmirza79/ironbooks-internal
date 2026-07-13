@@ -73,7 +73,8 @@ export async function runMonthlyRecChecks(
       accessToken,
       a.Id,
       periodStart,
-      periodEnd
+      periodEnd,
+      a.Name
     );
     uncatCount += txns.length;
     uncatAmount += txns.reduce((s, t) => s + Math.abs(Number(t.amount || 0)), 0);

@@ -247,9 +247,18 @@ export async function fetchAccountTransactions(
   accessToken: string,
   qboAccountId: string,
   startDate: string,
-  endDate: string
+  endDate: string,
+  /** Account name for the post-filter fallback when QBO omits row-level
+   *  account ids. Pass it whenever you have it. */
+  accountName?: string
 ): Promise<AccountTransaction[]> {
-  const url = `/reports/TransactionList?account=${encodeURIComponent(qboAccountId)}&start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&columns=tx_date,txn_type,doc_num,name,memo,subt_nat_amount,subt_nat_home_amount,is_cleared&minorversion=70`;
+  // CRITICAL: QBO SILENTLY IGNORES the `account=` param on TransactionList —
+  // it returns EVERY transaction in the period regardless (verified live on
+  // XPaint 2026-07-13: identical 3,271 rows for four different account ids;
+  // earlier caused 3× inflated uncategorized counts). We still send it in
+  // case Intuit ever fixes it, but the real filter is ours: request the
+  // account_name column and keep only rows actually in the target account.
+  const url = `/reports/TransactionList?account=${encodeURIComponent(qboAccountId)}&start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&columns=tx_date,txn_type,doc_num,name,memo,account_name,subt_nat_amount,subt_nat_home_amount,is_cleared&minorversion=70`;
   let data: any;
   try {
     data = await qboRequest<any>(realmId, accessToken, url);
@@ -272,6 +281,29 @@ export async function fetchAccountTransactions(
     return null;
   }
 
+  // Locate the account column for the post-filter. If QBO didn't return it,
+  // we can't distinguish rows — warn loudly and return everything (the old,
+  // inflated behavior) rather than silently returning nothing.
+  const accountColIdx =
+    colIndex.get("account") ?? colIndex.get("account_name") ?? colIndex.get("account name") ?? null;
+  if (accountColIdx === null) {
+    console.warn(
+      `[qbo-balance-sheet] TransactionList returned no Account column — cannot post-filter to account ${qboAccountId}; counts may be inflated`
+    );
+  }
+  const wantName = (accountName || "").toLowerCase().replace(/[–—−]/g, "-").replace(/\s+/g, " ").trim();
+  const rowInAccount = (colData: any[]): boolean => {
+    if (accountColIdx === null) return true; // no column — can't filter
+    const cell = colData[accountColIdx];
+    if (cell?.id != null) return String(cell.id) === String(qboAccountId);
+    const cellName = String(cell?.value || "").toLowerCase().replace(/[–—−]/g, "-").replace(/\s+/g, " ").trim();
+    if (!cellName) return false;
+    if (!wantName) return false; // id absent and no name to compare — exclude (never inflate)
+    if (cellName === wantName) return true;
+    // sub-accounts come back fully qualified ("Parent:Child")
+    return cellName.split(":").pop() === wantName.split(":").pop();
+  };
+
   const out: AccountTransaction[] = [];
   function walk(node: any) {
     if (!node) return;
@@ -280,6 +312,11 @@ export async function fetchAccountTransactions(
       return;
     }
     if (node.type === "Data" && node.ColData) {
+      if (!rowInAccount(node.ColData)) {
+        if (node.Row) walk(node.Row);
+        if (node.Rows) walk(node.Rows);
+        return;
+      }
       const row = node.ColData.map((c: any) => c?.value ?? "");
       const idRef = node.ColData.find((c: any) => c?.id);
       const dateVal = pick(row, ["Date", "tx_date"]);
