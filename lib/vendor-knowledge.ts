@@ -83,7 +83,7 @@ const PATTERNS: VendorPattern[] = [
   { pattern: /\bwawa\b/i, account: "Fuel – Overhead", confidence: 0.9, reasoning: "Wawa → Fuel – Overhead", vendor: "Wawa" },
   { pattern: /dulux\s+paints|\bdulux\b/i, account: "Job Supplies & Materials", confidence: 0.9, reasoning: "Dulux Paints → Job Supplies & Materials", vendor: "Dulux Paints" },
   { pattern: /kwik\s+trip/i, account: "Fuel – Overhead", confidence: 0.9, reasoning: "Kwik Trip → Fuel – Overhead", vendor: "Kwik Trip" },
-  { pattern: /quickbooks\s+payroll/i, account: "Payroll Expenses", confidence: 0.9, reasoning: "Payroll Expenses (keyword match)" },
+  { pattern: /(intuit|qb|quickbooks).{0,12}payroll|payroll.{0,8}intuit/i, account: "Payroll Expenses", confidence: 0.93, reasoning: "Intuit/QuickBooks Payroll service fee → Payroll Expenses", vendor: "Intuit Payroll" },
   { pattern: /uber\s+eats/i, account: "Meals (50% deductible)", confidence: 0.9, reasoning: "Uber Eats → Meals (50% deductible)", vendor: "Uber Eats" },
   { pattern: /stop\s+shop/i, account: "Meals (50% deductible)", confidence: 0.9, reasoning: "Stop & Shop → Meals (50% deductible)", vendor: "Stop & Shop" },
   { pattern: /\bpaychex\b|paychex\s+taxes|paychex\s+flexperks/i, account: "Payroll Expenses", confidence: 0.9, reasoning: "Payroll Expenses (keyword match)" },
@@ -283,7 +283,14 @@ const PATTERNS: VendorPattern[] = [
   { pattern: /\bangi\b/i, account: "Online Advertising - Ad Spend", confidence: 0.93, reasoning: "Angi → Online Advertising - Ad Spend", vendor: "Angi" },
   { pattern: /home\s*advisor/i, account: "Online Advertising - Ad Spend", confidence: 0.93, reasoning: "HomeAdvisor → Online Advertising - Ad Spend", vendor: "HomeAdvisor" },
   { pattern: /\bhouzz\b/i, account: "Online Advertising - Ad Spend", confidence: 0.93, reasoning: "Houzz → Online Advertising - Ad Spend", vendor: "Houzz" },
-  { pattern: /\bquickbooks\b|\bintuit\b/i, account: "Software Subscriptions", confidence: 0.97, reasoning: "Intuit → Software Subscriptions", vendor: "Intuit" },
+  // Intuit sells three different things — the descriptor usually says which:
+  // payments/merch = processing fees (Bank Charges); payroll handled above;
+  // explicit QBooks/QBO = the software sub. A BARE "INTUIT" with no product
+  // qualifier stays at 0.85 — below the 0.90 auto floor — so it queues for a
+  // human instead of guessing.
+  { pattern: /intuit.{0,12}(pymt|paymt|payment|merch)|quickbooks\s+payments?\b|\bqb\s*pmts?\b/i, account: "Bank Charges", confidence: 0.93, reasoning: "QuickBooks Payments processing fees → Bank Charges", vendor: "Intuit Payments" },
+  { pattern: /intuit.{0,8}(qbooks|quickbooks|\bqbo\b)|quickbooks\s+online|\bqbooks\b/i, account: "Software Subscriptions", confidence: 0.95, reasoning: "QuickBooks Online subscription → Software Subscriptions", vendor: "Intuit" },
+  { pattern: /\bquickbooks\b|\bintuit\b/i, account: "Software Subscriptions", confidence: 0.85, reasoning: "Bare Intuit charge — could be subscription, payroll fee, or processing fee; queued for review", vendor: "Intuit" },
   { pattern: /\bxero\b/i, account: "Software Subscriptions", confidence: 0.97, reasoning: "Xero → Software Subscriptions", vendor: "Xero" },
   { pattern: /microsoft|office\s+365|\bms365\b/i, account: "Software Subscriptions", confidence: 0.95, reasoning: "Microsoft → Software Subscriptions", vendor: "Microsoft" },
   { pattern: /\badobe\b/i, account: "Software Subscriptions", confidence: 0.93, reasoning: "Adobe → Software Subscriptions", vendor: "Adobe" },

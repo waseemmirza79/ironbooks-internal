@@ -88,6 +88,16 @@ ok(acct("HEADPHONES ADAPTER USB", 25) !== "Payroll Expenses", "hEADPhones does n
 ok(acct("CANVAS PRINTING CO", 60) !== "Software Subscriptions", "CANVAs does not match Canva");
 ok(acct("TARGETED MARKETING LLC", 200) !== "Office Supplies", "TARGETed does not match Target");
 
+// ── Intuit product differentiation (2026-07-13) ──
+ok(acct("INTUIT *QB PAYROLL FEE", 175) === "Payroll Expenses", "Intuit payroll fee → Payroll Expenses");
+ok(acct("QUICKBOOKS PAYROLL", 179) === "Payroll Expenses", "QuickBooks Payroll → Payroll Expenses");
+ok(acct("INTUIT PYMT SOLN TRAN FEE", 28) === "Bank Charges", "Intuit payment processing → Bank Charges");
+ok(acct("QUICKBOOKS PAYMENTS", 42) === "Bank Charges", "QuickBooks Payments → Bank Charges");
+ok(acct("INTUIT *QBooks Online", 90) === "Software Subscriptions", "QBooks Online → Software sub");
+ok(conf("INTUIT *QBooks Online", 90)! >= 0.95, "explicit QBO sub is high confidence");
+ok(acct("INTUIT", 179) === "Software Subscriptions", "bare INTUIT falls back to Software");
+ok(conf("INTUIT", 179)! < 0.90, "bare INTUIT stays below auto floor — queues for review");
+
 // ── Sanity: nothing above broke ──
 ok(acct("SHERWIN WILLIAMS 703581", 214) === "Job Supplies & Materials", "Sherwin-Williams intact (painters)");
 ok(lookupVendor("SHERWIN WILLIAMS 703581", "", 214, "plumbers")?.account == null, "Sherwin painter-scoped: no match for non-painter industry");
