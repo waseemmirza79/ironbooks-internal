@@ -45,7 +45,7 @@ export async function POST() {
   if (pendErr) return NextResponse.json({ error: `queue read failed: ${pendErr.message}` }, { status: 500 });
   const { data: clientRows, error: clErr } = await service
     .from("client_links")
-    .select("id, client_name, qbo_realm_id, industry, auto_approve_threshold, is_active")
+    .select("id, client_name, qbo_realm_id, industry, is_active")
     .eq("is_active", true);
   if (clErr) return NextResponse.json({ error: `clients read failed: ${clErr.message}` }, { status: 500 });
   const clientById = new Map((clientRows || []).map((c: any) => [c.id, c]));
@@ -62,7 +62,9 @@ export async function POST() {
   for (const [clientId, items] of byClient) {
     if (Date.now() - start > BUDGET_MS) { summary.remaining += items.length; continue; }
     const link = items[0].client_links;
-    const threshold = link.auto_approve_threshold || 500;
+    // auto_approve_threshold lives on reclass_jobs, NOT client_links — the
+    // daily engine uses the same $500 default (lib/daily-recon.ts).
+    const threshold = 500;
     let accessToken: string, accounts: any[], closingDate: string | null;
     try {
       accessToken = await getValidToken(clientId, service as any);
