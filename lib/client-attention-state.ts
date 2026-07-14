@@ -35,11 +35,14 @@ export interface AttentionState {
   bs_owed: boolean;
   disconnected: boolean;
   stuck_job: boolean;
+  /** Daily-review queue falling behind: items pending >48h, or >25 pending
+   *  total (Mike's SLA, 2026-07-13). Auto-escalates to the senior view. */
+  stale_queue: { pending: number; over_sla: number; oldest_days: number } | null;
 }
 
 function hasAttention(a: AttentionState | undefined | null): boolean {
   if (!a) return false;
-  return a.escalations.length > 0 || !!a.billing || a.bs_owed || a.disconnected || a.stuck_job;
+  return a.escalations.length > 0 || !!a.billing || a.bs_owed || a.disconnected || a.stuck_job || !!a.stale_queue;
 }
 
 /** Escalation SLA aging window (3 days): shared by board badges and the strips. */
@@ -113,7 +116,7 @@ export async function getAttentionMap(
   const ensure = (id: string) => {
     let a = map.get(id);
     if (!a) {
-      a = { escalations: [], billing: null, bs_owed: false, disconnected: false, stuck_job: false };
+      a = { escalations: [], billing: null, bs_owed: false, disconnected: false, stuck_job: false, stale_queue: null };
       map.set(id, a);
     }
     return a;
@@ -144,6 +147,33 @@ export async function getAttentionMap(
       : unbilledIds.has(c.id)
       ? "unbilled"
       : null;
+  }
+
+  // Daily-review queue SLA: pending items older than 48h, or >25 pending per
+  // client, flag the client for the senior. One query, aggregated in memory.
+  const { data: queueRows } = await (service as any)
+    .from("daily_review_queue")
+    .select("client_link_id, created_at")
+    .eq("decision", "pending")
+    .limit(10000);
+  const SLA_MS = 48 * 60 * 60 * 1000;
+  const qAgg = new Map<string, { pending: number; over: number; oldest: number }>();
+  for (const q of (queueRows || []) as any[]) {
+    const g = qAgg.get(q.client_link_id) || { pending: 0, over: 0, oldest: 0 };
+    g.pending++;
+    const age = now - new Date(q.created_at).getTime();
+    if (age > SLA_MS) g.over++;
+    if (age > g.oldest) g.oldest = age;
+    qAgg.set(q.client_link_id, g);
+  }
+  for (const [cid, g] of qAgg) {
+    if (g.over > 0 || g.pending > 25) {
+      ensure(cid).stale_queue = {
+        pending: g.pending,
+        over_sla: g.over,
+        oldest_days: Math.floor(g.oldest / 86400000),
+      };
+    }
   }
 
   return map;

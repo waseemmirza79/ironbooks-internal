@@ -31,7 +31,7 @@ export interface MonthlyRecCheck {
   count?: number;
   amount?: number;
   /** Which in-app tool fixes this — the UI maps it to a link. */
-  fix?: "reclass" | "uf_audit" | "ar" | "profile" | "connections";
+  fix?: "reclass" | "uf_audit" | "ar" | "profile" | "connections" | "daily_queue" | "statements";
 }
 
 export interface MonthlyRecResult {
@@ -48,10 +48,15 @@ export async function runMonthlyRecChecks(
   accessToken: string,
   periodStart: string, // YYYY-MM-DD
   periodEnd: string, // YYYY-MM-DD
-  opts?: { includeBS?: boolean } // false = P&L-only client (BS toggle off)
+  opts?: { includeBS?: boolean; extraChecks?: MonthlyRecCheck[] } // includeBS false = P&L-only client
 ): Promise<MonthlyRecResult> {
   const includeBS = opts?.includeBS !== false;
   const checks: MonthlyRecCheck[] = [];
+
+  // ── 0. Prebuilt "green light" checks from the caller (daily queue clear +
+  //    statements reconciled). Built in the API route — this lib stays free of
+  //    the server-only supabase import so client bundles can use its types.
+  if (opts?.extraChecks?.length) checks.push(...opts.extraChecks);
 
   const [accounts, openInvoices] = await Promise.all([
     fetchAllAccounts(realmId, accessToken),

@@ -126,12 +126,57 @@ export async function POST(
   if (action === "run") {
     try {
       const accessToken = await getValidToken(clientLinkId, service as any);
+
+      // Green lights (Mike, 2026-07-13): daily queue clear + statements
+      // reconciled — the two checks that make month-end a glance.
+      const extraChecks: import("@/lib/monthly-rec").MonthlyRecCheck[] = [];
+      {
+        const { count: qPending } = await (service as any)
+          .from("daily_review_queue")
+          .select("*", { count: "exact", head: true })
+          .eq("client_link_id", clientLinkId)
+          .eq("decision", "pending");
+        extraChecks.push({
+          key: "daily_queue_clear",
+          label: "Daily review queue",
+          status: !qPending ? "pass" : qPending <= 5 ? "warn" : "fail",
+          detail: !qPending
+            ? "Queue is clear — every daily transaction handled"
+            : `${qPending} transaction${qPending === 1 ? "" : "s"} still waiting in the daily review queue`,
+          count: qPending || 0,
+          amount: 0,
+          fix: qPending ? "daily_queue" : undefined,
+        });
+        const { data: stmts } = await (service as any)
+          .from("client_statements")
+          .select("recon_status, recon_variance, matched_account_name, statement_end_date")
+          .eq("client_link_id", clientLinkId)
+          .gte("statement_end_date", periodStart)
+          .lte("statement_end_date", periodEnd);
+        const variances = (stmts || []).filter((x: any) => x.recon_status === "variance");
+        const reconciled = (stmts || []).filter((x: any) => x.recon_status === "reconciled");
+        extraChecks.push({
+          key: "statements_reconciled",
+          label: "Statement reconciliation",
+          status: variances.length > 0 ? "fail" : reconciled.length > 0 ? "pass" : "warn",
+          detail: variances.length > 0
+            ? `${variances.length} statement${variances.length === 1 ? "" : "s"} don't tie out: ` +
+              variances.slice(0, 3).map((v: any) => `${v.matched_account_name || "?"} off by $${Number(v.recon_variance ?? 0).toFixed(2)}`).join("; ")
+            : reconciled.length > 0
+            ? `${reconciled.length} statement${reconciled.length === 1 ? "" : "s"} match QuickBooks (within $5)`
+            : "No reconciled statements on file for this month yet — check the client's statement requests",
+          count: variances.length,
+          amount: variances.reduce((s2: number, v: any) => s2 + Math.abs(Number(v.recon_variance ?? 0)), 0),
+          fix: variances.length > 0 ? "statements" : undefined,
+        });
+      }
+
       const result = await runMonthlyRecChecks(
         (client as any).qbo_realm_id,
         accessToken,
         periodStart,
         periodEnd,
-        { includeBS }
+        { includeBS, extraChecks }
       );
       const { data: run, error } = await (service as any)
         .from("monthly_rec_runs")

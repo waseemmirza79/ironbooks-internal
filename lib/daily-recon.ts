@@ -45,9 +45,18 @@ import { normalizeAccountName } from "./account-name";
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
-const AUTO_EXECUTE_CONFIDENCE = 0.95;
+// 0.90, not 0.95 (Mike, 2026-07-13): every rule ≥0.90 is either one of the 82
+// human-reviewed fleet vendors (loaded at 0.9), a grocery recat (0.92), or a
+// long-standing exact-brand match. The 0.95 floor queued ~98% of daily volume
+// for humans (203 queued vs 4 auto-executed on 2026-07-12) for rules Mike/Lisa
+// personally approved. Deliberately-uncertain rules (<0.90: bare Google,
+// "likely" mappings) still queue.
+const AUTO_EXECUTE_CONFIDENCE = 0.90;
 const WEB_SEARCH_AUTO_FLOOR = 0.92; // higher floor than direct AI — less direct evidence
-const MAX_AUTO_PER_RUN = 20;        // safety cap; exceeding pauses the client
+const MAX_AUTO_PER_RUN = 50;        // safety cap; exceeding pauses the client
+                                    // (raised 20→50 with the 0.90 floor: reviewed
+                                    // rules legitimately auto-post most of a busy
+                                    // day; 50 still bounds a runaway feed)
 const DEFAULT_LOOKBACK_DAYS = 7;    // if no last_synced_at, look back this far
 
 // Account names QBO uses for "this transaction hasn't been categorized yet".

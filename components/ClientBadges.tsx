@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Unplug, CreditCard, Scale, PauseCircle } from "lucide-react";
+import { AlertTriangle, Unplug, CreditCard, Scale, PauseCircle, Clock3 } from "lucide-react";
 import type { AttentionState } from "@/lib/client-attention-state";
 
 /**
@@ -36,6 +36,19 @@ export function buildBadges(a: AttentionState, stage: Stage): Badge[] {
       cls: aging ? "bg-red-200 text-red-900 border-red-400" : "bg-red-100 text-red-800 border-red-200",
       icon: <AlertTriangle size={9} />,
       title: `${top.reason}${top.note ? ` · ${top.note.slice(0, 140)}` : ""}`,
+    });
+  }
+
+  if (a.stale_queue) {
+    const q = a.stale_queue;
+    badges.push({
+      key: "stale_queue",
+      label: q.over_sla > 0 ? `QUEUE ${q.pending} · ${q.oldest_days}D OLD` : `QUEUE ${q.pending}`,
+      cls: q.over_sla > 0 ? "bg-red-100 text-red-800 border-red-200" : "bg-amber-100 text-amber-800 border-amber-200",
+      icon: <Clock3 size={9} />,
+      title: q.over_sla > 0
+        ? `${q.over_sla} daily-review item${q.over_sla === 1 ? "" : "s"} waiting more than 48h (oldest ${q.oldest_days}d) — needs senior attention`
+        : `${q.pending} daily-review items pending — above the 25-item threshold`,
     });
   }
 
