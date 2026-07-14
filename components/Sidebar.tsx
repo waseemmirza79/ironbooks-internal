@@ -5,14 +5,13 @@ import { usePathname } from "next/navigation";
 import {
   Sparkles, Users, LogOut, BookOpen, Clock,
   Shield, CreditCard, ChevronDown, ChevronRight, Sun, TrendingUp,
-  Volume2, VolumeX, HeartPulse, Gauge, BadgeCheck,
+  HeartPulse, Gauge, BadgeCheck,
   ClipboardCheck, ListChecks, UserPlus, GraduationCap, Settings as SettingsIcon, Inbox, ListTodo, LifeBuoy, ExternalLink, Landmark, Mail,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
 import type { Database } from "@/lib/database.types";
 import { StripeConnectModal } from "./StripeConnectModal";
-import { isMuted, setMuted, onMutedChange, playSound } from "@/lib/sounds";
 
 /** Daily work surface — the whole job, one flat list, no sub-menus.
  *  Client-scoped tools (Reclassify, Bank Rules, Stripe Recon, COA Editor,
@@ -108,11 +107,9 @@ export function Sidebar() {
     });
   }, []);
 
-  // Unread client messages — red badge on Today + a chime when a NEW one
-  // lands while the app is open. Polls every 45s; prev=null skips the
-  // initial load so a pre-existing backlog doesn't ding on every refresh.
+  // Unread client messages — red badge on Today. Polls every 45s. (Audible
+  // notifications were removed — see lib/sounds.ts kill switch.)
   useEffect(() => {
-    let prev: number | null = null;
     let stopped = false;
     async function check() {
       try {
@@ -120,8 +117,6 @@ export function Sidebar() {
         if (!res.ok || stopped) return;
         const { count } = await res.json();
         if (typeof count !== "number") return;
-        if (prev !== null && count > prev) playSound("message_received");
-        prev = count;
         setUnreadComms(count);
       } catch {
         /* transient — next poll retries */
@@ -291,7 +286,6 @@ export function Sidebar() {
               {userRole}
             </div>
           </div>
-          <SoundToggle />
           <Link href="/settings" className="text-white/40 hover:text-white transition-colors" title="Settings · email signature">
             <SettingsIcon size={15} />
           </Link>
@@ -310,27 +304,6 @@ function NavSection({ label, className = "" }: { label: string; className?: stri
     <div className={`mb-1.5 px-3 text-[10px] font-bold uppercase tracking-wider text-white/30 ${className}`}>
       {label}
     </div>
-  );
-}
-
-function SoundToggle() {
-  const [muted, setMutedState] = useState(false);
-
-  useEffect(() => {
-    setMutedState(isMuted());
-    const off = onMutedChange(setMutedState);
-    return off;
-  }, []);
-
-  return (
-    <button
-      onClick={() => setMuted(!muted)}
-      className="text-white/40 hover:text-white transition-colors"
-      title={muted ? "Sounds muted — click to unmute" : "Sounds on — click to mute"}
-      aria-label={muted ? "Unmute sounds" : "Mute sounds"}
-    >
-      {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
-    </button>
   );
 }
 

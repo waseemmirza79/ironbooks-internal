@@ -14,6 +14,17 @@
  *   public/sounds/finalize-failed.mp3    — Partial or failed QBO finalize
  */
 
+/**
+ * GLOBAL KILL SWITCH (2026-07-14). Audible notifications are disabled for
+ * everyone. The per-browser mute toggle only ever controlled the *local*
+ * browser and defaulted to UNMUTED, so the message "ding" (fired from the
+ * sidebar's 45s unread-count poller, app-wide and disconnected from any click)
+ * played for every bookkeeper with no obvious cause. Rather than rely on each
+ * person finding a toggle, playback is turned off at the source. Flip this to
+ * true to bring sounds back (and restore the sidebar SoundToggle from git).
+ */
+const SOUNDS_ENABLED = false;
+
 export type SoundEvent =
   | "client_graduated"
   | "scan_complete"
@@ -77,6 +88,7 @@ export function onMutedChange(cb: (muted: boolean) => void): () => void {
  * a sound for is itself triggered by a click.
  */
 export function playSound(event: SoundEvent): void {
+  if (!SOUNDS_ENABLED) return; // feature disabled globally — see kill switch above
   if (typeof window === "undefined") return;
   if (isMuted()) return;
   const src = SOUND_FILES[event];
