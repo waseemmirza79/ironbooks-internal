@@ -887,7 +887,6 @@ export function CleanupWizardClient({
               clientLinkId={clientLinkId}
               clientName={clientName}
               accountGrades={(hs?.account_grades as any[]) || []}
-              periodStart={status?.run?.period_lock_date || null}
             />
 
             {/* Advanced / fallback: raw CSV or Excel export instead of PDFs. */}
@@ -1504,20 +1503,50 @@ export function CleanupWizardClient({
    draws-vs-contributions answer, payroll → provider reports, UF → CRM
    job report. Sending reuses the messages pipeline (portal thread +
    branded email + delivery warning); clients attach files by replying
-   in their portal Messages page. */
+   in their portal Messages page.
+
+   Statement date range is a client-friendly preset the bookkeeper picks
+   (not the raw cleanup-period lock date) — clients find "year-to-date" or
+   "last 6 months" easier to grab from online banking than an arbitrary
+   date. "Tax year" assumes a calendar-year filer, true for the large
+   majority of small trades businesses. */
 
 interface ClientRequestItem {
   id: string;
   text: string;
 }
 
+type DateRangeMode = "ytd" | "six_months" | "last_tax_year";
+
+const DATE_MODE_OPTIONS: { value: DateRangeMode; label: string }[] = [
+  { value: "ytd", label: "Year-to-date" },
+  { value: "six_months", label: "Last 6 months" },
+  { value: "last_tax_year", label: `Tax year ${new Date().getFullYear() - 1}` },
+];
+
+function fmtMonthDayYear(d: Date): string {
+  return d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+}
+
+function dateRangeLabel(mode: DateRangeMode, now: Date = new Date()): string {
+  if (mode === "six_months") {
+    const start = new Date(now);
+    start.setMonth(start.getMonth() - 6);
+    return `for the last 6 months (${fmtMonthDayYear(start)} through today)`;
+  }
+  if (mode === "last_tax_year") {
+    const lastYear = now.getFullYear() - 1;
+    return `for tax year ${lastYear} (January 1 through December 31, ${lastYear})`;
+  }
+  const jan1 = new Date(now.getFullYear(), 0, 1);
+  return `year-to-date (${fmtMonthDayYear(jan1)} through today)`;
+}
+
 function buildClientRequests(
   grades: Array<{ account_name: string; account_type: string; module: string | null }>,
-  periodStart: string | null
+  dateMode: DateRangeMode
 ): ClientRequestItem[] {
-  const rangeLabel = periodStart
-    ? `from ${periodStart} through today`
-    : "for the cleanup period";
+  const rangeLabel = dateRangeLabel(dateMode);
   const items: ClientRequestItem[] = [];
   const seen = new Set<string>();
   const push = (id: string, text: string) => {
@@ -1533,9 +1562,9 @@ function buildClientRequests(
     switch (g.module) {
       case "bank_recon":
         if (type.includes("credit")) {
-          push(`cc-${name}`, `Credit card statements for "${name}" ${rangeLabel} (PDF or CSV)`);
+          push(`cc-${name}`, `Credit card statements for "${name}" ${rangeLabel} — PDF or CSV`);
         } else {
-          push(`bank-${name}`, `Bank statements for "${name}" ${rangeLabel} (PDF or CSV)`);
+          push(`bank-${name}`, `Bank statements for "${name}" ${rangeLabel} — PDF or CSV`);
         }
         break;
       case "loans":
@@ -1573,17 +1602,17 @@ function NeedFromClientPanel({
   clientLinkId,
   clientName,
   accountGrades,
-  periodStart,
 }: {
   clientLinkId: string;
   clientName: string;
   accountGrades: any[];
-  periodStart: string | null;
 }) {
+  const [dateMode, setDateMode] = useState<DateRangeMode>("ytd");
   const suggested = useMemo(
-    () => buildClientRequests(accountGrades || [], periodStart),
-    [accountGrades, periodStart]
+    () => buildClientRequests(accountGrades || [], dateMode),
+    [accountGrades, dateMode]
   );
+  const hasStatementItems = suggested.some((i) => i.id.startsWith("bank-") || i.id.startsWith("cc-"));
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [extra, setExtra] = useState("");
   const [sending, setSending] = useState(false);
@@ -1718,6 +1747,25 @@ function NeedFromClientPanel({
         </div>
       ) : (
         <>
+          {hasStatementItems && (
+            <div className="flex items-center gap-2 flex-wrap mb-3">
+              <span className="text-xs font-semibold text-ink-slate">Statement period:</span>
+              <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+                {DATE_MODE_OPTIONS.map((opt, idx) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setDateMode(opt.value)}
+                    className={`text-xs font-semibold px-3 py-1.5 transition-colors ${idx > 0 ? "border-l border-gray-200" : ""} ${
+                      dateMode === opt.value ? "bg-teal text-white" : "bg-white text-ink-slate hover:bg-gray-50"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="space-y-1.5 mb-3">
             {suggested.map((item) => (
               <label key={item.id} className="flex items-start gap-2 text-sm cursor-pointer">
