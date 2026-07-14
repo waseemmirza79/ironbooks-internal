@@ -51,9 +51,14 @@ export async function GET(request: Request) {
   const basename = path.split("/").pop() || "file";
   const originalName = basename.replace(/^\d{10,}-/, "");
 
+  // inline=1 → serve for in-browser preview (no attachment disposition) so an
+  // <iframe> renders the PDF instead of downloading it. Default stays a
+  // download so existing links behave exactly as before.
+  const inline = searchParams.get("inline") === "1";
+
   const { data, error } = await service.storage
     .from(CLIENT_UPLOADS_BUCKET)
-    .createSignedUrl(path, 120, { download: originalName });
+    .createSignedUrl(path, 120, inline ? {} : { download: originalName });
   if (error || !data?.signedUrl) {
     return NextResponse.json({ error: "File not found" }, { status: 404 });
   }

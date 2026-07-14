@@ -21,8 +21,12 @@ export async function GET() {
   const [{ data: statements }, { data: requests }] = await Promise.all([
     (service as any)
       .from("client_statements")
-      .select("id, display_name, original_name, status, matched_account_name, account_label, period_month, period_year, created_at")
+      .select(
+        "id, display_name, original_name, status, matched_account_name, account_label, last4, account_kind, match_confidence, period_month, period_year, statement_end_date, ending_balance, storage_path, created_at"
+      )
       .eq("client_link_id", clientLinkId)
+      .order("period_year", { ascending: false, nullsFirst: false })
+      .order("period_month", { ascending: false, nullsFirst: false })
       .order("created_at", { ascending: false })
       .limit(50),
     (service as any)

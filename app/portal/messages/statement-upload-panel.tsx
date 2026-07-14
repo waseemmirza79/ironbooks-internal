@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { FileText, Upload, Loader2, CheckCircle2, AlertTriangle, HelpCircle } from "lucide-react";
+import { FileText, Upload, Loader2, CheckCircle2, AlertTriangle, HelpCircle, Eye } from "lucide-react";
 import { createBrowserSupabase } from "@/lib/supabase-browser";
 import { CLIENT_UPLOADS_BUCKET } from "@/lib/client-comms";
 import { DOCUMENTS_CHANGED_EVENT } from "./documents-panel";
+import { FilePreviewModal } from "@/components/FilePreviewModal";
+import { statementEndLabel, formatStatementBalance } from "@/lib/statement-format";
 
 type Req = { id: string; label: string; account_name: string | null; account_kind: string | null };
 type Stmt = {
@@ -13,6 +15,13 @@ type Stmt = {
   original_name: string | null;
   status: string;
   matched_account_name: string | null;
+  account_label: string | null;
+  last4: string | null;
+  period_month: number | null;
+  period_year: number | null;
+  statement_end_date: string | null;
+  ending_balance: number | null;
+  storage_path: string | null;
 };
 type Account = { id: string | null; name: string };
 
@@ -27,6 +36,8 @@ type Account = { id: string | null; name: string };
 export function StatementUploadPanel() {
   const [requests, setRequests] = useState<Req[]>([]);
   const [unmatched, setUnmatched] = useState<Stmt[]>([]);
+  const [filed, setFiled] = useState<Stmt[]>([]);
+  const [preview, setPreview] = useState<{ path: string; name: string } | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -40,8 +51,12 @@ export function StatementUploadPanel() {
       const res = await fetch("/api/portal/statements");
       const json = await res.json();
       if (res.ok) {
+        const stmts: Stmt[] = json.statements || [];
         setRequests(json.requests || []);
-        setUnmatched((json.statements || []).filter((s: Stmt) => s.status === "unmatched"));
+        setUnmatched(stmts.filter((s) => s.status === "unmatched"));
+        // Everything successfully filed (not awaiting a manual match, not
+        // mid-processing or failed) — the client's browsable history.
+        setFiled(stmts.filter((s) => !["unmatched", "failed", "processing"].includes(s.status)));
       }
     } catch {
       /* keep prior state */
@@ -231,6 +246,67 @@ export function StatementUploadPanel() {
             ))}
           </ul>
         </div>
+      )}
+
+      {/* Filed statements — the client's browsable history with the period's
+          ending balance + last statement date. Click a name to preview. */}
+      {filed.length > 0 && (
+        <div className="mt-4">
+          <div className="text-xs font-bold uppercase tracking-wide text-ink-slate mb-2">
+            Your filed statements
+          </div>
+          <div className="border border-gray-200 rounded-lg overflow-x-auto bg-white">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr className="text-[11px] uppercase tracking-wide text-ink-slate">
+                  <th className="text-left font-semibold px-3 py-2">Statement</th>
+                  <th className="text-left font-semibold px-3 py-2 hidden sm:table-cell">Account</th>
+                  <th className="text-left font-semibold px-3 py-2 whitespace-nowrap">Statement date</th>
+                  <th className="text-right font-semibold px-3 py-2 whitespace-nowrap">Ending balance</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filed.map((s) => (
+                  <tr key={s.id} className="hover:bg-gray-50">
+                    <td className="px-3 py-2.5">
+                      {s.storage_path ? (
+                        <button
+                          type="button"
+                          onClick={() => setPreview({ path: s.storage_path!, name: s.display_name })}
+                          className="inline-flex items-center gap-1.5 text-navy font-medium hover:text-teal-dark hover:underline text-left"
+                          title="Click to preview"
+                        >
+                          <FileText size={14} className="text-teal shrink-0" />
+                          <span className="truncate max-w-[200px]">{s.display_name}</span>
+                        </button>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 text-navy">
+                          <FileText size={14} className="text-teal shrink-0" />
+                          <span className="truncate max-w-[200px]">{s.display_name}</span>
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 hidden sm:table-cell text-ink-slate">
+                      {s.matched_account_name || s.account_label || "—"}
+                    </td>
+                    <td className="px-3 py-2.5 text-ink-slate whitespace-nowrap">{statementEndLabel(s)}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-navy whitespace-nowrap">
+                      {formatStatementBalance(s.ending_balance)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {preview && (
+        <FilePreviewModal
+          path={preview.path}
+          name={preview.name}
+          onClose={() => setPreview(null)}
+        />
       )}
     </div>
   );

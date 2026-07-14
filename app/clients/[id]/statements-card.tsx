@@ -2,10 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  FileText, Upload, Loader2, Download, CheckCircle2, AlertTriangle, Sparkles,
+  FileText, Upload, Loader2, Download, CheckCircle2, AlertTriangle, Sparkles, Eye,
 } from "lucide-react";
 import { createBrowserSupabase } from "@/lib/supabase-browser";
 import { CLIENT_UPLOADS_BUCKET } from "@/lib/client-comms";
+import { FilePreviewModal } from "@/components/FilePreviewModal";
+import {
+  statementEndLabel,
+  formatStatementBalance,
+} from "@/lib/statement-format";
 
 type Statement = {
   id: string;
@@ -18,6 +23,7 @@ type Statement = {
   account_kind: string | null;
   period_month: number | null;
   period_year: number | null;
+  statement_end_date: string | null;
   ending_balance: number | null;
   status: string;
   storage_path: string;
@@ -47,6 +53,7 @@ export function StatementsCard({ clientLinkId }: { clientLinkId: string }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ path: string; name: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function load() {
@@ -157,6 +164,8 @@ export function StatementsCard({ clientLinkId }: { clientLinkId: string }) {
                   <th className="text-left font-semibold px-3 py-2">Statement</th>
                   <th className="text-left font-semibold px-3 py-2">Applied to account</th>
                   <th className="text-left font-semibold px-3 py-2 hidden sm:table-cell">Period</th>
+                  <th className="text-left font-semibold px-3 py-2 hidden md:table-cell whitespace-nowrap">Statement date</th>
+                  <th className="text-right font-semibold px-3 py-2 whitespace-nowrap">Ending balance</th>
                   <th className="text-left font-semibold px-3 py-2">Match</th>
                   <th className="px-3 py-2" />
                 </tr>
@@ -170,7 +179,14 @@ export function StatementsCard({ clientLinkId }: { clientLinkId: string }) {
                         <div className="flex items-center gap-2 min-w-0">
                           <FileText size={16} className="text-indigo-500 flex-shrink-0" />
                           <div className="min-w-0">
-                            <div className="text-sm font-semibold text-navy truncate max-w-[220px]">{s.display_name}</div>
+                            <button
+                              type="button"
+                              onClick={() => setPreview({ path: s.storage_path, name: s.display_name })}
+                              className="text-sm font-semibold text-navy truncate max-w-[220px] text-left hover:text-indigo-600 hover:underline"
+                              title="Click to preview"
+                            >
+                              {s.display_name}
+                            </button>
                             <div className="text-xs text-ink-slate flex flex-wrap items-center gap-x-2 gap-y-0.5">
                               {s.last4 && <span>•••{s.last4}</span>}
                               {s.uploaded_via === "portal" && <span className="text-indigo-500">client upload</span>}
@@ -184,6 +200,8 @@ export function StatementsCard({ clientLinkId }: { clientLinkId: string }) {
                           : <span className="text-sm text-amber-700 font-medium">Not applied yet</span>}
                       </td>
                       <td className="px-3 py-2.5 hidden sm:table-cell text-sm text-ink-slate whitespace-nowrap">{periodLabel(s)}</td>
+                      <td className="px-3 py-2.5 hidden md:table-cell text-sm text-ink-slate whitespace-nowrap">{statementEndLabel(s)}</td>
+                      <td className="px-3 py-2.5 text-right text-sm font-mono text-navy whitespace-nowrap">{formatStatementBalance(s.ending_balance)}</td>
                       <td className="px-3 py-2.5">
                         <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border whitespace-nowrap ${conf.cls}`}>
                           {s.status === "processed" && s.match_confidence === "high"
@@ -192,6 +210,14 @@ export function StatementsCard({ clientLinkId }: { clientLinkId: string }) {
                         </span>
                       </td>
                       <td className="px-3 py-2.5 text-right">
+                        <button
+                          type="button"
+                          onClick={() => setPreview({ path: s.storage_path, name: s.display_name })}
+                          className="inline-flex p-1.5 rounded-md hover:bg-gray-100 text-ink-slate"
+                          title="Preview"
+                        >
+                          <Eye size={15} />
+                        </button>
                         <a
                           href={`/api/client-files/download?path=${encodeURIComponent(s.storage_path)}`}
                           className="inline-flex p-1.5 rounded-md hover:bg-gray-100 text-ink-slate"
@@ -208,6 +234,14 @@ export function StatementsCard({ clientLinkId }: { clientLinkId: string }) {
           </div>
         )}
       </div>
+
+      {preview && (
+        <FilePreviewModal
+          path={preview.path}
+          name={preview.name}
+          onClose={() => setPreview(null)}
+        />
+      )}
     </section>
   );
 }
