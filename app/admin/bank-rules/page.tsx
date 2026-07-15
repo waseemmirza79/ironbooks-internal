@@ -23,7 +23,7 @@ export default async function BankRulesFleetPage() {
     <AppShell>
       <TopBar
         title="Bank rules — fleet"
-        subtitle="Which clients need SNAP rules imported to QBO (and their old rules cleared)"
+        subtitle="Which clients have / haven't had their rules downloaded — never downloaded = not applied"
       />
       <div className="px-8 py-6 max-w-4xl">
         <BankRulesFleetClient />

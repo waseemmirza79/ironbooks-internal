@@ -6,12 +6,14 @@ export const dynamic = "force-dynamic";
 /**
  * GET /api/admin/bank-rules-fleet
  *
- * Fleet-wide bank-rule status. For every active client with SNAP rules:
- * how many rules we've built, how many haven't been imported into QBO yet
- * (never_imported), and when they were last exported. "needs_import" (any
- * un-imported rule) is the actionable list — those clients still need our
- * rules applied + their old QBO rules cleared (QBO's API can't read/delete
- * rules, so the clear is a manual step in the per-client apply flow).
+ * Fleet-wide bank-rule status keyed on DOWNLOAD activity. Downloading the
+ * .xls is what flips bank_rules.pushed_to_qbo=true + pushed_to_qbo_at, so a
+ * rule the bookkeeper never downloaded is one we can assume was never applied
+ * in QBO. For every active client with SNAP rules: total rules, how many were
+ * never downloaded, and the last download time. "not_downloaded" (any
+ * never-downloaded rule) is the actionable list — those clients still need
+ * their .xls downloaded → old QBO rules cleared → imported (QBO's API can't
+ * read/delete rules, so the clear is a manual step in the apply flow).
  *
  * Admin/lead only. One aggregate query over active rules — no per-client
  * fan-out.
@@ -33,15 +35,15 @@ export async function GET() {
     .eq("status", "active");
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  type Agg = { total: number; never_imported: number; last_exported_at: string | null };
+  type Agg = { total: number; not_downloaded: number; last_downloaded_at: string | null };
   const byClient = new Map<string, Agg>();
   for (const r of ((rules as any[]) || [])) {
     if (!r.client_link_id) continue;
-    const a = byClient.get(r.client_link_id) || { total: 0, never_imported: 0, last_exported_at: null };
+    const a = byClient.get(r.client_link_id) || { total: 0, not_downloaded: 0, last_downloaded_at: null };
     a.total++;
-    if (!r.pushed_to_qbo) a.never_imported++;
-    if (r.pushed_to_qbo_at && (!a.last_exported_at || r.pushed_to_qbo_at > a.last_exported_at)) {
-      a.last_exported_at = r.pushed_to_qbo_at;
+    if (!r.pushed_to_qbo) a.not_downloaded++;
+    if (r.pushed_to_qbo_at && (!a.last_downloaded_at || r.pushed_to_qbo_at > a.last_downloaded_at)) {
+      a.last_downloaded_at = r.pushed_to_qbo_at;
     }
     byClient.set(r.client_link_id, a);
   }
@@ -62,23 +64,23 @@ export async function GET() {
           client_link_id: id,
           client_name: nameById.get(id),
           total_rules: a.total,
-          never_imported: a.never_imported,
-          last_exported_at: a.last_exported_at,
-          status: a.never_imported > 0 ? "needs_import" : "up_to_date",
+          not_downloaded: a.not_downloaded,
+          last_downloaded_at: a.last_downloaded_at,
+          status: a.not_downloaded > 0 ? "not_downloaded" : "downloaded",
         };
       });
   }
 
-  // Actionable first (needs_import), then most rules, then name.
+  // Actionable first (not_downloaded), then most-undownloaded, then name.
   rows.sort((x, y) => {
-    if (x.status !== y.status) return x.status === "needs_import" ? -1 : 1;
-    if (y.never_imported !== x.never_imported) return y.never_imported - x.never_imported;
+    if (x.status !== y.status) return x.status === "not_downloaded" ? -1 : 1;
+    if (y.not_downloaded !== x.not_downloaded) return y.not_downloaded - x.not_downloaded;
     return String(x.client_name).localeCompare(String(y.client_name));
   });
 
   const summary = {
     clients_with_rules: rows.length,
-    needs_import: rows.filter((r) => r.status === "needs_import").length,
+    not_downloaded: rows.filter((r) => r.status === "not_downloaded").length,
     total_rules: rows.reduce((s, r) => s + r.total_rules, 0),
   };
 

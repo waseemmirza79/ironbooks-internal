@@ -154,7 +154,7 @@ export default async function AdminOverviewPage() {
               href: "/admin/bank-rules",
               icon: ListChecks,
               title: "Bank rules — fleet",
-              desc: "Which clients still need SNAP rules imported to QBO (+ old rules cleared) · one-click .xls per client to amend & import",
+              desc: "Which clients have / haven't had their rules .xls downloaded (= applied) · one-click .xls per client to amend & import",
             },
             {
               href: "/admin/revenue-integrity",

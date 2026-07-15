@@ -8,11 +8,11 @@ type Row = {
   client_link_id: string;
   client_name: string;
   total_rules: number;
-  never_imported: number;
-  last_exported_at: string | null;
-  status: "needs_import" | "up_to_date";
+  not_downloaded: number;
+  last_downloaded_at: string | null;
+  status: "not_downloaded" | "downloaded";
 };
-type Summary = { clients_with_rules: number; needs_import: number; total_rules: number };
+type Summary = { clients_with_rules: number; not_downloaded: number; total_rules: number };
 
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "never";
@@ -21,7 +21,7 @@ export function BankRulesFleetClient() {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState("");
-  const [onlyNeedsImport, setOnlyNeedsImport] = useState(true);
+  const [onlyNotDownloaded, setOnlyNotDownloaded] = useState(true);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadErr, setDownloadErr] = useState<Record<string, string>>({});
 
@@ -37,8 +37,8 @@ export function BankRulesFleetClient() {
   }, []);
 
   const visible = useMemo(
-    () => (rows || []).filter((r) => (onlyNeedsImport ? r.status === "needs_import" : true)),
-    [rows, onlyNeedsImport]
+    () => (rows || []).filter((r) => (onlyNotDownloaded ? r.status === "not_downloaded" : true)),
+    [rows, onlyNotDownloaded]
   );
 
   async function download(row: Row) {
@@ -79,7 +79,7 @@ export function BankRulesFleetClient() {
       {summary && (
         <div className="grid grid-cols-3 gap-3 mb-4">
           <Stat label="Clients with rules" value={summary.clients_with_rules} />
-          <Stat label="Need import" value={summary.needs_import} tone={summary.needs_import > 0 ? "amber" : "ok"} />
+          <Stat label="Not downloaded" value={summary.not_downloaded} tone={summary.not_downloaded > 0 ? "amber" : "ok"} />
           <Stat label="Total SNAP rules" value={summary.total_rules} />
         </div>
       )}
@@ -87,17 +87,17 @@ export function BankRulesFleetClient() {
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 mb-4 text-xs text-amber-900 flex items-start gap-2">
         <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
         <span>
-          QBO&apos;s API can&apos;t read or delete a client&apos;s existing rules, so &ldquo;needs import&rdquo; means
-          <strong> SNAP rules not yet imported</strong>. Applying them = clear the client&apos;s old rules in QBO
-          (Banking → Rules → select-all → Delete), then import the .xls below. QBO import <em>appends</em>, so the
-          clear-first step matters.
+          Downloading a client&apos;s .xls is what marks its rules exported — so if the .xls was
+          <strong> never downloaded, assume the rules were never applied</strong> in QBO. To apply: download below,
+          clear the client&apos;s old rules in QBO (Banking → Rules → select-all → Delete), then import. QBO import
+          <em> appends</em>, so the clear-first step matters.
         </span>
       </div>
 
       <div className="flex items-center justify-between mb-2">
         <label className="flex items-center gap-2 text-xs font-semibold text-navy cursor-pointer">
-          <input type="checkbox" checked={onlyNeedsImport} onChange={(e) => setOnlyNeedsImport(e.target.checked)} className="h-3.5 w-3.5 accent-teal" />
-          Only show clients needing import
+          <input type="checkbox" checked={onlyNotDownloaded} onChange={(e) => setOnlyNotDownloaded(e.target.checked)} className="h-3.5 w-3.5 accent-teal" />
+          Only show clients not fully downloaded
         </label>
         <span className="text-[11px] text-ink-light">{visible.length} shown</span>
       </div>
@@ -110,8 +110,8 @@ export function BankRulesFleetClient() {
             <tr className="text-[10px] uppercase tracking-wider text-ink-light border-b border-gray-100">
               <th className="text-left px-4 py-2.5 font-bold">Client</th>
               <th className="text-right px-3 py-2.5 font-bold">Rules</th>
-              <th className="text-right px-3 py-2.5 font-bold">Not imported</th>
-              <th className="text-left px-3 py-2.5 font-bold hidden sm:table-cell">Last export</th>
+              <th className="text-right px-3 py-2.5 font-bold">Not downloaded</th>
+              <th className="text-left px-3 py-2.5 font-bold hidden sm:table-cell">Last download</th>
               <th className="text-right px-4 py-2.5 font-bold"></th>
             </tr>
           </thead>
@@ -122,15 +122,15 @@ export function BankRulesFleetClient() {
                   <Link href={`/clients/${r.client_link_id}`} className="font-semibold text-navy hover:text-teal-dark hover:underline">
                     {r.client_name}
                   </Link>
-                  {r.status === "up_to_date" ? (
-                    <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700"><CheckCircle2 size={10} /> imported</span>
+                  {r.status === "downloaded" ? (
+                    <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700"><CheckCircle2 size={10} /> downloaded</span>
                   ) : (
-                    <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700"><AlertTriangle size={10} /> needs import</span>
+                    <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700"><AlertTriangle size={10} /> not downloaded</span>
                   )}
                 </td>
                 <td className="px-3 py-2.5 text-right tabular-nums text-navy">{r.total_rules}</td>
-                <td className={`px-3 py-2.5 text-right tabular-nums font-semibold ${r.never_imported > 0 ? "text-amber-700" : "text-ink-light"}`}>{r.never_imported}</td>
-                <td className="px-3 py-2.5 text-ink-slate whitespace-nowrap hidden sm:table-cell">{fmtDate(r.last_exported_at)}</td>
+                <td className={`px-3 py-2.5 text-right tabular-nums font-semibold ${r.not_downloaded > 0 ? "text-amber-700" : "text-ink-light"}`}>{r.not_downloaded}</td>
+                <td className="px-3 py-2.5 text-ink-slate whitespace-nowrap hidden sm:table-cell">{fmtDate(r.last_downloaded_at)}</td>
                 <td className="px-4 py-2.5 text-right">
                   <button
                     onClick={() => download(r)}
@@ -148,7 +148,7 @@ export function BankRulesFleetClient() {
             ))}
             {visible.length === 0 && (
               <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-ink-light">
-                {onlyNeedsImport ? "No clients need an import — every client's SNAP rules are in QBO. ✓" : "No clients have SNAP rules yet."}
+                {onlyNotDownloaded ? "Every client's SNAP rules have been downloaded. ✓" : "No clients have SNAP rules yet."}
               </td></tr>
             )}
           </tbody>
