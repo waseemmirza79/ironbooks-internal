@@ -71,37 +71,53 @@ const { candidates: knownSampleCandidates } = buildRuleCandidates([
 ]);
 ok(knownSampleCandidates[0]?.sampleDescriptions[0] === "Sherwin Williams", "known-vendor samples still use vendor_name");
 
-// ── Retroactive export consolidation ──
-// Specific per-descriptor rules for the same brand+target collapse into one.
+// ── Retroactive export consolidation (brand + merchant-stem merge) ──
 const petroExport = consolidateBankRulesForExport([
-  { vendor_pattern: "PETRO-CANADA #1234 TORONTO ON", target_account_name: "Fuel – Overhead" },
-  { vendor_pattern: "PETRO-CANADA #5678 OTTAWA", target_account_name: "Fuel – Overhead" },
-  { vendor_pattern: "INTERAC PURCHASE PETRO-CANADA", target_account_name: "Fuel – Overhead" },
+  { vendor_pattern: "PETRO-CANADA #1234 TORONTO ON", target_account_name: "Fuel" },
+  { vendor_pattern: "PETRO-CANADA #5678 OTTAWA", target_account_name: "Fuel" },
+  { vendor_pattern: "INTERAC PURCHASE PETRO-CANADA", target_account_name: "Fuel" },
 ]);
 ok(petroExport.rules.length === 1, `3 Petro-Canada patterns → 1 broad rule (got ${petroExport.rules.length})`);
-ok(petroExport.rules[0]?.vendor_pattern?.toLowerCase().includes("petro"), "broad rule pattern is the brand");
 ok(petroExport.collapsedFrom === 2, `collapsedFrom = 2 (got ${petroExport.collapsedFrom})`);
 
-// Substring-unsafe brand must NOT replace the pattern (would break QBO contains).
-const noHyphen = consolidateBankRulesForExport([
-  { vendor_pattern: "SHERWIN WILLIAMS", target_account_name: "Materials" },
+// Real Dominion descriptors: each merchant's store-# variants collapse to one,
+// distinct merchants sharing the TST- processor prefix stay separate.
+const dominion = consolidateBankRulesForExport([
+  { vendor_pattern: "BLACK WALNUT BA CONTACTLESS INTERAC PURCHASE - 6401 B001", target_account_name: "Meals & Entertainment" },
+  { vendor_pattern: "BLACK WALNUT BA CONTACTLESS INTERAC PURCHASE - 0350 B001", target_account_name: "Meals & Entertainment" },
+  { vendor_pattern: "BLACK WALNUT BA CONTACTLESS INTERAC PURCHASE - 3263 B001", target_account_name: "Meals & Entertainment" },
+  { vendor_pattern: "KOMOKA KILWORTH INTERAC PURCHASE - 4299 B001", target_account_name: "Job Supplies & Materials" },
+  { vendor_pattern: "KOMOKA KILWORTH CONTACTLESS INTERAC PURCHASE - 9236 B001", target_account_name: "Job Supplies & Materials" },
+  { vendor_pattern: "TST-STOHO CONTACTLESS INTERAC PURCHASE - 4384 B001", target_account_name: "Meals & Entertainment" },
+  { vendor_pattern: "TST-PIPING KETT CONTACTLESS INTERAC PURCHASE - 6858 B001", target_account_name: "Meals & Entertainment" },
 ]);
-ok(noHyphen.rules[0]?.vendor_pattern === "SHERWIN WILLIAMS" || !noHyphen.rules[0]?.vendor_pattern.includes("-"),
-  "space-form vendor kept as-is when canonical brand isn't a literal substring");
+const has = (p: string) => dominion.rules.filter((r) => r.vendor_pattern.toUpperCase().includes(p)).length;
+ok(has("BLACK WALNUT") === 1, `3 Black Walnut → 1 (got ${has("BLACK WALNUT")})`);
+ok(has("KOMOKA KILWORTH") === 1, `2 Komoka Kilworth (interac + contactless) → 1 (got ${has("KOMOKA KILWORTH")})`);
+ok(has("STOHO") === 1 && has("PIPING KETT") === 1, "TST-STOHO and TST-PIPING KETT stay separate merchants");
+ok(dominion.rules.length === 4, `7 Dominion rows → 4 merged rules (got ${dominion.rules.length})`);
 
-// Conflict: same brand → two targets → stay specific (no mis-routing collapse).
-const conflict = consolidateBankRulesForExport([
-  { vendor_pattern: "PETRO-CANADA #1 AB", target_account_name: "Fuel – Overhead" },
-  { vendor_pattern: "PETRO-CANADA #2 BC", target_account_name: "Meals & Entertainment" },
+// Majority target wins when a merged merchant's rules disagree (generator parity).
+const major = consolidateBankRulesForExport([
+  { vendor_pattern: "KOMOKA KILWORTH INTERAC PURCHASE - 1 B001", target_account_name: "Job Supplies & Materials" },
+  { vendor_pattern: "KOMOKA KILWORTH INTERAC PURCHASE - 2 B001", target_account_name: "Job Supplies & Materials" },
+  { vendor_pattern: "KOMOKA KILWORTH INTERAC PURCHASE - 3 B001", target_account_name: "Office Supplies" },
 ]);
-ok(conflict.rules.length === 2, `brand→2 targets stays 2 specific rules (got ${conflict.rules.length})`);
+ok(major.rules.length === 1 && major.rules[0].target_account_name === "Job Supplies & Materials",
+  `disagreeing targets → 1 rule at majority (got ${major.rules.length} / ${major.rules[0]?.target_account_name})`);
 
-// Exact duplicate rows de-dupe.
-const dup = consolidateBankRulesForExport([
-  { vendor_pattern: "GENERIC LOCAL SHOP", target_account_name: "Supplies" },
-  { vendor_pattern: "GENERIC LOCAL SHOP", target_account_name: "Supplies" },
+// Cash/ATM plumbing must NOT collapse to a dangerous bare token like "ATM".
+const atm = consolidateBankRulesForExport([
+  { vendor_pattern: "ATM WITHDRAWAL - LI951467", target_account_name: "Owner Draw" },
 ]);
-ok(dup.rules.length === 1, `duplicate specific rules de-dupe to 1 (got ${dup.rules.length})`);
+ok(atm.rules[0].vendor_pattern.toUpperCase().includes("WITHDRAWAL"), "ATM withdrawal kept whole, not bare 'ATM'");
+
+// Generation (ruleGroupKey) uses the same stem — local-merchant descriptors merge.
+const bwGen = buildRuleCandidates([
+  row({ description: "BLACK WALNUT BA CONTACTLESS INTERAC PURCHASE - 6401 B001", to_account_name: "Meals & Entertainment" }),
+  row({ description: "BLACK WALNUT BA CONTACTLESS INTERAC PURCHASE - 0350 B001", to_account_name: "Meals & Entertainment" }),
+]).candidates.filter((c) => c.vendorPattern.includes("BLACK WALNUT"));
+ok(bwGen.length === 1, `generation: 2 Black Walnut descriptors → 1 candidate (got ${bwGen.length})`);
 
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -122,6 +122,11 @@ export function ruleGroupKey(
     const brand = extractKnownVendorName(cleaned || description);
     if (brand) return { key: brand.toUpperCase(), display: brand };
     if (isNoiseOnlyDescription(cleaned || description)) return null;
+    // Not a KB brand — collapse raw feed phrasings of the SAME merchant
+    // (store #s, "… CONTACTLESS INTERAC PURCHASE - 6401 B001") into one stem
+    // so a local vendor doesn't become one rule per transaction.
+    const stem = merchantStemKey(description);
+    if (stem) return stem;
     const key = (cleaned || description).toUpperCase().replace(/\s+/g, " ");
     return { key, display: cleaned || description };
   }
@@ -135,65 +140,101 @@ export interface ExportableRule {
   target_account_name: string;
 }
 
+// Strong bank-mechanism markers: everything from the first occurrence onward
+// is transaction plumbing (CONTACTLESS INTERAC PURCHASE - 6401 B001), not the
+// merchant name. Kept tight so we never truncate a real merchant — cuts only
+// at unmistakable feed markers, never at ambiguous words like FEE/PAYMENT.
+const STEM_CUT_MARKERS = [
+  " CONTACTLESS", " INTERAC", " WITHDRAWAL", " PRE-AUTH", " PREAUTH",
+  " POS PURCHASE", " POS DEBIT", " E-TRANSFER", " ETRANSFER",
+];
+
 /**
- * Retroactively broaden STORED bank rules for a QBO export — the same "one
- * broad rule per known brand" consolidation the candidate generator does
- * (e3d5974, Mike 2026-07-14), applied to rules that were created before that
- * update (one specific rule per raw descriptor). Non-destructive: transforms
- * the export list only, never the stored rows.
+ * Merchant stem for grouping raw bank descriptors — strips the feed tail
+ * ("… CONTACTLESS INTERAC PURCHASE - 6401 B001") and trailing store / pump /
+ * ref numbers so every phrasing of the SAME merchant collapses ("BLACK WALNUT
+ * BA … - 6401" and "… - 0350" → "BLACK WALNUT BA"; "PETRO-CANADA 30 …" →
+ * "PETRO-CANADA"). Returns null when only bank plumbing / a too-short / noise
+ * token remains (never broaden those — e.g. "ATM WITHDRAWAL"). The stem is
+ * always a substring of the input (suffix-only trim), so a "contains <stem>"
+ * rule matches a superset — safe for QBO's literal contains.
+ */
+export function merchantStemKey(pattern: string): { key: string; display: string } | null {
+  const raw = String(pattern || "").trim();
+  if (!raw) return null;
+  const upper = raw.toUpperCase();
+  let cut = upper.length;
+  for (const m of STEM_CUT_MARKERS) {
+    const i = upper.indexOf(m);
+    if (i > 0 && i < cut) cut = i; // i>0: a name that IS the marker keeps it
+  }
+  let stem = raw.slice(0, cut);
+  // Trim trailing store/pump/ref codes and lone numbers.
+  stem = stem
+    .replace(/[\s\-]+#?\d{1,7}(\s+[A-Z]{0,3}\d{0,7})?\s*$/i, "")
+    .replace(/\s+\d{1,4}\s*$/i, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (stem.length < 4) return null;
+  const words = stem.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+  const hasRealWord = words.some((w) => /[A-Z]{3,}/.test(w) && !BANK_NOISE_WORDS.has(w));
+  if (!hasRealWord) return null;
+  if (!upper.includes(stem.toUpperCase())) return null; // substring guarantee
+  return { key: stem.toUpperCase(), display: stem };
+}
+
+/**
+ * Retroactively broaden STORED bank rules for a QBO export — the same
+ * consolidation the candidate generator does (e3d5974), applied to rules
+ * created before it (one specific rule per raw descriptor). Non-destructive:
+ * transforms the export list only, never the stored rows.
  *
- * A rule is broadened to `contains <brand>` ONLY when:
- *   1. its pattern resolves to a KNOWN vendor brand, AND
- *   2. that brand is a literal (case-insensitive) substring of the pattern —
- *      guarantees the broad rule matches a SUPERSET of what the specific rule
- *      matched (QBO "contains" is literal, so `Sherwin-Williams` must not
- *      replace `SHERWIN WILLIAMS` and silently stop matching), AND
- *   3. that brand maps to exactly ONE target account across this client's
- *      rules — a brand pointing at two accounts can't collapse to one broad
- *      rule without mis-routing, so those stay specific.
- * Everything else passes through unchanged. Duplicates (same pattern+target)
- * are de-duped. Returns the consolidated list + how many rows it collapsed.
+ * Each rule maps to a merge key: a KNOWN vendor brand (substring-safe) if the
+ * KB recognizes it, else the merchant stem (feed tail + store numbers
+ * stripped), else the pattern unchanged. Rules sharing a key collapse into ONE
+ * "contains <key>" rule; when a key's rules disagree on the target account the
+ * MOST-FREQUENT target wins (same as the generator) — the bookkeeper amends
+ * the downloaded .xls if needed. Returns the list + how many rows collapsed.
  */
 export function consolidateBankRulesForExport<T extends ExportableRule>(
   rules: T[]
 ): { rules: ExportableRule[]; collapsedFrom: number } {
   const clean = (s: string) => String(s || "").trim();
-  const contains = (hay: string, needle: string) =>
-    hay.toLowerCase().includes(needle.toLowerCase());
+  const contains = (hay: string, needle: string) => hay.toLowerCase().includes(needle.toLowerCase());
 
-  // Pass 1 — resolve each rule's broadenable brand (substring-safe) + detect
-  // brand→multiple-target conflicts.
-  const brandOf = new Map<T, string | null>();
-  const brandTargets = new Map<string, Set<string>>();
+  const keyFor = (pattern: string): { key: string; display: string } => {
+    const brand = extractKnownVendorName(pattern);
+    if (brand && contains(pattern, brand)) return { key: brand.toUpperCase(), display: brand };
+    const stem = merchantStemKey(pattern);
+    if (stem) return stem;
+    return { key: pattern.toUpperCase(), display: pattern };
+  };
+
+  const groups = new Map<string, { display: string; targets: Map<string, number> }>();
+  const order: string[] = [];
+  let originalCount = 0;
   for (const r of rules) {
     const pattern = clean(r.vendor_pattern);
-    const brandRaw = extractKnownVendorName(pattern);
-    const brand = brandRaw && contains(pattern, brandRaw) ? brandRaw : null;
-    brandOf.set(r, brand);
-    if (brand) {
-      const key = brand.toLowerCase();
-      if (!brandTargets.has(key)) brandTargets.set(key, new Set());
-      brandTargets.get(key)!.add(clean(r.target_account_name).toLowerCase());
-    }
-  }
-  const safeBrand = (brand: string) => (brandTargets.get(brand.toLowerCase())?.size ?? 0) === 1;
-
-  // Pass 2 — emit, collapsing broadenable rules and de-duping pass-throughs.
-  const out: ExportableRule[] = [];
-  const seen = new Set<string>();
-  let collapsedFrom = 0;
-  for (const r of rules) {
-    const brand = brandOf.get(r) || null;
     const target = clean(r.target_account_name);
-    const useBroad = brand && safeBrand(brand);
-    const pattern = useBroad ? brand! : clean(r.vendor_pattern);
     if (!pattern || !target) continue;
-    const dedupeKey = `${pattern.toLowerCase()}|${target.toLowerCase()}`;
-    if (seen.has(dedupeKey)) { collapsedFrom++; continue; }
-    seen.add(dedupeKey);
-    out.push({ vendor_pattern: pattern, target_account_name: target });
+    originalCount++;
+    const { key, display } = keyFor(pattern);
+    if (!groups.has(key)) {
+      groups.set(key, { display, targets: new Map() });
+      order.push(key);
+    }
+    const g = groups.get(key)!;
+    g.targets.set(target, (g.targets.get(target) || 0) + 1);
   }
-  return { rules: out, collapsedFrom };
+
+  const out: ExportableRule[] = order.map((key) => {
+    const g = groups.get(key)!;
+    let best = "";
+    let bestN = 0;
+    for (const [t, n] of g.targets) if (n > bestN) { bestN = n; best = t; }
+    return { vendor_pattern: g.display, target_account_name: best };
+  });
+  return { rules: out, collapsedFrom: originalCount - out.length };
 }
 
 /** Row-level ineligibility: why a row can never contribute to any rule. */
