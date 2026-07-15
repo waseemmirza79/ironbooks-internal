@@ -6,6 +6,7 @@ import {
   Loader2, Search, ArrowRight, CheckCircle2, AlertTriangle, Banknote, CalendarRange,
 } from "lucide-react";
 import { CrmPairsTable } from "@/components/crm-pairs-table";
+import { QboRemediationPanel } from "./qbo-remediation-panel";
 
 const fmt = (n: number) => (n < 0 ? "-$" : "$") + Math.abs(Math.round(n || 0)).toLocaleString();
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
@@ -231,6 +232,17 @@ export function RevenueCheckClient({
 
       {/* Pair evidence */}
       {data && <CrmPairsTable data={data} />}
+
+      {/* QBO ledger fix — void the duplicate invoices. Senior-only, and only
+          worth showing once we've flagged a real double-count. */}
+      {isSenior && s?.flagged && (
+        <QboRemediationPanel
+          clientLinkId={clientLinkId}
+          clientName={clientName}
+          start={range.start}
+          end={range.end}
+        />
+      )}
 
       {/* Step navigation */}
       <div className="flex items-center justify-between pt-2">
