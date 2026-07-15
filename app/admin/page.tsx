@@ -2,7 +2,7 @@ import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { createServerSupabase } from "@/lib/supabase";
 import Link from "next/link";
-import { Users, FileCheck, Shield, Activity, AlertTriangle, ArrowRight, Clock, Mail, CreditCard, RefreshCw, Phone, Repeat, Video, Landmark, ReceiptText, CheckCheck } from "lucide-react";
+import { Users, FileCheck, Shield, Activity, AlertTriangle, ArrowRight, Clock, Mail, CreditCard, RefreshCw, Phone, Repeat, Video, Landmark, ReceiptText, CheckCheck, ListChecks } from "lucide-react";
 import { DupSweepButton } from "./dup-sweep-button";
 
 export default async function AdminOverviewPage() {
@@ -149,6 +149,12 @@ export default async function AdminOverviewPage() {
               icon: RefreshCw,
               title: "Re-sync portal logins",
               desc: "Repoint client login emails that drifted from their contact email",
+            },
+            {
+              href: "/admin/bank-rules",
+              icon: ListChecks,
+              title: "Bank rules — fleet",
+              desc: "Which clients still need SNAP rules imported to QBO (+ old rules cleared) · one-click .xls per client to amend & import",
             },
             {
               href: "/admin/revenue-integrity",
