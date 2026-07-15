@@ -62,11 +62,14 @@ export async function POST(request: Request) {
     .not("qbo_realm_id", "is", null)
     .order("id");
 
+  // Scan EVERY active client with a real QBO connection — NOT just
+  // production/graduated ones. The CRM invoice/deposit double-count exists
+  // from the first cleanup (Dominion was found mid-cleanup), so gating on
+  // cleanup_completed_at/daily_recon_enabled — the revenue-integrity sweep's
+  // filter — wrongly skipped every in-cleanup client, including the one we
+  // already confirmed. Only demo/test are excluded.
   const targets = ((clients as any[]) || []).filter(
-    (c) =>
-      (c.cleanup_completed_at || c.daily_recon_enabled) &&
-      c.qbo_realm_id !== "DEMO" &&
-      !/\btest\b/i.test(c.client_name || "")
+    (c) => c.qbo_realm_id !== "DEMO" && !/\btest\b/i.test(c.client_name || "")
   );
   const chunk = targets.slice(offset, offset + CHUNK);
 
