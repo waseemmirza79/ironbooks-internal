@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { after } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { getValidToken } from "@/lib/qbo";
-import { fetchPLDetailAll } from "@/lib/qbo-reports";
-import { analyzeCrmInvoiceRevenue } from "@/lib/crm-invoice-revenue";
+import { fetchPLDetailAll, fetchProfitAndLoss } from "@/lib/qbo-reports";
+import { analyzeCrmInvoiceRevenue, incomeAccountNamesFromSummary } from "@/lib/crm-invoice-revenue";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -79,8 +79,14 @@ export async function POST(request: Request) {
   for (const c of chunk) {
     try {
       const token = await getValidToken(c.id, service as any);
-      const plDetail = await fetchPLDetailAll(c.qbo_realm_id, token, start, end, "Cash");
-      const report = analyzeCrmInvoiceRevenue(plDetail);
+      const [plDetail, plSummary] = await Promise.all([
+        fetchPLDetailAll(c.qbo_realm_id, token, start, end, "Cash"),
+        fetchProfitAndLoss(c.qbo_realm_id, token, start, end, "Cash"),
+      ]);
+      // Restrict the deposit leg to real income accounts so UF-clearing +
+      // processing-fee deposits (Housecall Pro) don't false-flag an
+      // invoice-driven book (Clean Your Carpets).
+      const report = analyzeCrmInvoiceRevenue(plDetail, incomeAccountNamesFromSummary(plSummary));
       totals.scanned++;
 
       // Only clients with an invoice leg produce a finding row — a no-invoice
@@ -166,7 +172,7 @@ export async function POST(request: Request) {
     started: true,
     targets: targets.length,
     window: { start, end },
-    chunk: { offset, scanned: totals.scanned, with_invoices: totals.with_invoices, flagged: totals.flagged, errors: errors.length },
+    chunk: { offset, scanned: totals.scanned, with_invoices: totals.with_invoices, flagged: totals.flagged, errors: errors.length, error_samples: errors.slice(0, 8) },
     next_offset: done ? null : nextOffset,
     server_chained: !done && !!process.env.CRON_SECRET,
     done,

@@ -103,6 +103,27 @@ function daysBetween(a: string, b: string): number | null {
   return Math.round((tb - ta) / 86_400_000);
 }
 
+/**
+ * Income-account names from a summary P&L (fetchProfitAndLoss), used to
+ * restrict the deposit leg to ACTUAL income. Critical: without this the
+ * detector counts every Deposit-type row — including deposits that only clear
+ * Undeposited Funds and their processing-fee lines (Clean Your Carpets /
+ * Housecall Pro) — and false-flags an invoice-driven book whose deposits
+ * aren't revenue at all. The summary's line-item `group` is the clean
+ * "Income" label (the DETAIL report's section is the useless combined
+ * "Ordinary Income/Expenses" wrapper).
+ */
+export function incomeAccountNamesFromSummary(
+  pl: { lineItems?: { label: string; group: string }[] } | null | undefined
+): Set<string> {
+  const s = new Set<string>();
+  for (const li of pl?.lineItems || []) {
+    const g = (li.group || "").toLowerCase();
+    if (/income|revenue|sales/.test(g) && !/cost of goods|expense/.test(g)) s.add(li.label);
+  }
+  return s;
+}
+
 /** Classify deposit÷invoice ratio into a tax interpretation, or null. */
 export function taxFactorLabel(factor: number): DepositInvoicePair["taxLabel"] | null {
   if (factor >= 0.995 && factor <= 1.005) return "exact";

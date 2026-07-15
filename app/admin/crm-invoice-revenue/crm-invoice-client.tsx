@@ -41,6 +41,7 @@ export function CrmInvoiceRevenueClient({
   const router = useRouter();
   const [sweeping, setSweeping] = useState(false);
   const [sweepMsg, setSweepMsg] = useState("");
+  const [sweepStats, setSweepStats] = useState<{ scanned: number; with_invoices: number; flagged: number; errors: number; targets: number; errorSamples: string[] } | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [pairs, setPairs] = useState<Record<string, { loading: boolean; error?: string; data?: any }>>({});
   const [modeBusy, setModeBusy] = useState<string | null>(null);
@@ -85,35 +86,41 @@ export function CrmInvoiceRevenueClient({
 
   const flagged = findings.filter((f) => f.flagged);
 
-  // Drive the sweep chunk-by-chunk from the browser. The server also
-  // self-chains when CRON_SECRET is set — the loop stops as soon as the
-  // response says so (double-firing a chunk is harmless, newest finding wins).
+  // Drive the sweep chunk-by-chunk from the browser, ACCUMULATING the per-chunk
+  // counts so we can see what actually happened (scanned vs errored vs found).
+  // Without this the sweep is a black box — "0 clients" could be a clean fleet,
+  // a QBO-auth wall, or a detection miss, and you can't tell which.
   async function runSweep() {
     if (
       !confirm(
-        "Scan every production client for CRM invoices double-counting deposit revenue?\n\n" +
+        "Scan every active client for CRM invoices double-counting deposit revenue?\n\n" +
           "Read-only against QuickBooks. Takes a few minutes fleet-wide; findings appear as chunks finish."
       )
     )
       return;
     setSweeping(true);
     setSweepMsg("Starting…");
+    setSweepStats(null);
+    const acc = { scanned: 0, with_invoices: 0, flagged: 0, errors: 0, targets: 0, errorSamples: [] as string[] };
     try {
       let offset: number | null = 0;
-      for (let i = 0; i < 60 && offset !== null; i++) {
+      for (let i = 0; i < 80 && offset !== null; i++) {
         const res: Response = await fetch(`/api/admin/crm-invoice-sweep?offset=${offset}`, { method: "POST" });
         const j = await res.json();
         if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+        acc.targets = j.targets ?? acc.targets;
+        acc.scanned += j.chunk?.scanned || 0;
+        acc.with_invoices += j.chunk?.with_invoices || 0;
+        acc.flagged += j.chunk?.flagged || 0;
+        acc.errors += j.chunk?.errors || 0;
+        if (j.chunk?.error_samples?.length && acc.errorSamples.length < 12) acc.errorSamples.push(...j.chunk.error_samples);
+        setSweepStats({ ...acc });
         if (j.server_chained) {
           setSweepMsg(`Sweeping ${j.targets} clients in the background — refresh in a few minutes.`);
           offset = null;
         } else {
           offset = j.next_offset;
-          setSweepMsg(
-            offset === null
-              ? `Done — ${j.targets} clients scanned.`
-              : `${Math.min(offset, j.targets)} of ${j.targets} scanned…`
-          );
+          setSweepMsg(offset === null ? `Done — scanned ${acc.scanned} of ${j.targets}.` : `${Math.min(offset, j.targets)} of ${j.targets} scanned…`);
         }
       }
       setTimeout(() => router.refresh(), 1500);
@@ -197,6 +204,34 @@ export function CrmInvoiceRevenueClient({
           )}
         </div>
       </div>
+
+      {sweepStats && (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 mb-4 text-sm">
+          <div className="font-bold text-navy mb-1">Last sweep — what it saw</div>
+          <div className="flex flex-wrap gap-4 text-xs">
+            <span><strong>{sweepStats.scanned}</strong> / {sweepStats.targets} clients scanned</span>
+            <span className={sweepStats.with_invoices > 0 ? "text-navy" : "text-ink-light"}><strong>{sweepStats.with_invoices}</strong> have CRM invoices in income</span>
+            <span className={sweepStats.flagged > 0 ? "text-amber-700 font-semibold" : "text-ink-light"}><strong>{sweepStats.flagged}</strong> flagged (double-count)</span>
+            <span className={sweepStats.errors > 0 ? "text-red-700" : "text-ink-light"}><strong>{sweepStats.errors}</strong> errored/skipped</span>
+          </div>
+          {sweepStats.with_invoices === 0 && sweepStats.scanned > 0 && (
+            <p className="mt-2 text-xs text-ink-slate">
+              No scanned client has invoice-type income on the cash P&L. Either the pattern is genuinely
+              rare (most painters take deposits, don&apos;t sync CRM invoices), or a client&apos;s CRM posts
+              via a different type/account — run the debug on a client you KNOW has CRM invoices:
+              <code className="ml-1 bg-white border border-slate-200 rounded px-1">/api/admin/crm-invoice-debug?client_link_id=…</code>
+            </p>
+          )}
+          {sweepStats.errors > 0 && sweepStats.errorSamples.length > 0 && (
+            <details className="mt-2 text-xs text-ink-slate">
+              <summary className="cursor-pointer font-semibold">{sweepStats.errors} clients errored (likely QBO re-auth needed) — show</summary>
+              <ul className="mt-1 ml-4 list-disc space-y-0.5">
+                {sweepStats.errorSamples.map((e, i) => <li key={i}>{e}</li>)}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
 
       {flagged.length > 0 && (
         <div className="rounded-xl border border-teal/30 bg-teal-lighter/30 p-4 mb-4">

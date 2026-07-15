@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { getValidToken, qboRequest } from "@/lib/qbo";
-import { fetchPLDetailAll } from "@/lib/qbo-reports";
-import { analyzeCrmInvoiceRevenue } from "@/lib/crm-invoice-revenue";
+import { fetchPLDetailAll, fetchProfitAndLoss } from "@/lib/qbo-reports";
+import { analyzeCrmInvoiceRevenue, incomeAccountNamesFromSummary } from "@/lib/crm-invoice-revenue";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -56,8 +56,13 @@ export async function POST(request: Request) {
   try {
     const token = await getValidToken(clientLinkId, service as any);
     const realm = (client as any).qbo_realm_id as string;
-    const plDetail = await fetchPLDetailAll(realm, token, start, end, "Cash");
-    const report = analyzeCrmInvoiceRevenue(plDetail);
+    const [plDetail, plSummary] = await Promise.all([
+      fetchPLDetailAll(realm, token, start, end, "Cash"),
+      fetchProfitAndLoss(realm, token, start, end, "Cash"),
+    ]);
+    // Deposit leg = deposits into real income accounts only (UF-clearing +
+    // processing-fee deposits are not revenue — see incomeAccountNamesFromSummary).
+    const report = analyzeCrmInvoiceRevenue(plDetail, incomeAccountNamesFromSummary(plSummary));
 
     // Enrich paired invoices with live Balance → which remediation applies.
     const ids = [...new Set(report.pairs.map((p) => p.invoice.txn_id).filter(Boolean))];
