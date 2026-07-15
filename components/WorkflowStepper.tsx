@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Check, Circle, Loader2 } from "lucide-react";
 
-export type WorkflowStep = "coa" | "reclass" | "stripe" | "rules" | "bs";
+export type WorkflowStep = "coa" | "reclass" | "revenue" | "stripe" | "rules" | "bs";
 export type StepState = "pending" | "active" | "complete" | "skipped";
 
 interface StepDef {
@@ -27,15 +27,23 @@ const STEPS: StepDef[] = [
     href: (cid) => cid ? `/reclass/new?client=${cid}&workflow=full_categorization&redo=1` : "/reclass/new",
   },
   {
-    key: "rules", num: 3, label: "Bank Rules",
+    // Revenue verification — catch the CRM invoice/deposit double-count (the
+    // Dominion pattern) right after categorization, BEFORE bank rules lock
+    // vendor→account mappings in. Supports historical date ranges so old
+    // duplicate invoices surface too.
+    key: "revenue", num: 3, label: "Revenue Check",
+    href: (cid) => cid ? `/revenue-check/${cid}` : "/clients",
+  },
+  {
+    key: "rules", num: 4, label: "Bank Rules",
     href: (cid) => cid ? `/rules/new?client=${cid}` : "/rules/new",
   },
   {
-    key: "stripe", num: 4, label: "Stripe Recon",
+    key: "stripe", num: 5, label: "Stripe Recon",
     href: (cid) => cid ? `/stripe-recon/new?client=${cid}` : "/stripe-recon/new",
   },
   {
-    key: "bs", num: 5, label: "Balance Sheet",
+    key: "bs", num: 6, label: "Balance Sheet",
     href: (cid) => cid ? `/balance-sheet/${cid}` : "/clients",
   },
 ];

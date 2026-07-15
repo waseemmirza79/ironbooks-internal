@@ -59,7 +59,7 @@ export default async function StripeReconReviewPage({
           title={`Stripe Reconciliation — ${clientLink?.client_name}`}
           subtitle="Pulling Stripe deposits and matching them to invoices..."
         />
-        <WorkflowStepper currentStep="stripe" currentState="active" completedSteps={["coa", "reclass", "rules"]} />
+        <WorkflowStepper currentStep="stripe" currentState="active" completedSteps={["coa", "reclass", "revenue", "rules"]} />
         <div className="px-8 py-12 flex flex-col items-center">
           <Loader2 size={48} className="animate-spin text-teal mb-4" />
           <p className="text-sm text-ink-slate">
@@ -127,7 +127,7 @@ export default async function StripeReconReviewPage({
         <WorkflowStepper
           currentStep="stripe"
           currentState="active"
-          completedSteps={["coa", "reclass", "rules"]}
+          completedSteps={["coa", "reclass", "revenue", "rules"]}
         />
         <div className="px-8 py-6 max-w-2xl">
           <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-5">
@@ -229,7 +229,7 @@ export default async function StripeReconReviewPage({
         <WorkflowStepper
           currentStep="stripe"
           currentState="active"
-          completedSteps={["coa", "reclass", "rules"]}
+          completedSteps={["coa", "reclass", "revenue", "rules"]}
         />
         <div className="px-8 py-6 space-y-6">
           {canUpgradeToStripeApi && (
@@ -271,7 +271,7 @@ export default async function StripeReconReviewPage({
         title={`Stripe Reconciliation — ${clientLink?.client_name}`}
         subtitle={`${matches?.length || 0} deposits matched`}
       />
-      <WorkflowStepper currentStep="stripe" currentState="active" completedSteps={["coa", "reclass", "rules"]} />
+      <WorkflowStepper currentStep="stripe" currentState="active" completedSteps={["coa", "reclass", "revenue", "rules"]} />
       <div className="px-8 py-6 space-y-6">
         {canUpgradeToStripeApi && (
           <UpgradeToStripeApiBanner

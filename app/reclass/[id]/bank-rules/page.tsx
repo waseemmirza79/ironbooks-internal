@@ -254,7 +254,7 @@ export default async function BankRulesFromReclassPage({
       <WorkflowStepper
         currentStep="rules"
         currentState="active"
-        completedSteps={["coa", "reclass"]}
+        completedSteps={["coa", "reclass", "revenue"]}
         clientLinkId={job.client_link_id}
       />
       <div className="px-8 py-6 max-w-4xl">

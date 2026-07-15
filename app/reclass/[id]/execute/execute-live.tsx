@@ -257,15 +257,41 @@ export function ExecuteLive({
         )}
       </div>
 
-      {/* Next-step handoff — matches the stepper order: Bank Rules is
-          ALWAYS the primary Step 3 card; Stripe Recon (when deposits are
-          detected) follows as the Step 4 card, not in front of it. */}
+      {/* Next-step handoff — matches the stepper order: Revenue Check is the
+          Step 3 card (catch CRM invoice/deposit double-counts before rules
+          lock mappings in), Bank Rules is Step 4, Stripe Recon (when deposits
+          are detected) follows as Step 5. */}
       {job.status === "complete" &&
         job.workflow === "full_categorization" &&
         !job.is_rollback &&
         job.client_link_id && (
           <>
             <h2 className="text-sm font-semibold text-ink-slate">Next steps based on your workflow</h2>
+            <div className="rounded-2xl p-5 bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-200">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div className="rounded-full flex items-center justify-center w-10 h-10 bg-white flex-shrink-0">
+                    <Receipt className="text-amber-600" size={20} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700">Step 3 · Always next</span>
+                    <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
+                      Revenue Check
+                    </h3>
+                    <p className="text-sm text-ink-slate">
+                      Verify revenue isn&apos;t double-counted: CRM-pushed invoices + the bank deposits
+                      paying them both landing in income. Pick a wider date range for historical cleanups.
+                    </p>
+                  </div>
+                </div>
+                <Link
+                  href={`/revenue-check/${job.client_link_id}?job=${job.id}`}
+                  className="inline-flex items-center gap-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg flex-shrink-0 shadow-md"
+                >
+                  Run Revenue Check <ArrowRight size={16} />
+                </Link>
+              </div>
+            </div>
             <div className="rounded-2xl p-5 bg-gradient-to-br from-teal-lighter to-blue-50 border-2 border-teal/30">
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-start gap-3 flex-1 min-w-0">
@@ -273,7 +299,7 @@ export function ExecuteLive({
                     <Receipt className="text-teal" size={20} />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-teal">Step 3 · Always next</span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-teal">Step 4</span>
                     <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
                       Generate Bank Rules
                     </h3>
@@ -300,7 +326,7 @@ export function ExecuteLive({
                       <CreditCard className="text-purple-600" size={20} />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-purple-700">Step 4 · Optional</span>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-purple-700">Step 5 · Optional</span>
                       <h3 className="font-bold text-base text-navy mt-0.5 mb-1">
                         Stripe AR Reconciliation
                       </h3>

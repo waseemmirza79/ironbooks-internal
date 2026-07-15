@@ -45,7 +45,7 @@ export default async function BalanceSheetLandingPage({
       <WorkflowStepper
         currentStep="bs"
         currentState="active"
-        completedSteps={["coa", "reclass", "rules", "stripe"]}
+        completedSteps={["coa", "reclass", "revenue", "rules", "stripe"]}
         clientLinkId={(client as any).id}
       />
       <div className="px-8 py-6 max-w-5xl">

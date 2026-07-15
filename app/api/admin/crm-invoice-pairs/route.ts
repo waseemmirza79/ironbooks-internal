@@ -31,8 +31,10 @@ export async function POST(request: Request) {
 
   const service = createServiceSupabase();
   const { data: actor } = await service.from("users").select("role").eq("id", user.id).single();
-  if (!["admin", "lead"].includes((actor as any)?.role || "")) {
-    return NextResponse.json({ error: "Forbidden — admin or lead only" }, { status: 403 });
+  // Read-only analysis: bookkeepers run it as the cleanup Revenue Check step;
+  // the WRITE (set revenue mode) stays admin/lead-only in /api/admin/revenue-mode.
+  if (!["admin", "lead", "bookkeeper"].includes((actor as any)?.role || "")) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const body = await request.json().catch(() => ({}));

@@ -3,8 +3,9 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Loader2, RefreshCw, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2, Banknote,
+  Loader2, RefreshCw, ChevronDown, ChevronRight, AlertTriangle, Banknote,
 } from "lucide-react";
+import { CrmPairsTable } from "@/components/crm-pairs-table";
 
 type Finding = {
   client_link_id: string;
@@ -24,20 +25,7 @@ type Finding = {
   found_at: string;
 };
 
-type Pair = {
-  invoice: { txn_id: string; doc_number: string | null; customer: string | null; date: string; total: number; accounts: string[] };
-  deposit: { txn_id: string; date: string; account: string; customer: string | null; amount: number };
-  factor: number;
-  tax_label: string;
-  same_customer: boolean;
-  confidence: string;
-  invoice_balance: number | null;
-  scenario: "paid_in_qbo" | "open" | "unknown";
-};
-
 const fmt = (n: number) => (n < 0 ? "-$" : "$") + Math.abs(Math.round(n || 0)).toLocaleString();
-const fmtC = (n: number) =>
-  (n < 0 ? "-$" : "$") + Math.abs(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export function CrmInvoiceRevenueClient({
   findings,
@@ -296,71 +284,11 @@ function FragmentRow({
             {pr?.error && (
               <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{pr.error}</div>
             )}
-            {pr?.data && <PairsTable data={pr.data} />}
+            {pr?.data && <CrmPairsTable data={pr.data} />}
           </td>
         </tr>
       )}
     </>
-  );
-}
-
-function PairsTable({ data }: { data: any }) {
-  const pairs: Pair[] = data.pairs || [];
-  const sc = data.summary?.scenario_counts || {};
-  if (pairs.length === 0) {
-    return <div className="text-xs text-ink-light py-2">No deposit↔invoice pairs in the live pull.</div>;
-  }
-  return (
-    <div>
-      <div className="flex items-center gap-3 text-[11px] text-ink-slate mb-2">
-        <span className="font-bold text-navy">{pairs.length} pairs</span>
-        {sc.paid_in_qbo ? <span>{sc.paid_in_qbo} paid-in-QBO (deposit is the dupe leg)</span> : null}
-        {sc.open ? <span>{sc.open} open (deposit never applied)</span> : null}
-        {sc.unknown ? <span>{sc.unknown} unknown</span> : null}
-      </div>
-      <div className="border border-gray-200 rounded-lg overflow-x-auto bg-white">
-        <table className="w-full text-xs">
-          <thead className="bg-gray-50">
-            <tr className="text-[10px] uppercase tracking-wide text-ink-slate">
-              <th className="text-left font-semibold px-3 py-2">Customer</th>
-              <th className="text-left font-semibold px-3 py-2">Invoice</th>
-              <th className="text-right font-semibold px-3 py-2">Invoice net</th>
-              <th className="text-left font-semibold px-3 py-2">Deposit → account</th>
-              <th className="text-right font-semibold px-3 py-2">Deposit</th>
-              <th className="text-left font-semibold px-3 py-2">Match</th>
-              <th className="text-left font-semibold px-3 py-2">Scenario</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {pairs.map((p, i) => (
-              <tr key={i} className="hover:bg-gray-50">
-                <td className="px-3 py-2 text-navy font-medium">{p.invoice.customer || p.deposit.customer || "—"}</td>
-                <td className="px-3 py-2 text-ink-slate whitespace-nowrap">
-                  {p.invoice.doc_number ? `#${p.invoice.doc_number}` : p.invoice.txn_id} · {p.invoice.date}
-                </td>
-                <td className="px-3 py-2 text-right font-mono">{fmtC(p.invoice.total)}</td>
-                <td className="px-3 py-2 text-ink-slate">{p.deposit.account} · {p.deposit.date}</td>
-                <td className="px-3 py-2 text-right font-mono">{fmtC(p.deposit.amount)}</td>
-                <td className="px-3 py-2 whitespace-nowrap">
-                  <span className="text-teal-dark font-semibold">{p.tax_label}</span>
-                  {p.same_customer && <CheckCircle2 size={11} className="inline ml-1 text-emerald-600" />}
-                  <span className="text-ink-light ml-1">({p.confidence})</span>
-                </td>
-                <td className="px-3 py-2">
-                  {p.scenario === "paid_in_qbo" ? (
-                    <span className="text-red-700 font-semibold">deposit is the dupe (invoice paid)</span>
-                  ) : p.scenario === "open" ? (
-                    <span className="text-amber-700 font-semibold">invoice open — never applied</span>
-                  ) : (
-                    <span className="text-ink-light">unknown</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
   );
 }
 

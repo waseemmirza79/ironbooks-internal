@@ -75,7 +75,7 @@ export default async function NewStripeReconPage({
       <WorkflowStepper
         currentStep="stripe"
         currentState="active"
-        completedSteps={["coa", "reclass", "rules"]}
+        completedSteps={["coa", "reclass", "revenue", "rules"]}
         clientLinkId={preselectId || undefined}
       />
       <div className="px-8 py-6 max-w-3xl">
