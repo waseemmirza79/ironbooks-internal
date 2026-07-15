@@ -4,6 +4,7 @@ import * as XLSX from "xlsx";
 import { getValidToken, fetchAllAccounts, QBOReauthRequiredError } from "@/lib/qbo";
 import { applyMasterCoaToClient, type MasterCoaRow } from "@/lib/apply-master-coa";
 import { normalizeAccountName } from "@/lib/account-name";
+import { consolidateBankRulesForExport } from "@/lib/rules-eligibility";
 
 /**
  * GET /api/rules/export-qbo/[client_link_id]
@@ -181,9 +182,19 @@ export async function GET(
     }
   }
 
-  // Build the rows in QBO's exact format. One row per rule.
+  // Retroactively broaden: collapse specific per-descriptor rules into one
+  // "contains <brand>" rule per known vendor (mirrors the candidate-generator
+  // consolidation shipped 2026-07-15, applied to already-stored rules so old
+  // clients' .xls files get the simpler, broader ruleset too). Substring-safe
+  // + conflict-safe — see consolidateBankRulesForExport. The pushed_to_qbo
+  // flip below still marks every ORIGINAL rule (they're all represented).
+  const { rules: exportRules, collapsedFrom } = consolidateBankRulesForExport(
+    rules as Array<{ vendor_pattern: string; target_account_name: string }>
+  );
+
+  // Build the rows in QBO's exact format. One row per (consolidated) rule.
   const rows: Array<Record<string, string>> = [];
-  for (const r of rules) {
+  for (const r of exportRules) {
     const vendor = (r.vendor_pattern || "").trim();
     const account = (r.target_account_name || "").trim();
     if (!vendor || !account) continue;
@@ -281,6 +292,7 @@ export async function GET(
       client_link_id,
       client_name: clientLink.client_name,
       rule_count: rows.length,
+      rules_collapsed: collapsedFrom,
       include_mode: includeMode,
       format: "biff8_xls",
       accounts_created: accountsEnsured.created,

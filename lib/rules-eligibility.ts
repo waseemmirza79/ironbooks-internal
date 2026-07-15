@@ -130,6 +130,72 @@ export function ruleGroupKey(
   return { key, display: row.vendor_name || key };
 }
 
+export interface ExportableRule {
+  vendor_pattern: string;
+  target_account_name: string;
+}
+
+/**
+ * Retroactively broaden STORED bank rules for a QBO export — the same "one
+ * broad rule per known brand" consolidation the candidate generator does
+ * (e3d5974, Mike 2026-07-14), applied to rules that were created before that
+ * update (one specific rule per raw descriptor). Non-destructive: transforms
+ * the export list only, never the stored rows.
+ *
+ * A rule is broadened to `contains <brand>` ONLY when:
+ *   1. its pattern resolves to a KNOWN vendor brand, AND
+ *   2. that brand is a literal (case-insensitive) substring of the pattern —
+ *      guarantees the broad rule matches a SUPERSET of what the specific rule
+ *      matched (QBO "contains" is literal, so `Sherwin-Williams` must not
+ *      replace `SHERWIN WILLIAMS` and silently stop matching), AND
+ *   3. that brand maps to exactly ONE target account across this client's
+ *      rules — a brand pointing at two accounts can't collapse to one broad
+ *      rule without mis-routing, so those stay specific.
+ * Everything else passes through unchanged. Duplicates (same pattern+target)
+ * are de-duped. Returns the consolidated list + how many rows it collapsed.
+ */
+export function consolidateBankRulesForExport<T extends ExportableRule>(
+  rules: T[]
+): { rules: ExportableRule[]; collapsedFrom: number } {
+  const clean = (s: string) => String(s || "").trim();
+  const contains = (hay: string, needle: string) =>
+    hay.toLowerCase().includes(needle.toLowerCase());
+
+  // Pass 1 — resolve each rule's broadenable brand (substring-safe) + detect
+  // brand→multiple-target conflicts.
+  const brandOf = new Map<T, string | null>();
+  const brandTargets = new Map<string, Set<string>>();
+  for (const r of rules) {
+    const pattern = clean(r.vendor_pattern);
+    const brandRaw = extractKnownVendorName(pattern);
+    const brand = brandRaw && contains(pattern, brandRaw) ? brandRaw : null;
+    brandOf.set(r, brand);
+    if (brand) {
+      const key = brand.toLowerCase();
+      if (!brandTargets.has(key)) brandTargets.set(key, new Set());
+      brandTargets.get(key)!.add(clean(r.target_account_name).toLowerCase());
+    }
+  }
+  const safeBrand = (brand: string) => (brandTargets.get(brand.toLowerCase())?.size ?? 0) === 1;
+
+  // Pass 2 — emit, collapsing broadenable rules and de-duping pass-throughs.
+  const out: ExportableRule[] = [];
+  const seen = new Set<string>();
+  let collapsedFrom = 0;
+  for (const r of rules) {
+    const brand = brandOf.get(r) || null;
+    const target = clean(r.target_account_name);
+    const useBroad = brand && safeBrand(brand);
+    const pattern = useBroad ? brand! : clean(r.vendor_pattern);
+    if (!pattern || !target) continue;
+    const dedupeKey = `${pattern.toLowerCase()}|${target.toLowerCase()}`;
+    if (seen.has(dedupeKey)) { collapsedFrom++; continue; }
+    seen.add(dedupeKey);
+    out.push({ vendor_pattern: pattern, target_account_name: target });
+  }
+  return { rules: out, collapsedFrom };
+}
+
 /** Row-level ineligibility: why a row can never contribute to any rule. */
 export function rowIneligibilityReason(row: RuleSourceRow): RowIneligibleReason | null {
   if (!RULE_ELIGIBLE_DECISIONS.has(row.decision)) return "rejected";

@@ -45,7 +45,10 @@ export function BankRulesFleetClient() {
     setDownloading(row.client_link_id);
     setDownloadErr((e) => ({ ...e, [row.client_link_id]: "" }));
     try {
-      const res = await fetch(`/api/rules/export-qbo/${row.client_link_id}`);
+      // include=all → the FULL broadened ruleset (existing rules are already
+      // pushed_to_qbo, which the default "new" mode skips). The workflow here
+      // is clear-old-rules-in-QBO then import this complete set.
+      const res = await fetch(`/api/rules/export-qbo/${row.client_link_id}?include=all`);
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
         throw new Error(b.error || `Download failed (${res.status})`);
