@@ -2,7 +2,7 @@ import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { createServerSupabase } from "@/lib/supabase";
 import Link from "next/link";
-import { Users, FileCheck, Shield, Activity, AlertTriangle, ArrowRight, Clock, Mail, CreditCard, RefreshCw, Phone, Repeat, Video, Landmark } from "lucide-react";
+import { Users, FileCheck, Shield, Activity, AlertTriangle, ArrowRight, Clock, Mail, CreditCard, RefreshCw, Phone, Repeat, Video, Landmark, ReceiptText } from "lucide-react";
 import { DupSweepButton } from "./dup-sweep-button";
 
 export default async function AdminOverviewPage() {
@@ -155,6 +155,12 @@ export default async function AdminOverviewPage() {
               icon: Landmark,
               title: "Revenue integrity",
               desc: "Deposits posted straight into revenue — the invoice+deposit double-count · fleet report",
+            },
+            {
+              href: "/admin/crm-invoice-revenue",
+              icon: ReceiptText,
+              title: "CRM invoice revenue",
+              desc: "CRM-pushed invoices double-counting deposit revenue (Dominion pattern) · review pairs + set deposits-only per client",
             },
           ].map((t) => {
             const Icon = t.icon;

@@ -91,7 +91,7 @@ export default async function ReclassReviewPage({
   // Fetch the client's industry (the view may not expose it)
   const { data: clientLink } = await service
     .from("client_links")
-    .select("industry, qbo_realm_id")
+    .select("industry, qbo_realm_id, revenue_recognition_mode" as any)
     .eq("id", (job as any).client_link_id)
     .maybeSingle();
   // Industry is REQUIRED — silent default to "painters" caused chimney
@@ -100,6 +100,32 @@ export default async function ReclassReviewPage({
   // dropping the wrong dropdown options on the bookkeeper.
   const industry = (clientLink as any)?.industry as string | null;
   const industryWarnings: string[] = [];
+
+  // Duplicate-invoice-revenue check (the Dominion CRM pattern) — warn the
+  // bookkeeper BEFORE they categorize. Two triggers: the client is already on
+  // cash-deposits-only revenue (info banner), or the fleet sweep flagged this
+  // client and no mode has been set yet (warning banner). Fail-soft — a
+  // missing column or audit row never blocks the review page.
+  const revenueMode =
+    (clientLink as any)?.revenue_recognition_mode === "deposits_only" ? "deposits_only" : "standard";
+  let crmRevenueWarning: string | null = null;
+  if (revenueMode !== "deposits_only") {
+    try {
+      const { data: findingRows } = await service
+        .from("audit_log")
+        .select("created_at, request_payload")
+        .eq("event_type", "crm_invoice_revenue_finding")
+        .filter("request_payload->>client_link_id", "eq", (job as any).client_link_id)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      const finding: any = (findingRows as any[])?.[0]?.request_payload;
+      if (finding?.flagged) {
+        crmRevenueWarning = `Possible duplicate invoice revenue — ${finding.reason} Confirm which leg is real before trusting income accounts (Admin → CRM invoice revenue).`;
+      }
+    } catch {
+      /* warning is best-effort only */
+    }
+  }
 
   // Build the target-account dropdown from the client's CURRENT (live) QBO
   // chart of accounts — the accounts a transaction can ACTUALLY be posted to
@@ -213,6 +239,23 @@ export default async function ReclassReviewPage({
             <ul className="list-disc ml-5 space-y-1 text-xs">
               {industryWarnings.map((w, i) => <li key={i}>{w}</li>)}
             </ul>
+          </div>
+        )}
+        {revenueMode === "deposits_only" && (
+          <div className="rounded-xl border-2 border-teal/40 bg-teal-lighter/40 p-3 text-sm text-navy">
+            <div className="font-bold mb-1">Cash-deposits-only revenue client</div>
+            <p className="text-xs">
+              This client&apos;s revenue is recognized from actual bank deposits only — their CRM pushes
+              invoices that would double-count it. Deposits into income accounts are <strong>real
+              revenue</strong> here (don&apos;t recategorize them away), and invoice-fed accounts like
+              &quot;Billable Expense Income&quot; are excluded from statements automatically.
+            </p>
+          </div>
+        )}
+        {crmRevenueWarning && (
+          <div className="rounded-xl border-2 border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+            <div className="font-bold mb-1">⚠ Check for duplicate invoice revenue</div>
+            <p className="text-xs">{crmRevenueWarning}</p>
           </div>
         )}
         {/* Duplicates stage — dedupe the books BEFORE categorizing them.
