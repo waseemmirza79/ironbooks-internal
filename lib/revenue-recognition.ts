@@ -26,21 +26,24 @@ export function normalizeRevenueMode(v: unknown): RevenueRecognitionMode {
   return v === "deposits_only" ? "deposits_only" : "standard";
 }
 
-/** A P&L-detail row hitting an ordinary-income account. */
-function isIncomeSection(section: string | null | undefined): boolean {
-  const s = (section || "").toLowerCase();
-  if (!s) return false;
-  if (/cost of goods|cogs|expense/.test(s)) return false;
-  return /income|revenue|sales/.test(s);
-}
-
 /**
  * An income posting that came from an INVOICE (the CRM duplicate under
- * deposits_only). Actual cash receipts — Deposit, Sales Receipt, Payment,
- * Journal Entry, Transfer — are kept. Matched on the report's txn_type.
+ * deposits_only). Every Invoice-type row on a P&L detail IS income — an
+ * invoice credits an income account and debits A/R (balance sheet, off the
+ * P&L) — so txn_type alone identifies it, WITHOUT the P&L section. That
+ * matters: QBO labels the detail report's top section "Ordinary
+ * Income/Expenses" (income + expenses combined), so any /income/ && !/expense/
+ * section test rejects everything (the bug that silently excluded $0 for
+ * Dominion — 74 invoice rows in Billable Expense Income, all dropped).
  */
 export function isInvoiceRecognizedIncome(txnType: string | null | undefined): boolean {
   return /invoice/i.test(txnType || "");
+}
+
+/** Actual cash-receipt income we KEEP under deposits_only (deposits, customer
+ *  payments, sales receipts). Also inherently income on a P&L detail. */
+function isCashReceiptIncome(txnType: string | null | undefined): boolean {
+  return /deposit|payment|sales\s*receipt/i.test(txnType || "");
 }
 
 export interface ExcludedIncomeRow {
@@ -89,10 +92,12 @@ export function computeRevenueAdjustment(
   let excluded = 0;
   let kept = 0;
 
+  // Identify income by transaction type, NOT the P&L section (which is the
+  // combined "Ordinary Income/Expenses" wrapper on the detail report). Invoice
+  // rows are the CRM duplicate leg; deposit/payment/sales-receipt rows are the
+  // actual cash we keep. Expense/Bill rows are neither and fall through.
   for (const row of plDetail) {
-    if (!isIncomeSection(row.section)) continue;
     const amount = Number(row.amount) || 0;
-    // Only exclude in deposits_only mode; standard keeps everything.
     if (mode === "deposits_only" && isInvoiceRecognizedIncome(row.txn_type)) {
       excluded += amount;
       const acct = row.account || "(no account)";
@@ -105,7 +110,7 @@ export function computeRevenueAdjustment(
         doc_number: row.doc_number ?? null,
         amount: r2(amount),
       });
-    } else {
+    } else if (isCashReceiptIncome(row.txn_type)) {
       kept += amount;
     }
   }

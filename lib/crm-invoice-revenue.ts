@@ -77,13 +77,15 @@ export const CRM_INVOICE_MIN_COUNT = 3;
 
 const r2 = (n: number) => Math.round((n || 0) * 100) / 100;
 
-function isIncomeSection(section: string | null | undefined): boolean {
-  const s = (section || "").toLowerCase();
-  if (!s) return false;
-  if (/cost of goods|cogs|expense/.test(s)) return false;
-  return /income|revenue|sales/.test(s);
-}
-
+// Income legs are identified by TRANSACTION TYPE, not the P&L section. On the
+// ProfitAndLossDetail report the top section is the combined "Ordinary
+// Income/Expenses" wrapper (contains both "income" and "expense"), so a
+// section regex rejects every row — the bug that returned 0 invoices/0
+// deposits for Dominion despite 74 invoice + 19 deposit rows being present.
+// Invoice rows credit income (A/R is off the P&L); deposit rows on a P&L
+// detail hit income accounts by construction. An optional incomeAccounts set
+// lets a caller further restrict the deposit leg (belt-and-suspenders against
+// a rare deposit into a contra-expense).
 const isInvoice = (t: string | null | undefined) => /invoice/i.test(t || "");
 const isDeposit = (t: string | null | undefined) => /^deposit$/i.test((t || "").trim());
 
@@ -117,7 +119,8 @@ export function taxFactorLabel(factor: number): DepositInvoicePair["taxLabel"] |
  * nearest date).
  */
 export function analyzeCrmInvoiceRevenue(
-  plDetail: PLDetailRow[] | null | undefined
+  plDetail: PLDetailRow[] | null | undefined,
+  incomeAccounts?: Set<string> | null
 ): CrmInvoiceRevenueReport {
   const empty: CrmInvoiceRevenueReport = {
     invoiceTxnCount: 0,
@@ -139,8 +142,11 @@ export function analyzeCrmInvoiceRevenue(
   const invoiceByAccount: Record<string, number> = {};
   const deposits: IncomeDepositRow[] = [];
 
+  const incomeAcctLc = incomeAccounts
+    ? new Set([...incomeAccounts].map((a) => (a || "").toLowerCase()))
+    : null;
+
   for (const row of plDetail) {
-    if (!isIncomeSection(row.section)) continue;
     const amount = Number(row.amount) || 0;
 
     if (isInvoice(row.txn_type)) {
@@ -163,6 +169,8 @@ export function analyzeCrmInvoiceRevenue(
       invoiceByAccount[acct] = r2((invoiceByAccount[acct] || 0) + amount);
       invoiceByTxn.set(key, inv);
     } else if (isDeposit(row.txn_type)) {
+      // Restrict to income accounts only when the caller supplied the set.
+      if (incomeAcctLc && !incomeAcctLc.has((row.account || "").toLowerCase())) continue;
       deposits.push({
         txn_id: row.txn_id,
         date: row.date,
@@ -246,11 +254,15 @@ export function analyzeCrmInvoiceRevenue(
   const pairedInvoiceTotal = r2(pairs.reduce((s, p) => s + p.invoice.total, 0));
   const pairedDepositTotal = r2(pairs.reduce((s, p) => s + p.deposit.amount, 0));
 
-  // ── Flag heuristic ──
-  const hasInvoiceLeg = invoices.length >= CRM_INVOICE_MIN_COUNT;
+  // ── Flag heuristic ── STRUCTURAL: the double-count is a material invoice
+  // leg AND a material deposit-into-income leg both present. Pairing is
+  // supporting evidence, NOT a gate — real books use batch payouts and
+  // deposits with no customer name that don't pair 1:1, so requiring pairs
+  // would miss obvious double-counts (Dominion: $48.9K invoices + $45.5K
+  // deposits, few clean pairs).
+  const hasInvoiceLeg = invoices.length >= CRM_INVOICE_MIN_COUNT && invoiceIncomeTotal >= CRM_DEPOSIT_FLOOR;
   const hasDepositLeg = depositIncomeTotal >= CRM_DEPOSIT_FLOOR;
-  const evidence = pairs.length >= 2 || customersBothLegs.length >= 2;
-  const flagged = hasInvoiceLeg && hasDepositLeg && evidence;
+  const flagged = hasInvoiceLeg && hasDepositLeg;
 
   const fmt = (n: number) => `$${Math.abs(Math.round(n)).toLocaleString()}`;
   let reason: string;
@@ -259,9 +271,10 @@ export function analyzeCrmInvoiceRevenue(
   } else if (deposits.length === 0) {
     reason = "Invoices present but no deposits posted into income — payments look properly matched.";
   } else if (flagged) {
-    reason = `${invoices.length} invoices recognizing ${fmt(invoiceIncomeTotal)} AND ${deposits.length} deposits totaling ${fmt(depositIncomeTotal)} in income — ${pairs.length} deposit↔invoice matches (${fmt(pairedDepositTotal)}). Likely CRM double-count.`;
+    const pairNote = pairs.length > 0 ? ` (${pairs.length} clean deposit↔invoice matches, ${fmt(pairedDepositTotal)})` : " (no clean 1:1 matches — likely batch payouts)";
+    reason = `${invoices.length} invoices recognizing ${fmt(invoiceIncomeTotal)} AND ${deposits.length} deposits totaling ${fmt(depositIncomeTotal)} in income — the same revenue counted twice${pairNote}. Recognize deposits only.`;
   } else {
-    reason = `Both legs present but evidence is thin (${pairs.length} pairs, ${customersBothLegs.length} shared customers) — review manually.`;
+    reason = `Both legs present but below the materiality floor (invoices ${fmt(invoiceIncomeTotal)}, deposits ${fmt(depositIncomeTotal)}) — review manually.`;
   }
 
   return {
