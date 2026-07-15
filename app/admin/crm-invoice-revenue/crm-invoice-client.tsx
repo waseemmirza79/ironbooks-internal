@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
-  Loader2, RefreshCw, ChevronDown, ChevronRight, AlertTriangle, Banknote,
+  Loader2, RefreshCw, ChevronDown, ChevronRight, AlertTriangle, Banknote, CalendarRange, ExternalLink, CheckCircle2,
 } from "lucide-react";
 import { CrmPairsTable } from "@/components/crm-pairs-table";
+import { QboRemediationPanel } from "@/components/QboRemediationPanel";
 
 type Finding = {
   client_link_id: string;
@@ -43,6 +45,43 @@ export function CrmInvoiceRevenueClient({
   const [pairs, setPairs] = useState<Record<string, { loading: boolean; error?: string; data?: any }>>({});
   const [modeBusy, setModeBusy] = useState<string | null>(null);
   const [modeLocal, setModeLocal] = useState<Record<string, string>>({});
+
+  // Remediation date range — shared by every client's Fix-in-QuickBooks panel
+  // so Lisa sets the window once (default the full cleanup horizon so old
+  // duplicate invoices are caught, not just this year).
+  const now = new Date();
+  const yr = now.getUTCFullYear();
+  const RANGES: { key: string; label: string; start: string; end: string }[] = [
+    { key: "ytd", label: "This year", start: `${yr}-01-01`, end: now.toISOString().slice(0, 10) },
+    { key: "2y", label: `Since Jan ${yr - 1}`, start: `${yr - 1}-01-01`, end: now.toISOString().slice(0, 10) },
+    { key: "all", label: `All history (since ${yr - 5})`, start: `${yr - 5}-01-01`, end: now.toISOString().slice(0, 10) },
+  ];
+  const [rangeKey, setRangeKey] = useState("2y");
+  const range = RANGES.find((r) => r.key === rangeKey) || RANGES[1];
+
+  // "Done" tracker so Lisa can work the list top-to-bottom and see progress.
+  // Persisted per-browser so a refresh mid-fleet doesn't lose her place.
+  const [done, setDone] = useState<Set<string>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      return new Set(JSON.parse(window.localStorage.getItem("snap.crmRemediation.done") || "[]"));
+    } catch {
+      return new Set();
+    }
+  });
+  function toggleDone(id: string) {
+    setDone((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      try {
+        window.localStorage.setItem("snap.crmRemediation.done", JSON.stringify([...n]));
+      } catch {
+        /* ignore */
+      }
+      return n;
+    });
+  }
 
   const flagged = findings.filter((f) => f.flagged);
 
@@ -159,6 +198,43 @@ export function CrmInvoiceRevenueClient({
         </div>
       </div>
 
+      {flagged.length > 0 && (
+        <div className="rounded-xl border border-teal/30 bg-teal-lighter/30 p-4 mb-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="text-sm text-navy">
+              <div className="font-bold mb-0.5">Client-by-client cleanup</div>
+              <ol className="text-xs text-ink-slate list-decimal ml-4 space-y-0.5">
+                <li>Open a flagged client → <strong>Set deposits-only</strong> (fixes the statements immediately).</li>
+                <li><strong>Load QuickBooks fix</strong> → <strong>Dry run</strong> → <strong>Void</strong> the duplicate invoices (deposits are never touched).</li>
+                <li>Tick <strong>Done</strong> and move to the next. Your progress is saved on this browser.</li>
+              </ol>
+            </div>
+            <div className="text-right">
+              <div className="text-2xl font-bold text-teal-dark">
+                {flagged.filter((f) => done.has(f.client_link_id)).length}/{flagged.length}
+              </div>
+              <div className="text-[11px] text-ink-slate">clients done</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-teal/20">
+            <CalendarRange size={13} className="text-teal shrink-0" />
+            <span className="text-[11px] font-bold uppercase tracking-wide text-ink-slate">Void range</span>
+            {RANGES.map((r) => (
+              <button
+                key={r.key}
+                onClick={() => setRangeKey(r.key)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold border ${
+                  rangeKey === r.key ? "bg-teal text-white border-teal" : "bg-white text-ink-slate border-gray-200 hover:border-teal/50"
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+            <span className="text-[11px] text-ink-light ml-auto">applies to the Fix-in-QuickBooks panel for every client</span>
+          </div>
+        </div>
+      )}
+
       {findings.length === 0 ? (
         <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-ink-light">
           No findings yet. Run the sweep — clients with CRM-pushed invoices land here as each chunk finishes.
@@ -189,6 +265,9 @@ export function CrmInvoiceRevenueClient({
                     mode={mode}
                     pr={pr}
                     modeBusy={modeBusy === f.client_link_id}
+                    range={range}
+                    isDone={done.has(f.client_link_id)}
+                    onToggleDone={() => toggleDone(f.client_link_id)}
                     onToggle={() => {
                       setOpen((o) => ({ ...o, [f.client_link_id]: !isOpen }));
                       if (!isOpen && !pr) loadPairs(f);
@@ -211,6 +290,9 @@ function FragmentRow({
   mode,
   pr,
   modeBusy,
+  range,
+  isDone,
+  onToggleDone,
   onToggle,
   onSetMode,
 }: {
@@ -219,18 +301,22 @@ function FragmentRow({
   mode: string;
   pr?: { loading: boolean; error?: string; data?: any };
   modeBusy: boolean;
+  range: { start: string; end: string };
+  isDone: boolean;
+  onToggleDone: () => void;
   onToggle: () => void;
   onSetMode: (m: "standard" | "deposits_only") => void;
 }) {
   const depositsOnly = mode === "deposits_only";
   return (
     <>
-      <tr className={f.flagged ? "bg-amber-50/40 hover:bg-amber-50/70" : "hover:bg-gray-50"}>
+      <tr className={isDone ? "bg-emerald-50/50 hover:bg-emerald-50" : f.flagged ? "bg-amber-50/40 hover:bg-amber-50/70" : "hover:bg-gray-50"}>
         <td className="px-4 py-2.5">
           <button onClick={onToggle} className="flex items-center gap-1.5 text-left font-semibold text-navy hover:text-teal">
             {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            {f.client_name}
-            {f.flagged && (
+            {isDone && <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />}
+            <span className={isDone ? "line-through text-ink-slate" : ""}>{f.client_name}</span>
+            {f.flagged && !isDone && (
               <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-amber-700 bg-amber-100 border border-amber-200 rounded-full px-1.5 py-0.5">
                 <AlertTriangle size={9} /> flagged
               </span>
@@ -285,6 +371,31 @@ function FragmentRow({
               <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{pr.error}</div>
             )}
             {pr?.data && <CrmPairsTable data={pr.data} />}
+
+            {/* The QBO ledger fix — void the duplicate invoices for THIS client.
+                Uses the range Lisa picked at the top. */}
+            <div className="mt-3">
+              <QboRemediationPanel
+                clientLinkId={f.client_link_id}
+                clientName={f.client_name}
+                start={range.start}
+                end={range.end}
+              />
+            </div>
+
+            <div className="mt-3 flex items-center justify-between gap-3 flex-wrap">
+              <Link
+                href={`/revenue-check/${f.client_link_id}`}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-teal hover:underline"
+              >
+                <ExternalLink size={12} /> Open full Revenue Check (custom range, statements)
+              </Link>
+              <label className="inline-flex items-center gap-2 text-xs font-semibold text-navy cursor-pointer">
+                <input type="checkbox" checked={isDone} onChange={onToggleDone} className="accent-emerald-600" />
+                <CheckCircle2 size={13} className={isDone ? "text-emerald-600" : "text-gray-300"} />
+                Mark this client done
+              </label>
+            </div>
           </td>
         </tr>
       )}

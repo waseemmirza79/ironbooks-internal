@@ -74,9 +74,10 @@ export default async function CrmInvoiceRevenuePage() {
       <p className="text-sm text-ink-slate mb-6 max-w-3xl">
         Clients whose CRM pushes invoices into QuickBooks that get recognized as cash-basis income
         while the bank deposits paying them are <em>also</em> categorized to revenue — the same job
-        counted twice (found on Dominion Painters). Review the pairs with Lisa, then set flagged
-        clients to <strong>cash-deposits-only</strong> revenue. Clients with no invoices never
-        appear here — deposits are their correct revenue entry.
+        counted twice (found on Dominion Painters). Work the flagged list client-by-client: set
+        <strong> cash-deposits-only</strong> (fixes statements), then <strong>Fix in QuickBooks</strong>
+        to void the duplicate invoices (dry-run first; deposits are never touched). Clients with no
+        invoices never appear here — deposits are their correct revenue entry.
       </p>
       <CrmInvoiceRevenueClient
         findings={findings}

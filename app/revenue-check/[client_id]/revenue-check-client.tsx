@@ -6,7 +6,7 @@ import {
   Loader2, Search, ArrowRight, CheckCircle2, AlertTriangle, Banknote, CalendarRange,
 } from "lucide-react";
 import { CrmPairsTable } from "@/components/crm-pairs-table";
-import { QboRemediationPanel } from "./qbo-remediation-panel";
+import { QboRemediationPanel } from "@/components/QboRemediationPanel";
 
 const fmt = (n: number) => (n < 0 ? "-$" : "$") + Math.abs(Math.round(n || 0)).toLocaleString();
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
