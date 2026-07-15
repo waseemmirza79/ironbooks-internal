@@ -126,6 +126,12 @@ export function BankRulesFromReclassClient({
     accountsUnresolved: string[];
   } | null>(null);
   const [exportError, setExportError] = useState("");
+  // QBO's "Import Rules" APPENDS — it never replaces. So the client's OLD
+  // rules keep firing and re-categorize new transactions back to their old
+  // accounts, undoing SNAP's work. The QBO API can't delete rules (no
+  // /bankrule endpoint), so the bookkeeper clears them in QBO first; this
+  // gate enforces the delete-then-import order.
+  const [oldRulesCleared, setOldRulesCleared] = useState(false);
 
   async function handleDownloadQboXls() {
     setDownloading(true);
@@ -566,19 +572,62 @@ export function BankRulesFromReclassClient({
             so this is additive — bookkeeper gets QBO-native rules AND
             the SNAP backstop. */}
         {!skipped && created > 0 && (
-          <div className="max-w-md mx-auto pt-2">
+          <div className="max-w-md mx-auto pt-2 text-left">
+            {/* Step 1 — clear the client's OLD QBO rules. QBO's import appends,
+                so without this the old rules keep re-categorizing to old
+                accounts. The API can't delete rules, so it's a quick manual
+                bulk-delete in QBO, gated so it happens before the import. */}
+            <div className={`rounded-xl border p-3.5 mb-3 ${oldRulesCleared ? "border-emerald-200 bg-emerald-50/60" : "border-amber-300 bg-amber-50"}`}>
+              <div className="text-xs font-bold text-navy flex items-center gap-1.5 mb-1">
+                <span className="flex items-center justify-center w-4 h-4 rounded-full bg-navy text-white text-[10px]">1</span>
+                First: delete the client&apos;s existing QBO rules
+              </div>
+              <p className="text-[11px] text-ink-slate leading-snug mb-2">
+                QBO&apos;s import <strong>adds to</strong> existing rules — it doesn&apos;t replace them. Their old rules
+                will keep re-categorizing transactions to the old accounts and undo this cleanup. So clear them first
+                (their old accounts stay — we only remove the rules):
+              </p>
+              <ol className="text-[11px] text-navy leading-snug list-decimal ml-4 space-y-0.5 mb-2">
+                <li>Open <strong>Banking → Rules</strong> in QuickBooks (button below).</li>
+                <li>Tick the <strong>select-all</strong> checkbox at the top of the rules list.</li>
+                <li>Click <strong>Delete</strong> → confirm. Now zero rules remain.</li>
+              </ol>
+              <a
+                href="https://app.qbo.intuit.com/app/banking?tab=rules"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-[11px] font-bold text-navy border border-navy/20 hover:border-navy rounded-lg px-2.5 py-1.5 mb-2"
+              >
+                Open QBO Banking → Rules ↗
+              </a>
+              <label className="flex items-center gap-2 text-[11px] font-semibold text-navy cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={oldRulesCleared}
+                  onChange={(e) => setOldRulesCleared(e.target.checked)}
+                  className="h-3.5 w-3.5 accent-teal"
+                />
+                I deleted the client&apos;s existing QBO rules
+              </label>
+            </div>
+
+            <div className="text-xs font-bold text-navy flex items-center gap-1.5 mb-1.5">
+              <span className={`flex items-center justify-center w-4 h-4 rounded-full text-[10px] ${oldRulesCleared ? "bg-navy text-white" : "bg-gray-300 text-white"}`}>2</span>
+              Then: import SNAP&apos;s rules
+            </div>
             <button
               type="button"
               onClick={handleDownloadQboXls}
-              disabled={downloading}
-              className="inline-flex items-center gap-2 text-sm font-semibold text-teal hover:text-teal-dark border border-teal/30 hover:border-teal bg-teal-lighter/50 hover:bg-teal-lighter px-4 py-2 rounded-lg transition-colors disabled:opacity-60"
+              disabled={downloading || !oldRulesCleared}
+              title={!oldRulesCleared ? "Confirm you deleted the old rules first" : undefined}
+              className="inline-flex items-center gap-2 text-sm font-semibold text-teal hover:text-teal-dark border border-teal/30 hover:border-teal bg-teal-lighter/50 hover:bg-teal-lighter px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
               {downloading ? "Preparing file…" : "Download .xls for QBO import"}
             </button>
             <p className="text-[11px] text-ink-slate mt-2 leading-snug">
-              Upload this in QuickBooks under <strong>Banking → Rules → ⋮ → Import Rules</strong>{" "}
-              to add them natively in QBO. SNAP will keep applying them automatically either way.
+              Upload this in QuickBooks under <strong>Banking → Rules → ⋮ → Import Rules</strong>.{" "}
+              These SNAP rules are now the only ones in QBO. SNAP also keeps applying them automatically either way.
             </p>
             {exportError && (
               <p className="text-[11px] text-red-700 mt-2">{exportError}</p>
