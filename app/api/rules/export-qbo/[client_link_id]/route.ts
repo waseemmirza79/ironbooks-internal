@@ -125,11 +125,22 @@ export async function GET(
     );
   }
 
-  // Ensure every target account these rules reference actually exists in
-  // the client's live QBO — additive-only account creation, scoped to just
-  // the account names this export needs (not a full COA application). Fail
-  // soft: if QBO is unreachable or reauth is needed, export proceeds with
-  // whatever account names are already on the rules (today's behavior).
+  // Ensure every target account these rules reference actually exists in the
+  // client's live QBO (additive-only, scoped to just the names this export
+  // needs) AND resolve each rule's category to the EXACT name it carries in
+  // that live chart — including the fully-qualified "Parent:Sub" form QBO's
+  // own rule export uses.
+  //
+  // Mike, 2026-07-15 (Dominion import): QBO's import wizard pre-selects a
+  // category only on an EXACT string match against a live account. Our stored
+  // names use typographic en-dashes ("Fuel – Overhead") and bare leaf names,
+  // so an account that lives as "Fuel - Overhead" (hyphen) or a sub-account
+  // "Vehicle Expenses:Fuel - Overhead" showed a blank "Select category" even
+  // though normalizeAccountName considered it present — the file wrote the raw
+  // en-dash/leaf string, which the wizard couldn't match. Writing the live
+  // exact name makes the wizard auto-fill it. Identity resolver by default so
+  // a QBO outage/reauth falls back to today's behavior (raw stored names).
+  let resolveCategory: (name: string) => string = (name) => name;
   const accountsEnsured = { created: [] as string[], unresolved: [] as string[] };
   if (clientLink.qbo_realm_id) {
     const neededNames = [
@@ -137,8 +148,7 @@ export async function GET(
     ];
     try {
       const accessToken = await getValidToken(client_link_id, service as any, "ironbooks/api/rules/export-qbo");
-      const liveAccounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
-      const liveNamesNorm = new Set(liveAccounts.map((a) => normalizeAccountName(a.Name)));
+      let liveAccounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
 
       const industryRaw = (clientLink as any).industry || "painters";
       const jurisdiction = (clientLink as any).jurisdiction || "US";
@@ -165,19 +175,45 @@ export async function GET(
           onlyLeafNames: neededNames,
         });
         accountsEnsured.created = applyResult.created;
+        // Newly-created accounts aren't in the pre-creation snapshot — refetch
+        // so the resolver can point rows at their real live names.
+        if (applyResult.created.length > 0) {
+          liveAccounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
+        }
       }
-      // Anything still missing after creation attempts — either it was
-      // already live (fine, no action needed) or it genuinely couldn't be
-      // resolved (not a master-COA name and not already in QBO). Surface
-      // only the latter so the export log names the real gap instead of a
-      // silent mismatch in QBO's wizard.
-      const createdNorm = new Set(accountsEnsured.created.map((n) => normalizeAccountName(n)));
+
+      // Build the name resolver from the (post-creation) live COA. Key by both
+      // the leaf Name and the FullyQualifiedName, exact (case-insensitive) and
+      // normalized (dash/space-tolerant), all pointing at the fully-qualified
+      // name QBO round-trips in its own export.
+      const exactLower = new Map<string, string>();
+      const byNorm = new Map<string, string>();
+      for (const a of liveAccounts) {
+        const canonical = a.FullyQualifiedName || a.Name;
+        for (const key of [a.Name, a.FullyQualifiedName]) {
+          if (!key) continue;
+          const lower = key.toLowerCase();
+          if (!exactLower.has(lower)) exactLower.set(lower, canonical);
+          const norm = normalizeAccountName(key);
+          if (!byNorm.has(norm)) byNorm.set(norm, canonical);
+        }
+      }
+      resolveCategory = (name: string) => {
+        const raw = (name || "").trim();
+        if (!raw) return raw;
+        return exactLower.get(raw.toLowerCase()) || byNorm.get(normalizeAccountName(raw)) || raw;
+      };
+
+      // Anything with no live account (created or pre-existing) can't auto-fill
+      // in the wizard — surface it so the export log names the real gap (e.g. a
+      // rule still targeting a non-standard "Parking" that isn't in the COA)
+      // instead of a silent blank dropdown.
       accountsEnsured.unresolved = neededNames.filter(
-        (n) => !liveNamesNorm.has(normalizeAccountName(n)) && !createdNorm.has(normalizeAccountName(n))
+        (n) => !exactLower.has(n.toLowerCase()) && !byNorm.has(normalizeAccountName(n))
       );
     } catch (err: any) {
       if (!(err instanceof QBOReauthRequiredError)) {
-        console.warn(`[export-qbo ${client_link_id}] Could not ensure target accounts:`, err.message);
+        console.warn(`[export-qbo ${client_link_id}] Could not resolve target accounts:`, err.message);
       }
     }
   }
@@ -196,7 +232,9 @@ export async function GET(
   const rows: Array<Record<string, string>> = [];
   for (const r of exportRules) {
     const vendor = (r.vendor_pattern || "").trim();
-    const account = (r.target_account_name || "").trim();
+    // Canonicalize to the exact live QBO account name (parent:sub) so QBO's
+    // import wizard auto-selects the category instead of showing a blank.
+    const account = resolveCategory((r.target_account_name || "").trim());
     if (!vendor || !account) continue;
 
     // QBO's conditions JSON. We model every SNAP rule as:
