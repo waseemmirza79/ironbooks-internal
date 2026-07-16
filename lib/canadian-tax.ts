@@ -73,9 +73,12 @@ export const CANADIAN_PROVINCES: ProvinceTax[] = [
     serviceTax: { rate: 0.15, components: ["HST"] },
   },
   {
-    code: "NS", name: "Nova Scotia", display: "15% HST",
-    rates: { hst: 0.15 }, combined: 0.15,
-    serviceTax: { rate: 0.15, components: ["HST"] },
+    // NS cut its HST 15% → 14% effective 2025-04-01. Transactions BEFORE that
+    // date carried 15% — period-aware callers (the GST extraction retrofit)
+    // must use 15% for pre-2025-04 lines; everything current is 14%.
+    code: "NS", name: "Nova Scotia", display: "14% HST",
+    rates: { hst: 0.14 }, combined: 0.14,
+    serviceTax: { rate: 0.14, components: ["HST"] },
   },
   {
     code: "ON", name: "Ontario", display: "13% HST",
