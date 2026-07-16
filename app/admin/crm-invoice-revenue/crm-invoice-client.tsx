@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
-  Loader2, RefreshCw, ChevronDown, ChevronRight, AlertTriangle, Banknote, CalendarRange, ExternalLink, CheckCircle2,
+  Loader2, RefreshCw, ChevronDown, ChevronRight, AlertTriangle, Banknote, CalendarRange, ExternalLink, CheckCircle2, ArrowRight,
 } from "lucide-react";
 import { CrmPairsTable } from "@/components/crm-pairs-table";
 import { QboRemediationPanel } from "@/components/QboRemediationPanel";
@@ -357,6 +357,20 @@ function FragmentRow({
               </span>
             )}
           </button>
+          {/* The income accounts holding the CRM invoices — the double-counted
+              accounts on this client, largest first. */}
+          {f.invoice_by_account && Object.keys(f.invoice_by_account).length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1 ml-6">
+              {Object.entries(f.invoice_by_account)
+                .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+                .slice(0, 5)
+                .map(([acct, amt]) => (
+                  <span key={acct} className="text-[10px] rounded bg-gray-100 border border-gray-200 px-1.5 py-0.5 text-ink-slate">
+                    {acct} <span className="font-mono font-semibold text-navy">{fmt(amt)}</span>
+                  </span>
+                ))}
+            </div>
+          )}
         </td>
         <td className="px-3 py-2.5 text-right font-mono text-navy">{fmt(f.invoice_income_total)}</td>
         <td className="px-3 py-2.5 text-right font-mono text-navy">{fmt(f.deposit_income_total)}</td>
@@ -378,19 +392,29 @@ function FragmentRow({
             {depositsOnly ? "deposits only" : "standard"}
           </span>
         </td>
-        <td className="px-3 py-2.5 text-right">
-          <button
-            onClick={() => onSetMode(depositsOnly ? "standard" : "deposits_only")}
-            disabled={modeBusy}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold border disabled:opacity-50 ${
-              depositsOnly
-                ? "border-gray-200 text-ink-slate hover:bg-gray-50"
-                : "border-teal/40 bg-teal text-white hover:bg-teal/90"
-            }`}
-          >
-            {modeBusy ? <Loader2 size={12} className="animate-spin" /> : <Banknote size={12} />}
-            {depositsOnly ? "Revert to standard" : "Set deposits-only"}
-          </button>
+        <td className="px-3 py-2.5">
+          <div className="flex items-center justify-end gap-2">
+            <button
+              onClick={() => onSetMode(depositsOnly ? "standard" : "deposits_only")}
+              disabled={modeBusy}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold border disabled:opacity-50 ${
+                depositsOnly
+                  ? "border-gray-200 text-ink-slate hover:bg-gray-50"
+                  : "border-teal/40 bg-teal text-white hover:bg-teal/90"
+              }`}
+            >
+              {modeBusy ? <Loader2 size={12} className="animate-spin" /> : <Banknote size={12} />}
+              {depositsOnly ? "Revert to standard" : "Set deposits-only"}
+            </button>
+            {/* The explicit "click into this client and rectify" entry point —
+                opens the full Revenue Check page (verdict, pairs, QBO void). */}
+            <Link
+              href={`/revenue-check/${f.client_link_id}`}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-navy px-2.5 py-1.5 text-xs font-bold text-white hover:bg-navy/90 whitespace-nowrap"
+            >
+              Open &amp; fix <ArrowRight size={12} />
+            </Link>
+          </div>
         </td>
       </tr>
       {isOpen && (
