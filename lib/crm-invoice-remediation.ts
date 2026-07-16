@@ -21,10 +21,24 @@
 export interface RemediationPayment {
   id: string;
   amount: number;
-  /** Payment.DepositToAccountRef.name — where the payment landed. */
+  /** Payment.DepositToAccountRef.name — where the payment landed. NULL usually
+   *  means QBO's default (Undeposited Funds) — surfaced to the reviewer, but
+   *  never auto-trusted for the phantom classification. */
   depositAccount: string | null;
   /** True if a Deposit references this payment (it WAS deposited → real cash). */
   linkedToDeposit: boolean;
+  // ── Review detail (optional — populated by the preview endpoint so the
+  //    bookkeeper can decide "phantom or real" per payment) ──
+  /** Payment date (TxnDate). */
+  date?: string | null;
+  /** Reference / check number on the payment. */
+  refNum?: string | null;
+  /** Payment method name (Visa, Cash, e-Transfer, …). */
+  method?: string | null;
+  /** Portion not applied to any invoice. */
+  unappliedAmt?: number | null;
+  /** The bank Deposit(s) that swept this payment, when linkedToDeposit. */
+  sweptBy?: Array<{ date: string; amount: number; account: string | null }>;
 }
 
 export type RemediationAction = "void_payment_and_invoice" | "void_invoice_only" | "review";
@@ -42,6 +56,11 @@ export interface RemediationInvoice {
   /** Safe to auto-void (all linked payments are phantom UF, or none). */
   safe: boolean;
   reason: string;
+  // ── Review detail (optional passthrough from the preview endpoint) ──
+  /** Invoice TotalAmt (gross incl. tax) — vs `total` which is the recognized net. */
+  grossTotal?: number | null;
+  /** First few line descriptions — identifies the job at a glance. */
+  lineSamples?: string[];
 }
 
 /** Undeposited-Funds account names across QBO locales/versions. */
@@ -69,6 +88,8 @@ export function planInvoice(
     total: number;
     balance: number;
     incomeAccounts: string[];
+    grossTotal?: number | null;
+    lineSamples?: string[];
   },
   payments: RemediationPayment[]
 ): RemediationInvoice {
@@ -80,6 +101,8 @@ export function planInvoice(
     total: r2(inv.total),
     balance: r2(inv.balance),
     incomeAccounts: inv.incomeAccounts,
+    grossTotal: inv.grossTotal ?? null,
+    lineSamples: inv.lineSamples || [],
     payments,
   };
 

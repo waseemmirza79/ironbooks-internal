@@ -1,9 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, Wrench, AlertTriangle, CheckCircle2, ShieldAlert } from "lucide-react";
+import { Loader2, Wrench, AlertTriangle, CheckCircle2, ShieldAlert, ChevronDown, ChevronRight } from "lucide-react";
 
-type Payment = { id: string; amount: number; depositAccount: string | null; linkedToDeposit: boolean };
+type Payment = {
+  id: string;
+  amount: number;
+  depositAccount: string | null;
+  linkedToDeposit: boolean;
+  date?: string | null;
+  refNum?: string | null;
+  method?: string | null;
+  unappliedAmt?: number | null;
+  sweptBy?: Array<{ date: string; amount: number; account: string | null }>;
+};
 type Inv = {
   invoiceId: string;
   docNumber: string | null;
@@ -16,6 +26,8 @@ type Inv = {
   action: "void_payment_and_invoice" | "void_invoice_only" | "review";
   safe: boolean;
   reason: string;
+  grossTotal?: number | null;
+  lineSamples?: string[];
 };
 type Preview = {
   summary: { total: number; safe: number; review: number; voidInvoiceOnly: number; safeInvoiceAmount: number; reviewInvoiceAmount: number };
@@ -46,6 +58,7 @@ export function QboRemediationPanel({
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [allowReview, setAllowReview] = useState(false);
   const [busy, setBusy] = useState<"dry" | "write" | null>(null);
   const [result, setResult] = useState<any>(null);
@@ -248,39 +261,19 @@ export function QboRemediationPanel({
               <tbody className="divide-y divide-gray-100">
                 {preview.invoices.map((inv) => {
                   const selectable = inv.safe || allowReview;
+                  const isExpanded = !!expanded[inv.invoiceId];
                   return (
-                    <tr key={inv.invoiceId} className={inv.safe ? "hover:bg-gray-50" : "bg-amber-50/40"}>
-                      <td className="px-3 py-2">
-                        <input
-                          type="checkbox"
-                          checked={selected.has(inv.invoiceId)}
-                          disabled={!selectable}
-                          onChange={() => toggle(inv.invoiceId)}
-                          className="accent-red-600 disabled:opacity-40"
-                        />
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap text-ink-slate">
-                        {inv.docNumber ? `#${inv.docNumber}` : inv.invoiceId} · {inv.date}
-                      </td>
-                      <td className="px-3 py-2 text-navy">{inv.customer || "—"}</td>
-                      <td className="px-3 py-2 text-right font-mono">{fmtC(inv.total)}</td>
-                      <td className="px-3 py-2 text-ink-slate">
-                        {inv.payments.length === 0
-                          ? "— (no payment)"
-                          : inv.payments.map((p) => p.depositAccount || "?").join(", ")}
-                      </td>
-                      <td className="px-3 py-2">
-                        {inv.action === "review" ? (
-                          <span className="text-amber-700 font-semibold inline-flex items-center gap-1">
-                            <AlertTriangle size={11} /> review
-                          </span>
-                        ) : inv.action === "void_invoice_only" ? (
-                          <span className="text-ink-slate">void invoice (no payment)</span>
-                        ) : (
-                          <span className="text-red-700 font-semibold">void payment + invoice</span>
-                        )}
-                      </td>
-                    </tr>
+                    <InvoiceRow
+                      key={inv.invoiceId}
+                      inv={inv}
+                      selectable={selectable}
+                      isSelected={selected.has(inv.invoiceId)}
+                      isExpanded={isExpanded}
+                      onToggleSelect={() => toggle(inv.invoiceId)}
+                      onToggleExpand={() =>
+                        setExpanded((e) => ({ ...e, [inv.invoiceId]: !isExpanded }))
+                      }
+                    />
                   );
                 })}
               </tbody>
@@ -298,6 +291,11 @@ export function QboRemediationPanel({
               )}
             </div>
           )}
+
+          <p className="text-[11px] text-ink-light mb-3">
+            Click a row&apos;s ▸ to see the full detail — payment date/method/ref#, where it deposited,
+            which bank deposit swept it, the job lines, and why it&apos;s classified the way it is.
+          </p>
 
           <div className="flex items-center justify-end gap-2">
             <span className="text-xs text-ink-slate mr-auto">{selected.size} selected</span>
@@ -320,5 +318,145 @@ export function QboRemediationPanel({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * One invoice row + its expandable review detail: everything QBO knows about
+ * the invoice and each linked payment, so a reviewer can decide phantom-vs-real
+ * from the panel instead of opening QBO.
+ */
+function InvoiceRow({
+  inv,
+  selectable,
+  isSelected,
+  isExpanded,
+  onToggleSelect,
+  onToggleExpand,
+}: {
+  inv: Inv;
+  selectable: boolean;
+  isSelected: boolean;
+  isExpanded: boolean;
+  onToggleSelect: () => void;
+  onToggleExpand: () => void;
+}) {
+  const paidAmount = (inv.grossTotal ?? 0) - (inv.balance ?? 0);
+  return (
+    <>
+      <tr className={inv.safe ? "hover:bg-gray-50" : "bg-amber-50/40"}>
+        <td className="px-3 py-2">
+          <input
+            type="checkbox"
+            checked={isSelected}
+            disabled={!selectable}
+            onChange={onToggleSelect}
+            className="accent-red-600 disabled:opacity-40"
+          />
+        </td>
+        <td className="px-3 py-2 whitespace-nowrap text-ink-slate">
+          <button onClick={onToggleExpand} className="inline-flex items-center gap-1 hover:text-navy" title="Show full detail">
+            {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            {inv.docNumber ? `#${inv.docNumber}` : inv.invoiceId} · {inv.date}
+          </button>
+        </td>
+        <td className="px-3 py-2 text-navy">{inv.customer || "—"}</td>
+        <td className="px-3 py-2 text-right font-mono">{fmtC(inv.total)}</td>
+        <td className="px-3 py-2 text-ink-slate">
+          {inv.payments.length === 0
+            ? "— (no payment)"
+            : inv.payments
+                .map((p) => p.depositAccount || "not set (usually Undeposited Funds)")
+                .join(", ")}
+        </td>
+        <td className="px-3 py-2">
+          {inv.action === "review" ? (
+            <span className="text-amber-700 font-semibold inline-flex items-center gap-1">
+              <AlertTriangle size={11} /> review
+            </span>
+          ) : inv.action === "void_invoice_only" ? (
+            <span className="text-ink-slate">void invoice (no payment)</span>
+          ) : (
+            <span className="text-red-700 font-semibold">void payment + invoice</span>
+          )}
+        </td>
+      </tr>
+      {isExpanded && (
+        <tr className={inv.safe ? "bg-gray-50/70" : "bg-amber-50/60"}>
+          <td />
+          <td colSpan={5} className="px-3 pb-3 pt-1">
+            {/* Why it's classified this way */}
+            <div className="text-[11px] text-ink-slate mb-2">
+              <strong className="text-navy">Why:</strong> {inv.reason}
+            </div>
+
+            {/* Invoice facts */}
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-slate mb-2">
+              <span>Invoice gross: <strong className="font-mono text-navy">{inv.grossTotal != null ? fmtC(inv.grossTotal) : "—"}</strong></span>
+              <span>Recognized as income: <strong className="font-mono text-navy">{fmtC(inv.total)}</strong></span>
+              <span>Open balance: <strong className="font-mono text-navy">{fmtC(inv.balance)}</strong></span>
+              <span>Paid: <strong className="font-mono text-navy">{fmtC(paidAmount)}</strong></span>
+              {inv.incomeAccounts.length > 0 && (
+                <span>Income account{inv.incomeAccounts.length > 1 ? "s" : ""}: <strong className="text-navy">{inv.incomeAccounts.join(", ")}</strong></span>
+              )}
+            </div>
+            {inv.lineSamples && inv.lineSamples.length > 0 && (
+              <div className="text-[11px] text-ink-slate mb-2">
+                Job lines: <span className="text-navy">{inv.lineSamples.join(" · ")}</span>
+              </div>
+            )}
+
+            {/* Per-payment detail — the decision table */}
+            {inv.payments.length > 0 && (
+              <table className="w-full text-[11px] border border-gray-200 rounded bg-white">
+                <thead className="bg-gray-100">
+                  <tr className="text-[10px] uppercase tracking-wide text-ink-slate">
+                    <th className="text-left font-semibold px-2 py-1.5">Payment</th>
+                    <th className="text-right font-semibold px-2 py-1.5">Amount</th>
+                    <th className="text-left font-semibold px-2 py-1.5">Method / Ref#</th>
+                    <th className="text-left font-semibold px-2 py-1.5">Deposited to</th>
+                    <th className="text-left font-semibold px-2 py-1.5">Swept into a bank deposit?</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {inv.payments.map((p) => (
+                    <tr key={p.id}>
+                      <td className="px-2 py-1.5 whitespace-nowrap text-ink-slate">{p.date || "—"} · #{p.id}</td>
+                      <td className="px-2 py-1.5 text-right font-mono">
+                        {fmtC(p.amount)}
+                        {p.unappliedAmt ? <span className="text-amber-700"> ({fmtC(p.unappliedAmt)} unapplied)</span> : null}
+                      </td>
+                      <td className="px-2 py-1.5 text-ink-slate">{[p.method, p.refNum && `#${p.refNum}`].filter(Boolean).join(" · ") || "—"}</td>
+                      <td className="px-2 py-1.5">
+                        {p.depositAccount ? (
+                          <span className={/undeposited|payments to deposit/i.test(p.depositAccount) ? "text-emerald-700 font-semibold" : "text-red-700 font-semibold"}>
+                            {p.depositAccount}
+                          </span>
+                        ) : (
+                          <span className="text-ink-slate">not set — QBO default is Undeposited Funds</span>
+                        )}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        {p.sweptBy && p.sweptBy.length > 0 ? (
+                          <span className="text-red-700 font-semibold">
+                            YES — {p.sweptBy.map((d) => `${d.date} ${fmtC(d.amount)}${d.account ? ` → ${d.account}` : ""}`).join("; ")}
+                            <span className="block text-[10px] font-normal text-red-600">this payment became real bank cash — voiding it removes money</span>
+                          </span>
+                        ) : (
+                          <span className="text-emerald-700">
+                            no — never deposited
+                            <span className="block text-[10px] text-ink-light">the real cash likely arrived as the separate income deposit</span>
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }

@@ -113,39 +113,62 @@ export async function buildRemediationPreview(
     for (const p of data?.QueryResponse?.Payment || []) payEntities.set(String(p.Id), p);
   }
 
-  // 4. Which payments were swept into a Deposit (→ real cash, not phantom).
-  //    Deposit lines that reference a Payment carry it in LinkedTxn.
-  const sweptPaymentIds = new Set<string>();
+  // 4. Which payments were swept into a Deposit (→ real cash, not phantom) —
+  //    and BY WHICH deposit(s), so the reviewer sees date/amount/bank account.
+  //    Scan through TODAY (not just the window end): a payment inside the
+  //    window is often swept by a deposit dated after it.
+  const sweptBy = new Map<string, Array<{ date: string; amount: number; account: string | null }>>();
   {
+    const today = new Date().toISOString().slice(0, 10);
+    const scanEnd = end < today ? today : end;
     const data = await qboRequest<any>(
       realm,
       token,
-      q(`SELECT * FROM Deposit WHERE TxnDate >= '${start}' AND TxnDate <= '${end}' MAXRESULTS 1000`)
+      q(`SELECT * FROM Deposit WHERE TxnDate >= '${start}' AND TxnDate <= '${scanEnd}' MAXRESULTS 1000`)
     );
     for (const d of data?.QueryResponse?.Deposit || []) {
       for (const line of d.Line || []) {
         for (const lt of line.LinkedTxn || []) {
-          if (/payment/i.test(String(lt.TxnType))) sweptPaymentIds.add(String(lt.TxnId));
+          if (!/payment/i.test(String(lt.TxnType))) continue;
+          const pid = String(lt.TxnId);
+          const list = sweptBy.get(pid) || [];
+          list.push({
+            date: String(d.TxnDate || ""),
+            amount: Number(d.TotalAmt) || 0,
+            account: d.DepositToAccountRef?.name ?? null,
+          });
+          sweptBy.set(pid, list);
         }
       }
     }
   }
 
-  // 5. Plan each invoice.
+  // 5. Plan each invoice — with full review detail per payment (date, method,
+  //    ref#, unapplied, swept-by) and per invoice (gross total, job lines).
   return invoiceIds.map((id) => {
     const rec = recognized.get(id)!;
     const inv = invEntities.get(id);
     const payments: RemediationPayment[] = [...(inv?.LinkedTxn || [])]
       .filter((lt: any) => String(lt.TxnType) === "Payment")
       .map((lt: any) => {
-        const p = payEntities.get(String(lt.TxnId));
+        const pid = String(lt.TxnId);
+        const p = payEntities.get(pid);
         return {
-          id: String(lt.TxnId),
+          id: pid,
           amount: Number(p?.TotalAmt) || 0,
           depositAccount: p?.DepositToAccountRef?.name ?? null,
-          linkedToDeposit: sweptPaymentIds.has(String(lt.TxnId)),
+          linkedToDeposit: sweptBy.has(pid),
+          date: p?.TxnDate ?? null,
+          refNum: p?.PaymentRefNum ?? null,
+          method: p?.PaymentMethodRef?.name ?? null,
+          unappliedAmt: p?.UnappliedAmt != null ? Number(p.UnappliedAmt) : null,
+          sweptBy: sweptBy.get(pid) || [],
         };
       });
+    const lineSamples: string[] = ((inv?.Line || []) as any[])
+      .filter((l) => l.DetailType === "SalesItemLineDetail" && l.Description)
+      .slice(0, 3)
+      .map((l) => String(l.Description));
     return planInvoice(
       {
         invoiceId: id,
@@ -155,6 +178,8 @@ export async function buildRemediationPreview(
         total: rec.total,
         balance: Number(inv?.Balance) || 0,
         incomeAccounts: [...rec.accounts],
+        grossTotal: inv?.TotalAmt != null ? Number(inv.TotalAmt) : null,
+        lineSamples,
       },
       payments
     );
