@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowUpRight, CheckCircle2, Circle, ClipboardList,
@@ -221,6 +221,22 @@ export function CleanupBoard() {
     load();
   }, []);
 
+  // Deep-link focus: /cleanup?focus={clientId} (client profile "Continue"
+  // button) scrolls to that client's card and pulses it once loaded.
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const focusConsumed = useRef(false);
+  useEffect(() => {
+    if (focusConsumed.current || loading || !columns) return;
+    focusConsumed.current = true;
+    const f = new URLSearchParams(window.location.search).get("focus");
+    if (!f) return;
+    setFocusId(f);
+    setTimeout(() => {
+      document.getElementById(`cleanup-card-${f}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 150);
+    setTimeout(() => setFocusId(null), 3000);
+  }, [loading, columns]);
+
   const [chipFilter, setChipFilter] = useState<ChipKey | null>(null);
 
   const collapsed = useMemo(() => {
@@ -393,19 +409,26 @@ export function CleanupBoard() {
                     </div>
                   )}
                   {cards.map((card) => (
-                    <CleanupCard
+                    <div
                       key={card.id}
-                      card={card}
-                      inReview={col.id === "review"}
-                      hasSignoff={signoffByClient.has(card.id)}
-                      isSenior={isSenior}
-                      bookkeepers={bookkeepers}
-                      attention={attention[card.id]}
-                      onChanged={load}
-                      onOpenSignoff={() =>
-                        setSelectedSignoff(selectedSignoff === card.id ? null : card.id)
-                      }
-                    />
+                      id={`cleanup-card-${card.id}`}
+                      className={`rounded-2xl transition-shadow duration-700 ${
+                        focusId === card.id ? "ring-4 ring-teal/50 shadow-lg" : ""
+                      }`}
+                    >
+                      <CleanupCard
+                        card={card}
+                        inReview={col.id === "review"}
+                        hasSignoff={signoffByClient.has(card.id)}
+                        isSenior={isSenior}
+                        bookkeepers={bookkeepers}
+                        attention={attention[card.id]}
+                        onChanged={load}
+                        onOpenSignoff={() =>
+                          setSelectedSignoff(selectedSignoff === card.id ? null : card.id)
+                        }
+                      />
+                    </div>
                   ))}
                 </div>
               </div>

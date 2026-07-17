@@ -74,6 +74,10 @@ export function ProductionBoard() {
     }, 80);
     setTimeout(() => setClosePulse(false), 2600);
   }
+
+  // Deep-link focus: /production?focus={clientId} (client profile "Continue"
+  // button) auto-opens that client's close card once the board loads.
+  const [focusConsumed, setFocusConsumed] = useState(false);
   // Attention states (escalated / billing / BS owed / disconnected / stuck).
   const [attention, setAttention] = useState<Record<string, AttentionState>>({});
   const [flaggedOnly, setFlaggedOnly] = useState(false);
@@ -106,6 +110,14 @@ export function ProductionBoard() {
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    if (focusConsumed || loading) return;
+    setFocusConsumed(true);
+    const f = new URLSearchParams(window.location.search).get("focus");
+    if (f && production.some((c) => c.id === f)) openCloseCard(f);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, focusConsumed, production]);
 
   const { byColumn, done } = useMemo(() => {
     const byColumn: Record<Exclude<BoardStatus, "not_started">, ProdClient[]> = {

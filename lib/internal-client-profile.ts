@@ -552,8 +552,10 @@ export async function fetchClientProgress(
       ? "Connected — payouts visible"
       : stripeStatus === "pending" || stripeRequestedAt
       ? "Connect request sent — waiting on the client"
-      : "Send the client a Stripe connect request (Clients board), or mark not required",
-    href: stripeConnected ? `/stripe-recon/new?client=${clientLinkId}` : `/clients`,
+      : "Open the Stripe step — run recon via QBO invoices, or mark not required",
+    // The wizard's Stripe step, preselected to this client — it handles
+    // unconnected clients (QBO-invoice-match recon + the skip flow).
+    href: `/stripe-recon/new?client=${clientLinkId}`,
   });
 
   // ── 6. BS Cleanup ───────────────────────────────────────────────────
@@ -603,7 +605,8 @@ export async function fetchClientProgress(
       : signoffInReview
       ? "Submitted — awaiting manager review"
       : "Submit statements for manager sign-off on the Cleanup board",
-    href: `/cleanup`,
+    // ?focus= scrolls the board straight to this client's card.
+    href: `/cleanup?focus=${clientLinkId}`,
   });
 
   // ── 8. Production (daily recon) ─────────────────────────────────────
@@ -671,7 +674,8 @@ export async function fetchClientProgress(
       : cleanupDone
       ? "First month-end close pending"
       : "First close comes after cleanup sign-off",
-    href: `/production`,
+    // ?focus= auto-opens this client's close card on the board.
+    href: `/production?focus=${clientLinkId}`,
   });
 
   // ── Next action: the FIRST stage that still needs a human ───────────
@@ -683,11 +687,11 @@ export async function fetchClientProgress(
     coa: { phase: "cleanup", start: "Start COA cleanup", going: "Open COA job" },
     reclass: { phase: "cleanup", start: "Start reclass", going: "Open reclass job" },
     rules: { phase: "cleanup", start: "Generate bank rules", going: "Review bank rules" },
-    stripe: { phase: "cleanup", start: "Open Clients board", going: "Open Clients board" },
+    stripe: { phase: "cleanup", start: "Open Stripe step", going: "Open Stripe step" },
     bs: { phase: "cleanup", start: "Start BS Cleanup", going: "Open BS Cleanup" },
-    signoff: { phase: "cleanup", start: "Open Cleanup board", going: "Open Cleanup board" },
+    signoff: { phase: "cleanup", start: "Open sign-off card", going: "Open sign-off card" },
     production: { phase: "production", start: "Move to production", going: "Open Today queue" },
-    close: { phase: "production", start: "Open Production board", going: "Open Production board" },
+    close: { phase: "production", start: "Open month close", going: "Open month close" },
   };
   const next = stages.find((s) => s.status !== "complete" && s.status !== "skipped") || null;
   const nextAction: NextAction | null = next
