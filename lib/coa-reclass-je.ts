@@ -26,9 +26,12 @@ const MONTH_IDX: Record<string, number> = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
 
-/** "Apr 2026" → "2026-04-30" (month-end). Null if the title isn't a month. */
+/** "Apr 2026" / "Jan. 2026" → "2026-04-30" (month-end). Null if not a month. */
 function monthEndFromTitle(title: string): string | null {
-  const m = String(title || "").trim().match(/^([A-Za-z]{3,})\s+(\d{4})$/);
+  // QBO returns month columns as "Jan. 2026" (with a period) — strip
+  // punctuation before matching so the parse doesn't silently fail.
+  const cleaned = String(title || "").replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
+  const m = cleaned.match(/^([A-Za-z]{3,})\s+(\d{4})$/);
   if (!m) return null;
   const mi = MONTH_IDX[m[1].slice(0, 3).toLowerCase()];
   if (mi == null) return null;

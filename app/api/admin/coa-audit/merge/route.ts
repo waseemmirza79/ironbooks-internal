@@ -96,6 +96,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Can't merge a ${source.AccountType} account into a ${target.AccountType} account — types must be compatible.` }, { status: 400 });
     }
 
+    // QBO won't inactivate an account that still has sub-accounts, so merging a
+    // parent would drain it but leave it stranded. Skip up front with a clear
+    // message — its children need re-parenting first (full COA cleanup).
+    const sourceHasChildren = accounts.some(
+      (a) => String((a as any).ParentRef?.value || "") === sourceId && a.Active !== false
+    );
+    if (sourceHasChildren) {
+      return NextResponse.json({
+        ok: false, method: "je_reclass", source: source.Name, target: target.Name,
+        error: `"${source.Name}" has sub-accounts — re-parent or merge its children first (handled in the full COA cleanup).`,
+      }, { status: 200 });
+    }
+
     // Move the source account's balance onto the target via reclassifying
     // journal entries (lib/coa-reclass-je). QBO can't merge via API and can't
     // reclass invoice/sales-receipt income by line, so a per-month JE is the
