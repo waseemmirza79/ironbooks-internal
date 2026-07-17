@@ -83,6 +83,9 @@ async function qualifyCertain(
   closingDate: string | null
 ): Promise<{ txn_id: string; txn_type: string; reason: string } | null> {
   if (f.kind === "near_duplicate") return null;
+  // Reversal pairs (purchase + its refund) are NEVER removable — they're
+  // informational: the refund netting is usually correct, just worth a look.
+  if (f.kind === "reversal_pair") return null;
   if (f.txn_ids.length !== 2) return null;
   const types = [...new Set(f.txn_types)];
   if (types.length !== 1) return null;

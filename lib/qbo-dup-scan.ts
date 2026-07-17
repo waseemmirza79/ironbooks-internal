@@ -13,7 +13,7 @@ import type { PLDetailRow } from "./qbo-reports";
  * are treated as legit and skipped.
  */
 export type DupFinding = {
-  kind: "exact_same_day" | "near_duplicate" | "duplicate_doc";
+  kind: "exact_same_day" | "near_duplicate" | "duplicate_doc" | "reversal_pair";
   severity: "high" | "medium";
   section: string;
   account: string;
@@ -28,13 +28,28 @@ export type DupFinding = {
   note: string;
 };
 
+/** Same-originator ACH tell: "ORIG ID:XXXXXX2103" tokens in bank memos. */
+function origIdOf(memo: string | null | undefined): string | null {
+  const m = /ORIG\s*ID:\s*(\S+)/i.exec(memo || "");
+  return m ? m[1].toUpperCase() : null;
+}
+
+/** Near-dups at/above this are HIGH severity (removable-track), not buried. */
+export const NEAR_DUP_HIGH_FLOOR = 500;
+
 export function findDuplicates(rows: PLDetailRow[], minAmount: number): DupFinding[] {
   const findings: DupFinding[] = [];
+  // SIGN-AWARE key: a purchase and its refund share account+payee+|amount| but
+  // are NOT duplicates of each other — grouping by abs() conflated them and
+  // polluted the findings (Camellia: Sherwin/Lowe's store refunds). Same-sign
+  // rows group for dup detection; opposite-sign pairs are detected separately
+  // as reversal_pair below.
+  const payeeOf = (r: PLDetailRow) => (r.name || r.memo.slice(0, 24)).toLowerCase().trim();
   const sig = (r: PLDetailRow) =>
-    `${r.account}|${(r.name || r.memo.slice(0, 24)).toLowerCase().trim()}|${Math.abs(r.amount).toFixed(2)}`;
+    `${r.account}|${payeeOf(r)}|${Math.abs(r.amount).toFixed(2)}|${r.amount < 0 ? "-" : "+"}`;
   const eligible = rows.filter((r) => Math.abs(r.amount) >= minAmount && r.date);
 
-  // Group by account+payee+amount.
+  // Group by account+payee+amount+sign.
   const groups = new Map<string, PLDetailRow[]>();
   for (const r of eligible) {
     const k = sig(r);
@@ -57,9 +72,45 @@ export function findDuplicates(rows: PLDetailRow[], minAmount: number): DupFindi
       findings.push(mkFinding("exact_same_day", "high", sample, g,
         `${g.length}× identical posting on the same day — classic double entry (bank feed + manual, or double import)`));
     } else if (spanDays <= 3) {
-      findings.push(mkFinding("near_duplicate", "medium", sample, g,
-        `same payee & amount ${Math.round(spanDays)} day(s) apart — possible duplicate posting`));
+      // Shared ACH originator across the pair = same biller pulled twice.
+      const origIds = g.map((r) => origIdOf(r.memo)).filter(Boolean);
+      const sameOrig = origIds.length === g.length && new Set(origIds).size === 1;
+      // A large near-dup is a real-money double (Camellia: Lowe's $2,226.07
+      // May 8 + May 9, identical ORIG ID — buried as medium/"possible" and
+      // never surfaced). Promote to HIGH so it rides the removable track.
+      const big = Math.abs(sample.amount) >= NEAR_DUP_HIGH_FLOOR;
+      findings.push(mkFinding(
+        "near_duplicate",
+        big || sameOrig ? "high" : "medium",
+        sample,
+        g,
+        `same payee & amount ${Math.round(spanDays)} day(s) apart${sameOrig ? " with the SAME bank originator (ORIG ID)" : ""} — ${big || sameOrig ? "likely" : "possible"} duplicate posting`
+      ));
     }
+  }
+
+  // REVERSAL PAIRS — refund/credit netting against a purchase: same account +
+  // payee + |amount|, opposite signs, within 30 days. Not duplicates (never
+  // auto-removable) but surfaced so the bookkeeper confirms the refund is
+  // placed/netted intentionally (Mike's Sherwin-refund-in-Paint&Materials ask).
+  const byAbs = new Map<string, PLDetailRow[]>();
+  for (const r of eligible) {
+    const k = `${r.account}|${payeeOf(r)}|${Math.abs(r.amount).toFixed(2)}`;
+    (byAbs.get(k) || byAbs.set(k, []).get(k)!).push(r);
+  }
+  for (const [, g] of byAbs) {
+    const pos = g.filter((r) => r.amount > 0);
+    const neg = g.filter((r) => r.amount < 0);
+    if (pos.length === 0 || neg.length === 0) continue;
+    const pair = [pos[0], neg[0]];
+    const spanDays = Math.abs(
+      (new Date(pos[0].date).getTime() - new Date(neg[0].date).getTime()) / 86400000
+    );
+    if (spanDays > 30) continue;
+    const distinctIds = new Set(pair.map((r) => r.txn_id).filter(Boolean));
+    if (distinctIds.size < 2) continue;
+    findings.push(mkFinding("reversal_pair", "medium", pos[0], pair,
+      `refund/credit of ${Math.abs(neg[0].amount).toFixed(2)} nets against a matching charge ${Math.round(spanDays)} day(s) apart — verify the refund is intentional (not a duplicate order + refund, and placed in the right account)`));
   }
 
   // Duplicate document numbers (same doc # + type + amount, 2+ distinct txns).
