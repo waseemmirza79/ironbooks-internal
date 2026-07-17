@@ -114,15 +114,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No active Accounts Receivable account in this QBO file — can't apply deposits to invoices" }, { status: 400 });
     }
   }
-  const snapshot = (kind: string, id: string, entity: any) =>
-    service
-      .from("audit_log")
-      .insert({
-        event_type: "crm_invoice_remediation_snapshot",
-        user_id: user.id,
-        request_payload: { client_link_id: clientLinkId, kind, txn_id: id, entity } as any,
-      } as any)
-      .then(() => undefined);
+  const snapshot = async (kind: string, id: string, entity: any): Promise<void> => {
+    await service.from("audit_log").insert({
+      event_type: "crm_invoice_remediation_snapshot",
+      user_id: user.id,
+      request_payload: { client_link_id: clientLinkId, kind, txn_id: id, entity } as any,
+    } as any);
+  };
 
   for (let i = 0; i < selected.length; i++) {
     if (Date.now() - startTime > BUDGET_MS || i >= MAX_PER_PASS) {
