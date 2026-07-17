@@ -133,10 +133,15 @@ export async function POST(request: Request) {
         const friendly = /sub-?accounts?/i.test(raw)
           ? `"${source.Name}" or "${target.Name}" is a parent/child account — QBO won't merge those directly. Re-parent the sub-accounts first (handled in the full COA cleanup).`
           : /duplicate name/i.test(raw)
-          ? `QBO still treats "${source.Name}" and "${target.Name}" as different detail types and won't merge them automatically — handle in the full COA cleanup.`
+          ? `QBO won't auto-merge "${source.Name}" into "${target.Name}" — see debug for the structural mismatch.`
           : `QBO wouldn't merge "${source.Name}" into "${target.Name}": ${raw}`;
         return NextResponse.json({
           ok: false, method: "native_merge", source: source.Name, target: target.Name, error: friendly,
+          debug: {
+            raw: raw.slice(0, 500),
+            source: { id: source.Id, type: source.AccountType, subType: source.AccountSubType || null, subAccount: !!source.SubAccount, parent: source.ParentRef?.value || null },
+            target: { id: target.Id, type: target.AccountType, subType: target.AccountSubType || null, subAccount: !!target.SubAccount, parent: target.ParentRef?.value || null },
+          },
         }, { status: 200 });
       }
       // Verify the source was absorbed (gone or inactive) and re-score.
