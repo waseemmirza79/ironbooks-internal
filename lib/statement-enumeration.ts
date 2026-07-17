@@ -177,10 +177,19 @@ const fmtMonth = (d: string) =>
  */
 export function buildRequests(
   accounts: EnumeratedAccount[],
-  opts: { booksStart: string; today: string }
+  opts: { booksStart: string; today: string; hasDeclarations?: boolean }
 ): { requests: RequestLine[]; undeclared_asks: EnumerationResult["undeclared_asks"] } {
   const requests: RequestLine[] = [];
   const asks: EnumerationResult["undeclared_asks"] = [];
+  // The "in books but not declared → business or personal?" ask is the
+  // personal-card detector, and it only means anything when the client
+  // actually declared some accounts at onboarding (a baseline to compare
+  // against). With zero declarations EVERY account reads as "undeclared,"
+  // which floods the request list with a redundant question per account
+  // (e.g. asking whether the operating "Main Account" is personal). Suppress
+  // the asks entirely in that case — the statement request per account still
+  // goes out.
+  const canDetectUndeclared = opts.hasDeclarations === true;
 
   for (const a of accounts) {
     const base = { account_name: a.qbo_account_name, qbo_account_id: a.qbo_account_id };
@@ -226,7 +235,8 @@ export function buildRequests(
       });
     }
     // in books but the client never declared it → confirm business vs personal
-    if (!a.sources.includes("onboarding") && a.qbo_account_id) {
+    // (only when there IS a declared baseline — see canDetectUndeclared above)
+    if (canDetectUndeclared && !a.sources.includes("onboarding") && a.qbo_account_id) {
       asks.push({ label: a.label, qbo_account_id: a.qbo_account_id });
     }
   }

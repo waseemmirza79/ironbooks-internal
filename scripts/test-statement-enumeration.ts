@@ -39,8 +39,8 @@ ok(accounts.find((a: any) => a.qbo_account_id === "1")?.feed_first_date === "202
 ok(accounts.find((a: any) => a.qbo_account_id === "1")?.sources.includes("onboarding"), "declared matched to QBO account");
 ok(accounts.missing.length === 1 && /wealthsimple/i.test(accounts.missing[0].name), "declared-but-missing surfaced");
 
-// ── request building ──
-const { requests, undeclared_asks } = buildRequests(accounts, { booksStart: "2025-01-01", today: "2026-07-13" });
+// ── request building ── (this scenario HAS declared accounts)
+const { requests, undeclared_asks } = buildRequests(accounts, { booksStart: "2025-01-01", today: "2026-07-13", hasDeclarations: true });
 const rbc = requests.filter((r) => r.qbo_account_id === "1");
 ok(rbc.length === 2, "RBC gets gap-CSV + monthly lines");
 ok(/CSV/.test(rbc[0].label) && rbc[0].period_end === "2026-01-16", "gap CSV runs books-start → feed-connect");
@@ -52,6 +52,20 @@ ok(requests.some((r) => r.qbo_account_id === null && /wealthsimple/i.test(r.labe
 // undeclared: TD Visa + Zero Balance are in QBO but weren't declared
 ok(undeclared_asks.length === 2, `undeclared asks = TD Visa + zero-balance (got ${undeclared_asks.length})`);
 ok(undeclared_asks.some((a) => /td visa/i.test(a.label)), "TD Visa flagged for business-or-personal confirm");
+
+// ── no-declarations case: EVERY account reads as undeclared, so the
+// business-or-personal ask must be SUPPRESSED (Dominion bug — statement
+// line per account is fine, but not a redundant question per account). ──
+const { requests: reqND, undeclared_asks: asksND } = buildRequests(accounts, {
+  booksStart: "2025-01-01",
+  today: "2026-07-13",
+  hasDeclarations: false,
+});
+ok(asksND.length === 0, `no declarations → zero business-or-personal asks (got ${asksND.length})`);
+ok(
+  reqND.some((r) => r.qbo_account_id === "1"),
+  "no declarations → statement request lines still generated per account"
+);
 
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

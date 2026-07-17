@@ -123,7 +123,14 @@ export async function POST(
   const today = new Date().toISOString().slice(0, 10);
 
   const accounts: any = enumerateAccounts(qboAccounts, feed, declared);
-  const { requests, undeclared_asks } = buildRequests(accounts, { booksStart, today });
+  const { requests, undeclared_asks } = buildRequests(accounts, {
+    booksStart,
+    today,
+    // Only ask "business or personal?" when the client actually declared
+    // accounts at onboarding — otherwise every account reads as undeclared
+    // and floods the list with a redundant question per account.
+    hasDeclarations: declared.length > 0,
+  });
 
   // ── Idempotent insert: skip account+kind lines already requested ──
   const { data: existing } = await (service as any)
