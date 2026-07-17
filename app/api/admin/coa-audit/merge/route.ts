@@ -1,15 +1,12 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { getValidToken, fetchAllAccounts, inactivateAccount, QBOReauthRequiredError } from "@/lib/qbo";
-import { fetchTransactionsForAccount, reclassifyTransactionLines, type SupportedTxType, SUPPORTED_TX_TYPES } from "@/lib/qbo-reclass";
+import { reclassAccountViaJournalEntry } from "@/lib/coa-reclass-je";
 import { computeCoaDrift, type DriftMasterRow } from "@/lib/coa-drift";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-// Same budget guard the executor uses — reclassifying a huge account inline
-// would blow the function timeout. Above this, hand off to QBO's bulk tool.
-const MAX_LINES = 500;
 
 /**
  * POST /api/admin/coa-audit/merge — merge ONE non-master account into a
@@ -99,66 +96,35 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Can't merge a ${source.AccountType} account into a ${target.AccountType} account — types must be compatible.` }, { status: 400 });
     }
 
-    // NOTE: QBO's API does NOT support merging accounts (confirmed on Dominion
-    // 2026-07-17 — renaming an account to an existing account's exact name,
-    // even with identical type/detail-type/hierarchy, returns "Duplicate Name
-    // Exists" 6240; the UI-only merge isn't exposed). So there is no native
-    // merge path — the ONLY way to consolidate/retype via API is to move every
-    // transaction line to the target and inactivate the drained source, below.
-    const { lines, transactionsPulled } = await fetchTransactionsForAccount(
-      clientLink.qbo_realm_id, accessToken, sourceId, ytdStart, ytdEnd
-    );
-    // Only the transaction types SNAP can safely rewrite line-by-line.
-    const movable = lines.filter((l) => SUPPORTED_TX_TYPES.includes(l.transaction_type as SupportedTxType));
-    const unsupported = lines.length - movable.length;
+    // Move the source account's balance onto the target via reclassifying
+    // journal entries (lib/coa-reclass-je). QBO can't merge via API and can't
+    // reclass invoice/sales-receipt income by line, so a per-month JE is the
+    // one mechanism that works for EVERY account type — income, expense, COGS —
+    // and for cross-type moves. Then retire the drained source.
+    const jeMemo = `SNAP COA merge: "${source.Name}" → "${target.Name}"`;
+    const je = await reclassAccountViaJournalEntry({
+      realmId: clientLink.qbo_realm_id,
+      accessToken,
+      source: source as any,
+      target: target as any,
+      startDate: ytdStart,
+      endDate: ytdEnd,
+      memo: jeMemo,
+    });
 
-    if (movable.length > MAX_LINES) {
-      return NextResponse.json({
-        error: `"${source.Name}" has ${movable.length} lines YTD — too many to move inline. Use QuickBooks' Reclassify Transactions tool to move them to "${target.Name}", then inactivate the source.`,
-        tooLarge: true,
-      }, { status: 200 });
-    }
-
-    // Group by transaction; one QBO update per tx.
-    const byTx = new Map<string, typeof movable>();
-    for (const l of movable) {
-      if (!byTx.has(l.transaction_id)) byTx.set(l.transaction_id, []);
-      byTx.get(l.transaction_id)!.push(l);
-    }
-
-    const auditMemo = `SNAP COA merge (audit): "${source.Name}" → "${target.Name}"`;
-    let linesMoved = 0;
-    const failures: string[] = [];
-    for (const [txId, txLines] of byTx) {
-      try {
-        const res = await reclassifyTransactionLines(clientLink.qbo_realm_id, accessToken, {
-          txType: txLines[0].transaction_type as SupportedTxType,
-          txId,
-          lineUpdates: txLines.map((l) => ({ line_id: l.line_id, new_account_id: target.Id, new_account_name: target.Name })),
-          auditMemo,
-        });
-        linesMoved += res.lines_applied;
-        for (const na of res.lines_not_applied) failures.push(`${txId}: ${na.reason}`);
-      } catch (e: any) {
-        // Closed-period lock (closing-date password) surfaces here — reported,
-        // never hidden.
-        failures.push(`${txLines[0].transaction_type}/${txId}: ${e.message}`);
-      }
-    }
-
-    // Inactivate the source only if it's fully drained (nothing left that
-    // failed to move). A partial move keeps the source alive so no data is
-    // stranded on an inactive account.
+    // Retire the drained source only if every month posted cleanly. An empty
+    // source (no P&L activity in range) is also safe to inactivate.
     let inactivated = false;
-    if (linesMoved > 0 && failures.length === 0) {
+    if (je.failures.length === 0) {
       try {
         const fresh = (await fetchAllAccounts(clientLink.qbo_realm_id, accessToken)).find((a) => a.Id === sourceId) as any;
-        if (fresh) {
+        if (fresh && fresh.Active !== false) {
           await inactivateAccount(clientLink.qbo_realm_id, accessToken, sourceId, fresh.SyncToken, fresh);
-          inactivated = true;
         }
+        inactivated = true;
       } catch (e: any) {
-        failures.push(`inactivate source: ${e.message}`);
+        je.failures.push(`inactivate source: ${e.message}`);
+        inactivated = false;
       }
     }
 
@@ -185,17 +151,23 @@ export async function POST(request: Request) {
         client_link_id: clientLink.id,
         client_name: clientLink.client_name,
         source: source.Name, target: target.Name,
+        method: "je_reclass",
         ytd_start: ytdStart, ytd_end: ytdEnd,
-        transactions_pulled: transactionsPulled,
-        lines_moved: linesMoved, unsupported_lines: unsupported,
-        failures, inactivated,
+        amount_moved: je.moved, jes_posted: je.jesPosted,
+        months_with_activity: je.monthsWithActivity, found_in_report: je.foundInReport,
+        failures: je.failures, inactivated,
       } as any,
     } as any);
 
     return NextResponse.json({
-      ok: true,
+      ok: je.failures.length === 0,
+      method: "je_reclass",
       source: source.Name, target: target.Name,
-      linesMoved, unsupported, failures, inactivated,
+      amountMoved: je.moved, jesPosted: je.jesPosted,
+      monthsWithActivity: je.monthsWithActivity, foundInReport: je.foundInReport,
+      inactivated, failures: je.failures,
+      linesMoved: je.jesPosted, unsupported: 0, // back-compat for the existing UI
+      error: je.failures.length ? je.failures.join(" · ") : undefined,
       drift,
     });
   } catch (err: any) {

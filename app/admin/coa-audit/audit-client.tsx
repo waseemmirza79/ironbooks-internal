@@ -94,10 +94,10 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
       if (data.tooLarge) { setMergeMsg((m) => ({ ...m, [p.sourceId]: data.error })); return; }
       if (data.ok === false) { setMergeMsg((m) => ({ ...m, [p.sourceId]: data.error || "merge failed" })); return; }
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      const parts = data.method === "native_merge"
-        ? [data.merged ? "merged — all transactions moved" : "merge attempted; verify in QBO"]
+      const parts = data.method === "je_reclass"
+        ? [`moved $${Math.round(data.amountMoved || 0).toLocaleString()} via ${data.jesPosted || 0} JE${(data.jesPosted || 0) === 1 ? "" : "s"}`]
         : [`${data.linesMoved} line(s) moved`];
-      if (data.method !== "native_merge" && data.inactivated) parts.push("source deactivated");
+      if (data.inactivated) parts.push("source retired");
       if (data.failures?.length) parts.push(`${data.failures.length} failed`);
       setMergeMsg((m) => ({ ...m, [p.sourceId]: parts.join(" · ") }));
       // Re-scan to refresh conformance + drop the merged account.
