@@ -3,12 +3,12 @@
  * a contractor actually thinks in:
  *
  *   1. Income          — money in from jobs
- *   2. Variable costs   — direct job costs (materials, subs, crew, etc.)
- *   3. Gross Profit     — Income − Variable costs
- *   4. Fixed expenses   — overhead that doesn't scale with jobs (rent,
+ *   2. Cost of Goods Sold (COGS) — direct job costs (materials, subs, crew, etc.)
+ *   3. Gross Profit     — Income − COGS
+ *   4. Operating expenses — overhead that doesn't scale with jobs (rent,
  *                         insurance, software, admin)
  *
- * ...then Net Profit = Gross Profit − Fixed expenses (± Other income/expense).
+ * ...then Net Profit = Gross Profit − Operating expenses (± Other income/expense).
  *
  * Source of truth for the variable/fixed split:
  *   - If the QBO file HAS a Cost of Goods Sold section, those lines ARE the
@@ -267,14 +267,14 @@ export function classifyProfitLoss(pl: ProfitLossData): PortalPl {
   };
   const variableCosts: PlBucket = {
     key: "variable",
-    label: costSplitEstimated ? "Variable costs (estimated)" : "Variable costs",
+    label: costSplitEstimated ? "Cost of Goods Sold (COGS, estimated)" : "Cost of Goods Sold (COGS)",
     total: totalVariable,
     lines: sortDesc(variableLines),
     pctOfIncome: pct(totalVariable),
   };
   const fixedExpenses: PlBucket = {
     key: "fixed",
-    label: "Fixed expenses",
+    label: "Operating expenses",
     total: totalFixed,
     lines: sortDesc(fixedLines),
     pctOfIncome: pct(totalFixed),

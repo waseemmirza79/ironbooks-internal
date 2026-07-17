@@ -1570,13 +1570,13 @@ function PLTab({
           <PLSection title="Income" rows={incomeRows} total={pl.totalIncome} onDrill={onDrill} />
           {cogsRows.length > 0 && (
             <PLSection
-              title="Cost of Goods Sold"
+              title="Cost of Goods Sold (COGS)"
               rows={cogsRows}
               total={cogsRows.reduce((s, r) => s + r.amount, 0)}
               onDrill={onDrill}
             />
           )}
-          <PLSection title="Expenses" rows={expenseRows} total={pl.totalExpenses} onDrill={onDrill} />
+          <PLSection title="Operating Expenses" rows={expenseRows} total={pl.totalExpenses} onDrill={onDrill} />
         </>
       )}
     </div>
@@ -1599,9 +1599,6 @@ function PLSection({
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 bg-gray-50">
         <div className="text-xs font-bold uppercase text-ink-slate tracking-wide">
           {title} · {rows.length} {rows.length === 1 ? "account" : "accounts"}
-        </div>
-        <div className="font-mono text-sm font-bold text-navy">
-          {formatCurrency(total)}
         </div>
       </div>
       <div className="divide-y divide-gray-100">
@@ -1646,6 +1643,16 @@ function PLSection({
           })
         )}
       </div>
+      {rows.length > 0 && (
+        <div className="flex items-center justify-between px-4 py-2.5 border-t-2 border-gray-200 bg-gray-50">
+          <div className="text-xs font-bold uppercase text-navy tracking-wide">
+            Total {title}
+          </div>
+          <div className="font-mono text-sm font-bold text-navy">
+            {formatCurrency(total)}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

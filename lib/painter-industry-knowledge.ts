@@ -25,7 +25,7 @@ export const PAINTER_INDUSTRY_KNOWLEDGE = `═══ PAINTER INDUSTRY KNOWLEDGE 
 - Direct labor (variable, on the job):  30–40% of revenue
 - Materials (paint, supplies):           10–20% of revenue
 - Gross profit:                          ~50% (top operators: 55–60%)
-- Overhead / fixed expenses:             30–40% of revenue
+- Overhead / operating expenses:             30–40% of revenue
 - Net profit:                            10–20% (10% acceptable, 15%+ healthy, 20%+ excellent)
 - A 25–30% gross margin is BELOW target for a painter, not "healthy."
 

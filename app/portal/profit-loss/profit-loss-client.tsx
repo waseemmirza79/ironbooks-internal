@@ -17,7 +17,7 @@ type RangeKey = FixedRangeKey | "custom";
 
 /**
  * Portal P&L — restructured into the four numbers a contractor lives by:
- *   Income → (−) Variable costs → (=) Gross Profit → (−) Fixed expenses
+ *   Income → (−) Cost of Goods Sold (COGS) → (=) Gross Profit → (−) Operating expenses
  *   → (=) Net Profit.
  *
  * Classification is done by lib/portal-pl.ts. When the QBO file lacks a
@@ -223,7 +223,7 @@ export function ProfitLossClient({
               title="Gross Profit"
               subtitle={
                 c.costSplitEstimated
-                  ? "Income minus variable job costs (estimated)"
+                  ? "Income minus cost of goods sold (estimated)"
                   : "Income minus the direct cost of doing the work"
               }
               amount={c.grossProfit}
@@ -315,7 +315,7 @@ function InsightCard({ c, range, periodLabel }: { c: PortalPl; range: { label: s
                 <strong className="text-red-700">{fmtMoney(Math.abs(c.netProfit))}</strong> under breakeven, a{" "}
                 <span className={`font-semibold ${marginText(nm.tone)}`}>{Math.round(c.netMarginPct)}% net margin</span>.
                 A slower stretch happens in this line of work. If it keeps up, it's worth walking
-                through pricing or fixed costs with your bookkeeper.
+                through pricing or operating expenses with your bookkeeper.
               </>
             ) : (
               <>
@@ -360,9 +360,9 @@ function InsightCard({ c, range, periodLabel }: { c: PortalPl; range: { label: s
 function FlowStrip({ c }: { c: PortalPl }) {
   const steps = [
     { label: "Income", value: c.totalIncome, op: "", tone: "teal" as const },
-    { label: c.costSplitEstimated ? "Variable costs*" : "Variable costs", value: -c.totalVariable, op: "−", tone: "amber" as const },
+    { label: c.costSplitEstimated ? "COGS*" : "COGS", value: -c.totalVariable, op: "−", tone: "amber" as const },
     { label: "Gross Profit", value: c.grossProfit, op: "=", tone: "navy" as const, strong: true },
-    { label: "Fixed expenses", value: -c.totalFixed, op: "−", tone: "orange" as const },
+    { label: "Operating expenses", value: -c.totalFixed, op: "−", tone: "orange" as const },
     { label: "Net Profit", value: c.netProfit, op: "=", tone: c.netProfit >= 0 ? ("emerald" as const) : ("red" as const), strong: true },
   ];
   return (
@@ -403,13 +403,13 @@ function ProportionBar({ c }: { c: PortalPl }) {
         <span className="text-xs text-ink-light">per dollar earned</span>
       </div>
       <div className="flex h-6 rounded-full overflow-hidden bg-slate-100">
-        {varPct > 0 && <div className="bg-amber-400 h-full" style={{ width: `${varPct}%` }} title={`Variable costs ${Math.round(varPct)}¢`} />}
-        {fixedPct > 0 && <div className="bg-orange-500 h-full" style={{ width: `${fixedPct}%` }} title={`Fixed expenses ${Math.round(fixedPct)}¢`} />}
+        {varPct > 0 && <div className="bg-amber-400 h-full" style={{ width: `${varPct}%` }} title={`COGS ${Math.round(varPct)}¢`} />}
+        {fixedPct > 0 && <div className="bg-orange-500 h-full" style={{ width: `${fixedPct}%` }} title={`Operating expenses ${Math.round(fixedPct)}¢`} />}
         {!loss && netPct > 0 && <div className="bg-emerald-500 h-full" style={{ width: `${netPct}%` }} title={`Net profit ${Math.round(netPct)}¢`} />}
       </div>
       <div className="flex flex-wrap gap-x-5 gap-y-1 mt-3 text-xs">
-        <Legend color="bg-amber-400" label="Variable costs" value={`${Math.round(varPct)}¢`} />
-        <Legend color="bg-orange-500" label="Fixed expenses" value={`${Math.round(fixedPct)}¢`} />
+        <Legend color="bg-amber-400" label="COGS" value={`${Math.round(varPct)}¢`} />
+        <Legend color="bg-orange-500" label="Operating expenses" value={`${Math.round(fixedPct)}¢`} />
         <Legend
           color={loss ? "bg-red-500" : "bg-emerald-500"}
           label={loss ? "Loss" : "Net profit"}
@@ -506,7 +506,6 @@ function BucketSection({
           </div>
         </div>
         <div className="flex items-center gap-5 flex-shrink-0">
-          <div className="text-lg font-bold text-navy">{fmtMoney(bucket.total)}</div>
           <div className="text-xs font-semibold text-ink-slate w-12 text-right">
             {bucket.pctOfIncome > 0 ? `${Math.round(bucket.pctOfIncome)}%` : "—"}
           </div>
@@ -547,6 +546,19 @@ function BucketSection({
           ) : (
             <div className="divide-y divide-slate-100">
               {bucket.lines.map((l, i) => renderLine(l, i))}
+            </div>
+          )}
+          {bucket.lines.length > 0 && (
+            <div className="flex items-center justify-between gap-2 pt-2 mt-2 border-t-2 border-slate-200">
+              <span className="text-sm font-bold text-navy">Total {bucket.label}</span>
+              <div className="flex items-center gap-4 flex-shrink-0">
+                <span className="font-mono text-sm font-bold text-navy w-24 text-right">{fmtMoney(bucket.total)}</span>
+                <span className="text-xs font-semibold text-ink-slate w-10 text-right">
+                  {bucket.pctOfIncome > 0 ? `${Math.round(bucket.pctOfIncome)}%` : "—"}
+                </span>
+                <span className="w-[26px]" aria-hidden />
+                <span className="w-[21px] hidden sm:block" aria-hidden />
+              </div>
             </div>
           )}
         </div>

@@ -167,7 +167,7 @@ Target P&L structure for a healthy residential painting business:
 - Direct LABOR (variable, on the job):       30–40% of revenue
 - MATERIAL (paint, supplies, consumables):   10–20% of revenue
 - GROSS PROFIT:                              ~50% (top operators hit 55–60%)
-- Overhead / fixed expenses:                 30–40% of revenue
+- Overhead / operating expenses:                 30–40% of revenue
 - NET PROFIT:                                10–20% (10% is acceptable, 15%+ is healthy, 20%+ is excellent)
 
 A 25–30% gross margin is NOT "good" for a painter — it's a red flag that labor or material is too high, or pricing is too low. NEVER call a sub-50% GP "healthy" for this business.

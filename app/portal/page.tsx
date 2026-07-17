@@ -349,7 +349,7 @@ export default async function PortalOverview() {
             href="/portal/profit-loss"
             icon={BarChart3}
             title="Profit & Loss"
-            body="Income, variable costs, gross profit and overhead — broken down line by line."
+            body="Income, cost of goods sold, gross profit and overhead — broken down line by line."
           />
           <NavCard
             href="/portal/balance-sheet"
@@ -429,7 +429,7 @@ function buildHeuristicNarrative(
       `${c.costSplitEstimated ? "estimated " : ""}direct job costs, your gross profit was ` +
       `${fmtMoney(c.grossProfit)}, about a ${Math.round(c.grossMarginPct)}% gross margin. ` +
       `Overhead of ${fmtMoney(c.totalFixed)} then put the month ${fmtMoney(Math.abs(c.netProfit))} under breakeven. ` +
-      `A slower month happens in this line of work. If it keeps up, it's worth walking through pricing or fixed costs with your bookkeeper.`;
+      `A slower month happens in this line of work. If it keeps up, it's worth walking through pricing or operating expenses with your bookkeeper.`;
   } else {
     body =
       `You brought in ${fmtMoney(c.totalIncome)}. After ${fmtMoney(c.totalVariable)} in ` +
@@ -501,13 +501,13 @@ function ProportionBar({ c }: { c: PortalPl }) {
         </Link>
       </div>
       <div className="flex h-6 rounded-full overflow-hidden bg-slate-100">
-        {varPct > 0 && <div className="bg-amber-400 h-full" style={{ width: `${varPct}%` }} title={`Variable costs ${Math.round(varPct)}¢`} />}
-        {fixedPct > 0 && <div className="bg-orange-500 h-full" style={{ width: `${fixedPct}%` }} title={`Fixed expenses ${Math.round(fixedPct)}¢`} />}
+        {varPct > 0 && <div className="bg-amber-400 h-full" style={{ width: `${varPct}%` }} title={`COGS ${Math.round(varPct)}¢`} />}
+        {fixedPct > 0 && <div className="bg-orange-500 h-full" style={{ width: `${fixedPct}%` }} title={`Operating expenses ${Math.round(fixedPct)}¢`} />}
         {!loss && netPct > 0 && <div className="bg-emerald-500 h-full" style={{ width: `${netPct}%` }} title={`Net profit ${Math.round(netPct)}¢`} />}
       </div>
       <div className="flex flex-wrap gap-x-5 gap-y-1 mt-3 text-xs">
-        <Legend color="bg-amber-400" label={c.costSplitEstimated ? "Variable costs*" : "Variable costs"} value={`${Math.round(varPct)}¢`} />
-        <Legend color="bg-orange-500" label="Fixed expenses" value={`${Math.round(fixedPct)}¢`} />
+        <Legend color="bg-amber-400" label={c.costSplitEstimated ? "COGS*" : "COGS"} value={`${Math.round(varPct)}¢`} />
+        <Legend color="bg-orange-500" label="Operating expenses" value={`${Math.round(fixedPct)}¢`} />
         <Legend
           color={loss ? "bg-red-500" : "bg-emerald-500"}
           label={loss ? "Loss" : "Net profit"}
