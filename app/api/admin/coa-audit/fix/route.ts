@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { getValidToken, fetchAllAccounts, updateAccountType, QBOReauthRequiredError } from "@/lib/qbo";
+import { getValidToken, fetchAllAccounts, QBOReauthRequiredError } from "@/lib/qbo";
 import { computeRetypePlans, type RetypeMasterRow } from "@/lib/coa-retype";
+import { retypeAccountViaRebuild } from "@/lib/coa-reclass-je";
 import { applyMasterCoaToClient, type MasterCoaRow } from "@/lib/apply-master-coa";
 import { computeCoaDrift, type DriftMasterRow } from "@/lib/coa-drift";
 import { normalizeAccountName } from "@/lib/account-name";
@@ -85,17 +86,18 @@ export async function POST(request: Request) {
   try {
     const accessToken = await getValidToken(clientLink.id, service as any, "ironbooks/api/admin/coa-audit/fix");
 
-    // ── Retypes (revalidated against live QBO) ──
+    // Reclass window: current calendar YTD, including closed months (Mike's call).
+    const now = new Date();
+    const ytdStart = `${now.getFullYear()}-01-01`;
+    const ytdEnd = now.toISOString().slice(0, 10);
+
+    // ── Retypes — QBO can't change a used account's type, so rebuild: rename the
+    //    wrong-typed account aside, create a correctly-typed twin with the real
+    //    name, and drain the old one into it (per-month JEs + Item re-point +
+    //    sub-account detach), then retire the old one. Revalidated vs live QBO. ──
     if (retypeIds.length > 0) {
       const accounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
       const byId = new Map(accounts.map((a) => [a.Id, a]));
-      // Accounts that are a PARENT of something — QBO forbids changing the
-      // type of an account that has subaccounts ("You cannot change the type
-      // of an account with subaccounts"). Skip with a clear reason rather than
-      // surfacing a raw 400.
-      const hasChildren = new Set(
-        accounts.filter((a) => a.Active !== false && (a as any).ParentRef?.value).map((a) => String((a as any).ParentRef.value))
-      );
       const validPlans = computeRetypePlans({
         masterRows: masterRows as RetypeMasterRow[],
         clientAccounts: accounts.filter((a) => a.Active !== false),
@@ -107,32 +109,21 @@ export async function POST(request: Request) {
           summary.failed.push({ account: plan.current_name, message: "account no longer exists" });
           continue;
         }
-        if (hasChildren.has(String(plan.qbo_account_id))) {
-          summary.failed.push({ account: plan.current_name, message: "has sub-accounts — QBO won't retype a parent; re-parent or retype its children first (handle in the per-client COA cleanup)" });
-          continue;
-        }
-        const parent: any = current.ParentRef?.value ? byId.get(current.ParentRef.value) : null;
-        const detachFromParent = !!current.SubAccount && !!parent && parent.AccountType !== plan.new_type;
         try {
-          const updated = await updateAccountType(clientLink.qbo_realm_id, accessToken, plan.qbo_account_id, current.SyncToken, {
+          const r = await retypeAccountViaRebuild({
+            realmId: clientLink.qbo_realm_id,
+            accessToken,
+            account: current,
             newType: plan.new_type,
             newSubType: plan.new_subtype,
-            currentAccount: current,
-            detachFromParent,
+            startDate: ytdStart,
+            endDate: ytdEnd,
+            allAccounts: accounts,
           });
-          // QBO can return 200 while SILENTLY keeping the old type — it refuses
-          // some type changes (e.g. moving an account that already carries
-          // transactions across statement sections, Expense↔Cost of Goods Sold).
-          // Verify the type actually landed; never report a no-op as a success
-          // (that's what made "Fix all" claim 7 re-typed while conformance
-          // didn't move — Mike/Dominion, 2026-07-17).
-          if ((updated?.AccountType || "") === plan.new_type) {
+          if (r.failures.length === 0) {
             summary.retyped.push(`${plan.current_name} → ${plan.new_type}`);
           } else {
-            summary.failed.push({
-              account: plan.current_name,
-              message: `QBO kept it as ${updated?.AccountType || plan.current_type} — it won't change this account's type via the API (usually because it already has transactions and the change crosses statement sections). Handle it with a rename/merge in the full COA cleanup.`,
-            });
+            summary.failed.push({ account: plan.current_name, message: r.failures.join("; ") });
           }
         } catch (e: any) {
           summary.failed.push({ account: plan.current_name, message: e.message });

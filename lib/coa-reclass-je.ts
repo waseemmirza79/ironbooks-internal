@@ -18,7 +18,10 @@
  * Idempotent: createJournalEntry hashes (realm, date, note, lines), so re-running
  * the same reclass won't double-post.
  */
-import { createJournalEntry, qboRequest, type JournalEntryLine, type QBOAccount } from "@/lib/qbo";
+import {
+  createJournalEntry, createAccount, renameAccount, inactivateAccount, fetchAllAccounts,
+  qboRequest, type JournalEntryLine, type QBOAccount,
+} from "@/lib/qbo";
 import { fetchProfitAndLossByMonth } from "@/lib/qbo-pl-by-month";
 import { normalizeAccountName } from "@/lib/account-name";
 
@@ -224,4 +227,143 @@ export async function repointItemsToAccount(params: {
     }
   }
   return result;
+}
+
+export interface DrainRetireResult {
+  moved: number;
+  jesPosted: number;
+  monthsWithActivity: number;
+  foundInReport: boolean;
+  itemsRepointed: number;
+  childrenDetached: number;
+  inactivated: boolean;
+  failures: string[];
+}
+
+/**
+ * The full "consolidate account A into account B" sequence, shared by merges
+ * and retypes:
+ *   1. detach A's sub-accounts to top level (so A can be retired),
+ *   2. move A's balance to B via per-month reclassifying JEs,
+ *   3. re-point Items that post to A onto B,
+ *   4. inactivate A — but only if every prior step was clean.
+ */
+export async function drainAndRetireAccount(params: {
+  realmId: string;
+  accessToken: string;
+  source: QBOAccount;
+  target: QBOAccount;
+  startDate: string;
+  endDate: string;
+  memo: string;
+  allAccounts: QBOAccount[];
+}): Promise<DrainRetireResult> {
+  const { realmId, accessToken, source, target, startDate, endDate, memo, allAccounts } = params;
+  const out: DrainRetireResult = {
+    moved: 0, jesPosted: 0, monthsWithActivity: 0, foundInReport: false,
+    itemsRepointed: 0, childrenDetached: 0, inactivated: false, failures: [],
+  };
+
+  const hasChildren = allAccounts.some(
+    (a) => String((a as any).ParentRef?.value || "") === source.Id && a.Active !== false
+  );
+  if (hasChildren) {
+    const d = await detachSubAccounts({ realmId, accessToken, parentId: source.Id, accounts: allAccounts });
+    out.childrenDetached = d.detached;
+    out.failures.push(...d.failures.map((f) => `re-parent ${f}`));
+  }
+
+  const je = await reclassAccountViaJournalEntry({ realmId, accessToken, source, target, startDate, endDate, memo });
+  out.moved = je.moved; out.jesPosted = je.jesPosted; out.monthsWithActivity = je.monthsWithActivity;
+  out.foundInReport = je.foundInReport; out.failures.push(...je.failures);
+
+  const rp = await repointItemsToAccount({ realmId, accessToken, fromAccountId: source.Id, toAccountId: target.Id, toAccountName: target.Name });
+  out.itemsRepointed = rp.repointed;
+  out.failures.push(...rp.failures.map((f) => `re-point ${f}`));
+
+  if (out.failures.length === 0) {
+    try {
+      const fresh = (await fetchAllAccounts(realmId, accessToken)).find((a) => a.Id === source.Id) as any;
+      if (fresh && fresh.Active !== false) {
+        await inactivateAccount(realmId, accessToken, source.Id, fresh.SyncToken, fresh);
+      }
+      out.inactivated = true;
+    } catch (e: any) {
+      out.failures.push(`inactivate source: ${String(e?.message || e).slice(0, 200)}`);
+    }
+  }
+  return out;
+}
+
+export interface RetypeResult {
+  account: string;
+  newAccountId: string | null;
+  drain: DrainRetireResult | null;
+  failures: string[];
+}
+
+/**
+ * Re-type an account whose QBO type is wrong (e.g. an Expense that should be
+ * Cost of Goods Sold). QBO can't change a used account's type, so we rebuild:
+ *   1. rename the wrong-typed account aside ("X (pre-retype)"),
+ *   2. create a correctly-typed twin with the real name "X",
+ *   3. drain the old one into the twin (JE + item re-point + child detach) and
+ *      retire it.
+ * Idempotent-ish: if a correctly-typed "X" already exists (a prior partial run),
+ * it's reused as the target instead of creating a duplicate.
+ */
+export async function retypeAccountViaRebuild(params: {
+  realmId: string;
+  accessToken: string;
+  account: QBOAccount;
+  newType: string;
+  newSubType: string;
+  startDate: string;
+  endDate: string;
+  allAccounts: QBOAccount[];
+}): Promise<RetypeResult> {
+  const { realmId, accessToken, account, newType, newSubType, startDate, endDate, allAccounts } = params;
+  const out: RetypeResult = { account: account.Name, newAccountId: null, drain: null, failures: [] };
+
+  const norm = (s: string) => (s || "").trim().toLowerCase();
+  const realName = account.Name.replace(/\s*\(pre-retype\)\s*$/i, "");
+
+  // Reuse an already-correct twin if a prior run created it.
+  let target = allAccounts.find(
+    (a) => a.Id !== account.Id && a.Active !== false &&
+      norm(a.Name) === norm(realName) &&
+      (a.AccountType || "").toLowerCase() === newType.toLowerCase()
+  ) as QBOAccount | undefined;
+
+  let source: QBOAccount = account;
+  if (!target) {
+    // Free the real name: rename the wrong-typed account aside (unless already).
+    if (!/\(pre-retype\)\s*$/i.test(account.Name)) {
+      const suffix = " (pre-retype)";
+      const base = (realName + suffix).length > 100 ? realName.slice(0, 100 - suffix.length - 1) + "…" : realName;
+      try {
+        source = await renameAccount(realmId, accessToken, account.Id, account.SyncToken, `${base}${suffix}`, { currentAccount: account });
+      } catch (e: any) {
+        out.failures.push(`rename aside: ${String(e?.message || e).slice(0, 200)}`);
+        return out;
+      }
+    }
+    // Create the correctly-typed twin with the real name (top-level).
+    try {
+      target = await createAccount(realmId, accessToken, { name: realName, accountType: newType, accountSubType: newSubType });
+    } catch (e: any) {
+      out.failures.push(`create ${newType} "${realName}": ${String(e?.message || e).slice(0, 200)}`);
+      return out;
+    }
+  }
+  out.newAccountId = target.Id;
+
+  const drain = await drainAndRetireAccount({
+    realmId, accessToken, source, target, startDate, endDate,
+    memo: `SNAP COA retype: "${realName}" → ${newType}`,
+    allAccounts,
+  });
+  out.drain = drain;
+  out.failures.push(...drain.failures);
+  return out;
 }
