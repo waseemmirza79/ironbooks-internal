@@ -340,7 +340,7 @@ export async function retypeAccountViaRebuild(params: {
   const out: RetypeResult = { account: account.Name, newAccountId: null, createdType: null, drain: null, failures: [] };
 
   const norm = (s: string) => (s || "").trim().toLowerCase();
-  const realName = account.Name.replace(/\s*\(pre-retype\)\s*$/i, "");
+  const realName = account.Name.replace(/\s*\(pre-retype[^)]*\)\s*$/i, "");
 
   // Reuse an already-correct twin if a prior run created it.
   let target = allAccounts.find(
@@ -352,8 +352,10 @@ export async function retypeAccountViaRebuild(params: {
   let source: QBOAccount = account;
   if (!target) {
     // Free the real name: rename the wrong-typed account aside (unless already).
-    if (!/\(pre-retype\)\s*$/i.test(account.Name)) {
-      const suffix = " (pre-retype)";
+    // Suffix with the account Id so a re-run (after a prior partial attempt that
+    // already left a "(pre-retype)" account) can't collide on the name.
+    if (!/\(pre-retype[^)]*\)\s*$/i.test(account.Name)) {
+      const suffix = ` (pre-retype ${account.Id})`;
       const base = (realName + suffix).length > 100 ? realName.slice(0, 100 - suffix.length - 1) + "…" : realName;
       try {
         source = await renameAccount(realmId, accessToken, account.Id, account.SyncToken, `${base}${suffix}`, { currentAccount: account });
