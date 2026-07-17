@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { getValidToken, fetchAllAccounts, qboErrorResponse } from "@/lib/qbo";
-import { fetchAccountTransactions } from "@/lib/qbo-balance-sheet";
+import { fetchPLDetailAll, type PLDetailRow } from "@/lib/qbo-reports";
 import { PAYROLL_ACCOUNT_NAME_REGEX } from "@/lib/payroll-double-entry";
+import { normalizeAccountName } from "@/lib/account-name";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -62,37 +63,61 @@ export async function POST(request: Request) {
       const isPl = t.includes("expense") || t.includes("cost of goods") || t.includes("cogs");
       return isPl && a.Active !== false && PAYROLL_ACCOUNT_NAME_REGEX.test(a.Name || "");
     });
+    const payrollNorm = new Set(payroll.map((a) => normalizeAccountName(a.Name)));
+
+    // ProfitAndLossDetail (both bases) is the report that sums to the P&L
+    // lines and attributes each posting to its account — unlike TransactionList,
+    // whose account filter QBO silently ignores. Accrual = every posting;
+    // Cash = what the statements/portal show. Comparing the two is itself a
+    // tell for the double-count (net-pay cash postings show on both).
+    const [accrualRows, cashRows] = await Promise.all([
+      fetchPLDetailAll((client as any).qbo_realm_id, token, start, end, "Accrual"),
+      fetchPLDetailAll((client as any).qbo_realm_id, token, start, end, "Cash"),
+    ]);
+    const cashByAccount = new Map<string, PLDetailRow[]>();
+    for (const r of cashRows) {
+      const k = normalizeAccountName(r.account);
+      if (payrollNorm.has(k)) (cashByAccount.get(k) || cashByAccount.set(k, []).get(k)!).push(r);
+    }
+    const accrualByAccount = new Map<string, PLDetailRow[]>();
+    for (const r of accrualRows) {
+      const k = normalizeAccountName(r.account);
+      if (payrollNorm.has(k)) (accrualByAccount.get(k) || accrualByAccount.set(k, []).get(k)!).push(r);
+    }
 
     const perAccount: any[] = [];
     for (const a of payroll) {
-      const txns = await fetchAccountTransactions((client as any).qbo_realm_id, token, a.Id, start, end, a.Name);
+      const k = normalizeAccountName(a.Name);
+      const rows = accrualByAccount.get(k) || [];
+      const cashRowsAcct = cashByAccount.get(k) || [];
 
       const byType: Record<string, { n: number; sum: number }> = {};
-      for (const t of txns) {
-        const k = t.txn_type || "(none)";
-        (byType[k] ||= { n: 0, sum: 0 });
-        byType[k].n++; byType[k].sum += Math.abs(t.amount);
+      for (const t of rows) {
+        const key = t.txn_type || "(none)";
+        (byType[key] ||= { n: 0, sum: 0 });
+        byType[key].n++; byType[key].sum += Math.abs(t.amount);
       }
 
-      // gross+net signature: same day, 2+ postings, 2+ distinct amounts
-      const byDate: Record<string, typeof txns> = {};
-      for (const t of txns) (byDate[t.date.slice(0, 10)] ||= []).push(t);
+      // gross+net signature: same day, 2+ postings, 2+ distinct amounts.
+      const byDate: Record<string, PLDetailRow[]> = {};
+      for (const t of rows) (byDate[t.date.slice(0, 10)] ||= []).push(t);
       const grossNetClusters = Object.entries(byDate)
         .filter(([, ts]) => ts.length >= 2 && new Set(ts.map((t) => Math.abs(t.amount).toFixed(2))).size >= 2)
-        .map(([d, ts]) => ({ date: d, postings: ts.map((t) => ({ type: t.txn_type, amount: Math.abs(t.amount), memo: (t.memo || "").slice(0, 40), name: t.customer_or_vendor })) }));
+        .map(([d, ts]) => ({ date: d, postings: ts.map((t) => ({ type: t.txn_type, amount: Math.abs(t.amount), memo: (t.memo || "").slice(0, 40), name: t.name })) }));
 
       perAccount.push({
         account_id: a.Id,
         account_name: a.Name,
         account_type: a.AccountType,
         account_subtype: a.AccountSubType,
-        txn_count: txns.length,
-        total_abs: Math.round(txns.reduce((s, t) => s + Math.abs(t.amount), 0) * 100) / 100,
+        txn_count: rows.length,
+        total_accrual: Math.round(rows.reduce((s, t) => s + t.amount, 0) * 100) / 100,
+        total_cash: Math.round(cashRowsAcct.reduce((s, t) => s + t.amount, 0) * 100) / 100,
         by_type: byType,
         gross_net_clusters: grossNetClusters,
-        transactions: txns.map((t) => ({
+        transactions: rows.map((t) => ({
           id: t.txn_id, type: t.txn_type, date: t.date, doc: t.doc_number,
-          name: t.customer_or_vendor, memo: t.memo, amount: t.amount,
+          name: t.name, memo: t.memo, amount: t.amount,
         })),
       });
     }
