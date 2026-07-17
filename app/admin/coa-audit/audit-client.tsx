@@ -159,6 +159,85 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
     }
   }
 
+  // One-click per client: approve + apply EVERY fix at once — all re-types,
+  // all missing-account creates, and all merges that have a target. Merges
+  // with no confident target are left for manual review. One confirm, then it
+  // runs the batch fix and each merge sequentially, and re-scans at the end.
+  async function applyAll(id: string, clientName: string) {
+    const d = rows[id]?.drift;
+    if (!d) return;
+    const retype = d.wrongType.map((w) => w.id);
+    const create = [...d.missingRequired];
+    const mergeList = (d.mergeProposals || [])
+      .filter((p) => p.action === "merge")
+      .map((p) => ({ p, targetId: mergeSel[id]?.[p.sourceId] || p.targetId || "" }))
+      .filter((x) => x.targetId);
+    const mergesTotal = (d.mergeProposals || []).filter((p) => p.action === "merge").length;
+    const skipped = mergesTotal - mergeList.length;
+    if (retype.length + create.length + mergeList.length === 0) return;
+
+    const tName = (tid: string, p: MergeProposal) =>
+      (d.mergeTargets || []).find((t) => t.id === tid)?.name || p.targetName || "target";
+    const mergeLines = mergeList.map(({ p, targetId }) => `   • ${p.sourceName} → ${tName(targetId, p)}`).join("\n");
+    const msg =
+      `Approve & apply ALL fixes to ${clientName}'s live QuickBooks?\n\n` +
+      `• ${retype.length} account re-type(s)\n` +
+      `• ${create.length} new account(s)\n` +
+      `• ${mergeList.length} merge(s) — each moves ALL year-to-date transactions (including already-closed months) onto the target and deactivates the source:\n${mergeLines || "   (none)"}\n\n` +
+      (skipped ? `${skipped} non-master account(s) have no clear target and are left for manual review.\n\n` : "") +
+      `This rewrites the books. Continue?`;
+    if (!confirm(msg)) return;
+
+    setExpanded(id);
+    patch(id, { applying: true, fixMsg: "applying re-types & new accounts…" });
+    const summary: string[] = [];
+    try {
+      if (retype.length || create.length) {
+        const res = await fetch("/api/admin/coa-audit/fix", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ client_link_id: id, retype_account_ids: retype, create_account_names: create }),
+        });
+        const data = await res.json();
+        if (data.reauth) { patch(id, { applying: false, fixMsg: "QBO needs reconnect" }); return; }
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (data.retyped?.length) summary.push(`${data.retyped.length} re-typed`);
+        if (data.created?.length) summary.push(`${data.created.length} created`);
+        if (data.failed?.length) summary.push(`${data.failed.length} fix-failed`);
+      }
+      let merged = 0, mergeFail = 0, tooLarge = 0;
+      for (let i = 0; i < mergeList.length; i++) {
+        const { p, targetId } = mergeList[i];
+        patch(id, { fixMsg: `merging ${i + 1}/${mergeList.length}: ${p.sourceName}…` });
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const res = await fetch("/api/admin/coa-audit/merge", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ client_link_id: id, source_account_id: p.sourceId, target_account_id: targetId }),
+          });
+          // eslint-disable-next-line no-await-in-loop
+          const data = await res.json();
+          if (data.reauth) { mergeFail++; continue; }
+          if (data.tooLarge) { tooLarge++; continue; }
+          if (!res.ok) { mergeFail++; continue; }
+          if (data.failures?.length && !data.inactivated) mergeFail++;
+          else merged++;
+        } catch { mergeFail++; }
+      }
+      if (merged) summary.push(`${merged} merged`);
+      if (tooLarge) summary.push(`${tooLarge} too big — use QBO reclassify`);
+      if (mergeFail) summary.push(`${mergeFail} merge-failed`);
+      if (skipped) summary.push(`${skipped} left for review`);
+    } catch (e: any) {
+      patch(id, { applying: false, fixMsg: e.message });
+      return;
+    }
+    // Refresh conformance, then show the aggregate result.
+    await scan(id);
+    patch(id, { applying: false, fixMsg: summary.join(" · ") || "no changes" });
+  }
+
   function toggle(setter: typeof setRetypeSel, id: string, key: string) {
     setter((prev) => {
       const next = new Set(prev[id] || []);
@@ -217,6 +296,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
               const r = rows[c.id];
               const d = r.drift;
               const fixable = d ? d.wrongType.length + d.missingRequired.length : 0;
+              const mergeable = d ? (d.mergeProposals || []).filter((p) => p.action === "merge" && (mergeSel[c.id]?.[p.sourceId] || p.targetId)).length : 0;
               return (
                 <>
                   <tr key={c.id} className="border-b border-gray-100 hover:bg-gray-50">
@@ -239,6 +319,17 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
                     <td className="px-4 py-2.5 text-right text-orange-600">{d ? d.nonMaster.length : "—"}</td>
                     <td className="px-4 py-2.5 text-right text-red-600">{d ? d.missingRequired.length : "—"}</td>
                     <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                      {d && (fixable + mergeable > 0) && (
+                        <button
+                          onClick={() => applyAll(c.id, c.client_name)}
+                          disabled={busy || r.applying}
+                          title="Approve & apply every re-type, new account, and merge for this client in one click"
+                          className="inline-flex items-center gap-1 text-xs font-bold text-white bg-teal hover:bg-teal-dark px-2.5 py-1 rounded-lg mr-3 disabled:opacity-50"
+                        >
+                          {r.applying ? <Loader2 size={11} className="animate-spin" /> : <Wrench size={11} />}
+                          Fix all ({fixable + mergeable})
+                        </button>
+                      )}
                       {d && (fixable + d.nonMaster.length > 0) && (
                         <button
                           className="text-xs font-semibold text-ink-slate hover:text-navy mr-3 underline decoration-dotted"
@@ -321,7 +412,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
                                             )}
                                             <button
                                               onClick={() => applyMerge(c.id, c.client_name, p, targets)}
-                                              disabled={!sel || mergeBusy === p.sourceId || !!mergeBusy}
+                                              disabled={!sel || mergeBusy === p.sourceId || !!mergeBusy || r.applying}
                                               className="text-[11px] font-bold text-white bg-orange-600 hover:bg-orange-700 px-2.5 py-1 rounded disabled:opacity-50 inline-flex items-center gap-1"
                                             >
                                               {mergeBusy === p.sourceId ? <Loader2 size={11} className="animate-spin" /> : null}
