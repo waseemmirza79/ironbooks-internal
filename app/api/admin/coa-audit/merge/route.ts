@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { getValidToken, fetchAllAccounts, inactivateAccount, renameAccount, QBOReauthRequiredError } from "@/lib/qbo";
+import { getValidToken, fetchAllAccounts, inactivateAccount, QBOReauthRequiredError } from "@/lib/qbo";
 import { fetchTransactionsForAccount, reclassifyTransactionLines, type SupportedTxType, SUPPORTED_TX_TYPES } from "@/lib/qbo-reclass";
 import { computeCoaDrift, type DriftMasterRow } from "@/lib/coa-drift";
 
@@ -99,79 +99,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Can't merge a ${source.AccountType} account into a ${target.AccountType} account — types must be compatible.` }, { status: 400 });
     }
 
-    // ── Phase 1: QBO NATIVE MERGE for same-type accounts ──────────────────
-    // When source and target share the same AccountType, renaming the source
-    // to the target's EXACT name makes QBO merge it server-side. Unlike the
-    // line-by-line reclass below, a native merge moves EVERY transaction type
-    // (income, deposits, JEs, invoices, CC credits) across ALL history, then
-    // retires the source — the only way to fully consolidate duplicate
-    // income/revenue accounts (e.g. Services → Service Revenue), with no
-    // line-count ceiling. QBO only merges SAME-type accounts; different-type
-    // "merges" fall through to the reclass path below.
-    if (String(source.AccountType || "").toLowerCase() === String(target.AccountType || "").toLowerCase()) {
-      // QBO only merges accounts that share the same DETAIL type
-      // (AccountSubType). It validates the name-collision against the source's
-      // CURRENT subtype, so changing the subtype and the name in one sparse
-      // call gets rejected as a plain duplicate name (6240) instead of merging.
-      // Two steps: (1) align the source's detail type to the target's, then
-      // (2) rename it to the target's name — now QBO recognizes the merge.
-      let syncToken = source.SyncToken;
-      try {
-        if (String(source.AccountSubType || "") !== String(target.AccountSubType || "")) {
-          const aligned = await renameAccount(clientLink.qbo_realm_id, accessToken, sourceId, syncToken, source.Name, {
-            currentAccount: source,
-            newSubType: target.AccountSubType || undefined,
-          });
-          syncToken = (aligned as any)?.SyncToken || syncToken;
-        }
-        await renameAccount(clientLink.qbo_realm_id, accessToken, sourceId, syncToken, target.Name, {
-          currentAccount: { ...(source as any), AccountSubType: target.AccountSubType } as any,
-          newSubType: target.AccountSubType || undefined,
-        });
-      } catch (e: any) {
-        const raw = String(e?.message || "");
-        const friendly = /sub-?accounts?/i.test(raw)
-          ? `"${source.Name}" or "${target.Name}" is a parent/child account — QBO won't merge those directly. Re-parent the sub-accounts first (handled in the full COA cleanup).`
-          : /duplicate name/i.test(raw)
-          ? `QBO won't auto-merge "${source.Name}" into "${target.Name}" — see debug for the structural mismatch.`
-          : `QBO wouldn't merge "${source.Name}" into "${target.Name}": ${raw}`;
-        return NextResponse.json({
-          ok: false, method: "native_merge", source: source.Name, target: target.Name, error: friendly,
-          debug: {
-            raw: raw.slice(0, 500),
-            source: { id: source.Id, type: source.AccountType, subType: source.AccountSubType || null, subAccount: !!source.SubAccount, parent: source.ParentRef?.value || null },
-            target: { id: target.Id, type: target.AccountType, subType: target.AccountSubType || null, subAccount: !!target.SubAccount, parent: target.ParentRef?.value || null },
-          },
-        }, { status: 200 });
-      }
-      // Verify the source was absorbed (gone or inactive) and re-score.
-      const after = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
-      const srcAfter: any = after.find((a) => a.Id === sourceId);
-      const merged = !srcAfter || srcAfter.Active === false;
-      const ind = ((clientLink as any).industry as string) || "painters";
-      const jur = clientLink.jurisdiction || "US";
-      let { data: mr } = await service.from("master_coa")
-        .select("account_name, qbo_account_type, qbo_account_subtype, parent_account_name, is_parent, is_required")
-        .eq("industry", ind).eq("jurisdiction", jur);
-      if ((!mr || mr.length === 0) && ind !== "painters") {
-        ({ data: mr } = await service.from("master_coa")
-          .select("account_name, qbo_account_type, qbo_account_subtype, parent_account_name, is_parent, is_required")
-          .eq("industry", "painters").eq("jurisdiction", jur));
-      }
-      const drift = mr ? computeCoaDrift(after as any, mr as DriftMasterRow[]) : null;
-      await service.from("audit_log").insert({
-        event_type: "coa_audit_merge", user_id: user.id,
-        request_payload: {
-          client_link_id: clientLink.id, client_name: clientLink.client_name,
-          source: source.Name, target: target.Name, method: "native_merge", merged, all_history: true,
-        } as any,
-      } as any);
-      return NextResponse.json({
-        ok: true, method: "native_merge", source: source.Name, target: target.Name,
-        merged, inactivated: merged, linesMoved: null, unsupported: 0, failures: [], drift,
-      });
-    }
-
+    // NOTE: QBO's API does NOT support merging accounts (confirmed on Dominion
+    // 2026-07-17 — renaming an account to an existing account's exact name,
+    // even with identical type/detail-type/hierarchy, returns "Duplicate Name
+    // Exists" 6240; the UI-only merge isn't exposed). So there is no native
+    // merge path — the ONLY way to consolidate/retype via API is to move every
+    // transaction line to the target and inactivate the drained source, below.
     const { lines, transactionsPulled } = await fetchTransactionsForAccount(
       clientLink.qbo_realm_id, accessToken, sourceId, ytdStart, ytdEnd
     );
