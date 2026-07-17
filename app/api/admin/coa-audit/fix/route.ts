@@ -114,13 +114,26 @@ export async function POST(request: Request) {
         const parent: any = current.ParentRef?.value ? byId.get(current.ParentRef.value) : null;
         const detachFromParent = !!current.SubAccount && !!parent && parent.AccountType !== plan.new_type;
         try {
-          await updateAccountType(clientLink.qbo_realm_id, accessToken, plan.qbo_account_id, current.SyncToken, {
+          const updated = await updateAccountType(clientLink.qbo_realm_id, accessToken, plan.qbo_account_id, current.SyncToken, {
             newType: plan.new_type,
             newSubType: plan.new_subtype,
             currentAccount: current,
             detachFromParent,
           });
-          summary.retyped.push(`${plan.current_name} → ${plan.new_type}`);
+          // QBO can return 200 while SILENTLY keeping the old type — it refuses
+          // some type changes (e.g. moving an account that already carries
+          // transactions across statement sections, Expense↔Cost of Goods Sold).
+          // Verify the type actually landed; never report a no-op as a success
+          // (that's what made "Fix all" claim 7 re-typed while conformance
+          // didn't move — Mike/Dominion, 2026-07-17).
+          if ((updated?.AccountType || "") === plan.new_type) {
+            summary.retyped.push(`${plan.current_name} → ${plan.new_type}`);
+          } else {
+            summary.failed.push({
+              account: plan.current_name,
+              message: `QBO kept it as ${updated?.AccountType || plan.current_type} — it won't change this account's type via the API (usually because it already has transactions and the change crosses statement sections). Handle it with a rename/merge in the full COA cleanup.`,
+            });
+          }
         } catch (e: any) {
           summary.failed.push({ account: plan.current_name, message: e.message });
         }
