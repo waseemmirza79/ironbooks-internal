@@ -109,15 +109,34 @@ export async function POST(request: Request) {
     // line-count ceiling. QBO only merges SAME-type accounts; different-type
     // "merges" fall through to the reclass path below.
     if (String(source.AccountType || "").toLowerCase() === String(target.AccountType || "").toLowerCase()) {
+      // QBO only merges accounts that share the same DETAIL type
+      // (AccountSubType). It validates the name-collision against the source's
+      // CURRENT subtype, so changing the subtype and the name in one sparse
+      // call gets rejected as a plain duplicate name (6240) instead of merging.
+      // Two steps: (1) align the source's detail type to the target's, then
+      // (2) rename it to the target's name — now QBO recognizes the merge.
+      let syncToken = source.SyncToken;
       try {
-        await renameAccount(clientLink.qbo_realm_id, accessToken, sourceId, source.SyncToken, target.Name, {
-          currentAccount: source,
+        if (String(source.AccountSubType || "") !== String(target.AccountSubType || "")) {
+          const aligned = await renameAccount(clientLink.qbo_realm_id, accessToken, sourceId, syncToken, source.Name, {
+            currentAccount: source,
+            newSubType: target.AccountSubType || undefined,
+          });
+          syncToken = (aligned as any)?.SyncToken || syncToken;
+        }
+        await renameAccount(clientLink.qbo_realm_id, accessToken, sourceId, syncToken, target.Name, {
+          currentAccount: { ...(source as any), AccountSubType: target.AccountSubType } as any,
           newSubType: target.AccountSubType || undefined,
         });
       } catch (e: any) {
+        const raw = String(e?.message || "");
+        const friendly = /sub-?accounts?/i.test(raw)
+          ? `"${source.Name}" or "${target.Name}" is a parent/child account — QBO won't merge those directly. Re-parent the sub-accounts first (handled in the full COA cleanup).`
+          : /duplicate name/i.test(raw)
+          ? `QBO still treats "${source.Name}" and "${target.Name}" as different detail types and won't merge them automatically — handle in the full COA cleanup.`
+          : `QBO wouldn't merge "${source.Name}" into "${target.Name}": ${raw}`;
         return NextResponse.json({
-          ok: false, method: "native_merge", source: source.Name, target: target.Name,
-          error: `QBO wouldn't merge "${source.Name}" into "${target.Name}": ${e.message}`,
+          ok: false, method: "native_merge", source: source.Name, target: target.Name, error: friendly,
         }, { status: 200 });
       }
       // Verify the source was absorbed (gone or inactive) and re-score.
