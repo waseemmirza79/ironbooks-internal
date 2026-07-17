@@ -160,15 +160,27 @@ export function BalanceSheetLanding({
   const [postedJEs, setPostedJEs] = useState<Record<string, { qbo_je_id: string; doc_number: string | null }>>({});
   const [jeErrors, setJEErrors] = useState<Record<string, string>>({});
 
+  // Uploaded-statement auto-fill (Mike 2026-07-17): the latest matched
+  // statement per QBO account prefills ending balance + as-of date, so the
+  // bookkeeper reviews and approves instead of retyping numbers we already
+  // extracted from the PDFs.
+  const [stmtByAccount, setStmtByAccount] = useState<
+    Record<string, { ending_balance: number; statement_end_date: string; display_name: string }>
+  >({});
+  const [autoFilled, setAutoFilled] = useState<Set<string>>(new Set());
+
   async function loadAccounts() {
     setLoading(true);
     setError("");
     try {
-      const [accRes, prefillRes] = await Promise.all([
+      const [accRes, prefillRes, stmtRes] = await Promise.all([
         fetch(`/api/clients/${clientLinkId}/bs-accounts`).then((r) => r.json()),
         fetch(
           `/api/balance-sheet/bank-recon-batch?client_link_id=${clientLinkId}`
         ).then((r) => r.json()),
+        fetch(`/api/clients/${clientLinkId}/statements`)
+          .then((r) => r.json())
+          .catch(() => null),
       ]);
 
       if (accRes.error) throw new Error(accRes.error);
@@ -179,23 +191,75 @@ export function BalanceSheetLanding({
       ];
       setAccounts(allAccts);
 
-      // Pre-fill rows from prior input (categories + most-recent recon)
+      // Latest MATCHED statement per QBO account — needs an extracted ending
+      // balance + end date to be usable as recon input.
+      const byAccount: Record<string, { ending_balance: number; statement_end_date: string; display_name: string }> = {};
+      const stmts: any[] = Array.isArray(stmtRes?.statements)
+        ? stmtRes.statements
+        : Array.isArray(stmtRes)
+        ? stmtRes
+        : [];
+      for (const s of stmts) {
+        const acct = s?.matched_qbo_account_id != null ? String(s.matched_qbo_account_id) : "";
+        if (!acct || s?.ending_balance == null || !s?.statement_end_date) continue;
+        const endDate = String(s.statement_end_date).slice(0, 10);
+        const cur = byAccount[acct];
+        if (!cur || endDate > cur.statement_end_date) {
+          byAccount[acct] = {
+            ending_balance: Number(s.ending_balance),
+            statement_end_date: endDate,
+            display_name: s.display_name || s.original_name || "uploaded statement",
+          };
+        }
+      }
+      setStmtByAccount(byAccount);
+
+      // Pre-fill rows: the bookkeeper's saved recon input wins; otherwise the
+      // uploaded statement fills the balance + as-of automatically.
       const initial: Record<string, RowState> = {};
+      const filled = new Set<string>();
       for (const a of allAccts) {
         const prior = prefillRes?.prefill?.[a.qbo_account_id];
+        const st = byAccount[String(a.qbo_account_id)];
+        const useStatement = st && prior?.statement_ending_balance == null;
+        if (useStatement) filled.add(a.qbo_account_id);
         initial[a.qbo_account_id] = {
           category: prior?.category || "",
-          ending_balance: prior?.statement_ending_balance?.toString() ?? "",
-          as_of_date: prior?.statement_as_of_date ?? "",
+          ending_balance:
+            prior?.statement_ending_balance?.toString() ?? (useStatement ? String(st.ending_balance) : ""),
+          as_of_date: prior?.statement_as_of_date ?? (useStatement ? st.statement_end_date : ""),
           notes: prior?.notes ?? "",
         };
       }
+      setAutoFilled(filled);
       setRows(initial);
     } catch (e: any) {
       setError(e.message || "Failed to load accounts");
     } finally {
       setLoading(false);
     }
+  }
+
+  // Overwrite the recon inputs from the uploaded statements (including rows
+  // the bookkeeper already touched) — the "just approve it" path.
+  function applyStatementData() {
+    setRows((prev) => {
+      const next = { ...prev };
+      for (const [acct, st] of Object.entries(stmtByAccount)) {
+        if (!next[acct]) continue;
+        next[acct] = {
+          ...next[acct],
+          ending_balance: String(st.ending_balance),
+          as_of_date: st.statement_end_date,
+        };
+      }
+      return next;
+    });
+    setAutoFilled((prev) => {
+      const next = new Set(prev);
+      for (const acct of Object.keys(stmtByAccount)) next.add(acct);
+      return next;
+    });
   }
 
   useEffect(() => {
@@ -699,6 +763,39 @@ export function BalanceSheetLanding({
           </button>
         </div>
 
+        {/* Uploaded statements → recon inputs. The AI already extracted the
+            ending balance + end date from each matched statement PDF; this
+            surfaces that and fills the table so the bookkeeper approves
+            instead of retyping. */}
+        {!loading && Object.keys(stmtByAccount).length > 0 && (
+          <div className="mx-5 mt-4 rounded-xl border border-indigo-200 bg-indigo-50/70 px-4 py-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="text-xs text-navy leading-relaxed">
+                <strong className="font-bold">
+                  {Object.keys(stmtByAccount).length} account
+                  {Object.keys(stmtByAccount).length === 1 ? " has" : "s have"} uploaded statements
+                </strong>
+                {autoFilled.size > 0 ? (
+                  <>
+                    {" "}— {autoFilled.size} row{autoFilled.size === 1 ? "" : "s"} below auto-filled with the
+                    statement&apos;s ending balance + end date (marked{" "}
+                    <span className="text-indigo-700 font-semibold">from statement</span>). Review, then Save &amp;
+                    Review Gaps.
+                  </>
+                ) : (
+                  <> — your saved recon inputs are showing; click to overwrite them with the statement data.</>
+                )}
+              </div>
+              <button
+                onClick={applyStatementData}
+                className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-white px-3 py-1.5 text-xs font-bold text-indigo-800 hover:bg-indigo-100"
+              >
+                <Sparkles size={12} /> Fill from statements
+              </button>
+            </div>
+          </div>
+        )}
+
         {error && (
           <div className="m-4 p-2.5 rounded-md bg-red-50 border border-red-200 text-xs text-red-800 flex items-start gap-2">
             <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
@@ -828,18 +925,28 @@ export function BalanceSheetLanding({
                       </div>
 
                       {/* Statement ending balance */}
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={r.ending_balance}
-                        onChange={(e) =>
-                          updateRow(a.qbo_account_id, {
-                            ending_balance: e.target.value,
-                          })
-                        }
-                        placeholder="0.00"
-                        className="px-2 py-1.5 rounded border border-gray-200 focus:border-teal outline-none text-xs font-mono text-navy text-right"
-                      />
+                      <div className="flex flex-col min-w-0">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={r.ending_balance}
+                          onChange={(e) =>
+                            updateRow(a.qbo_account_id, {
+                              ending_balance: e.target.value,
+                            })
+                          }
+                          placeholder="0.00"
+                          className="px-2 py-1.5 rounded border border-gray-200 focus:border-teal outline-none text-xs font-mono text-navy text-right"
+                        />
+                        {autoFilled.has(a.qbo_account_id) && stmtByAccount[String(a.qbo_account_id)] && (
+                          <span
+                            className="text-[9px] text-indigo-600 mt-0.5 text-right truncate"
+                            title={stmtByAccount[String(a.qbo_account_id)].display_name}
+                          >
+                            from statement
+                          </span>
+                        )}
+                      </div>
 
                       {/* As-of date */}
                       <input

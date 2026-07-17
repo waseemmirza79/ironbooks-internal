@@ -40,6 +40,28 @@ const GRADE_HEADLINE: Record<string, string> = {
  * that shows up next to each module card so bookkeepers don't have to
  * memorize what each module is for.
  */
+/** Plain-English "what to actually do" per module — every What-needs-fixing
+ *  line carries its suggestion + a Fix button (Mike 2026-07-17: "each line
+ *  item needs a suggestion and action to it"). */
+const MODULE_SUGGESTION: Record<string, string> = {
+  undeposited_funds:
+    "Match the stuck payments to their real deposits/invoices, then post the releases — Undeposited Funds module.",
+  bank_recon:
+    "Enter the statement ending balance (auto-fills once the statement PDF is uploaded) and post the reconciling entry — Bank Recon module.",
+  accounts_receivable:
+    "Verify what's genuinely still owed, apply stuck payments, void CRM-duplicate invoices — A/R module.",
+  obe_uncategorized:
+    "Zero Opening Balance Equity into the correct opening balances — OBE module.",
+  loans:
+    "Split loan payments into principal + interest against the loan statement — Loans module.",
+  tax_payroll:
+    "Tie payroll liabilities to the provider reports — Tax & Payroll module.",
+  shareholder_draws:
+    "Classify the owner activity as draws vs contributions — Owner Equity module.",
+  accounts_payable:
+    "Confirm which open bills are still really owed — A/P module.",
+};
+
 const MODULE_META: Record<CleanupModule, { icon: any; description: string; postsToQbo: boolean }> = {
   bank_recon: {
     icon: Building2,
@@ -342,13 +364,23 @@ export function CleanupWizardClient({
     }
   }, [runId]);
 
+  // Review-queue load errors surface as a readable message + retry instead
+  // of a blank list / crashed page (Mike: "click review just errors out").
+  const [reviewLoadError, setReviewLoadError] = useState<string | null>(null);
   const loadEntries = useCallback(async (module?: string, decision?: string) => {
-    const params = new URLSearchParams();
-    if (module) params.set("module", module);
-    if (decision) params.set("decision", decision);
-    const res = await fetch(`/api/cleanup/${runId}/proposed?${params}`);
-    const data = await res.json();
-    setEntries(data.entries || []);
+    setReviewLoadError(null);
+    try {
+      const params = new URLSearchParams();
+      if (module) params.set("module", module);
+      if (decision) params.set("decision", decision);
+      const res = await fetch(`/api/cleanup/${runId}/proposed?${params}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setEntries(data.entries || []);
+    } catch (e: any) {
+      setEntries([]);
+      setReviewLoadError(e?.message || "Couldn't load the review queue");
+    }
   }, [runId]);
 
   // Poll for status updates every 5s during active work, but stop polling
@@ -368,6 +400,19 @@ export function CleanupWizardClient({
   useEffect(() => {
     setAttested(false);
   }, [activeModule]);
+
+  // "Fix →" on a What-needs-fixing line: jump to the modules step and pulse
+  // the module card that fixes it.
+  const [focusModuleKey, setFocusModuleKey] = useState<string | null>(null);
+  function jumpToModule(module?: string | null) {
+    setStep("modules");
+    if (!module) return;
+    setFocusModuleKey(module);
+    setTimeout(() => {
+      document.getElementById(`module-card-${module}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 150);
+    setTimeout(() => setFocusModuleKey(null), 3000);
+  }
 
   async function importCsv() {
     if (!csvText.trim()) return;
@@ -867,10 +912,18 @@ export function CleanupWizardClient({
                         t.grade === "red" ? "bg-red-500" : "bg-amber-400"
                       }`}
                     />
-                    <div>
+                    <div className="flex-1 min-w-0">
                       <div className="font-semibold text-navy">{t.title}</div>
-                      <div className="text-xs text-ink-light">{t.description}</div>
+                      <div className="text-xs text-ink-light">
+                        {MODULE_SUGGESTION[t.module] || t.description}
+                      </div>
                     </div>
+                    <button
+                      onClick={() => jumpToModule(t.module)}
+                      className="shrink-0 mt-0.5 text-[11px] font-bold text-teal border border-teal/40 rounded-lg px-2.5 py-1 hover:bg-teal/5 inline-flex items-center gap-1"
+                    >
+                      Fix <ArrowRight size={10} />
+                    </button>
                   </div>
                 ))}
                 {(!hs?.task_list || (hs.task_list as any[]).length === 0) && (
@@ -980,7 +1033,15 @@ export function CleanupWizardClient({
                 m.module === "accounts_receivable" || m.module === "undeposited_funds";
 
               return (
-                <div key={m.module}>
+                <div
+                  key={m.module}
+                  id={`module-card-${m.module}`}
+                  className={
+                    focusModuleKey === m.module
+                      ? "rounded-xl ring-4 ring-teal/50 transition-shadow duration-700"
+                      : "transition-shadow duration-700"
+                  }
+                >
                   <div
                     className={`flex items-start gap-3 p-4 rounded-xl border-2 transition-colors ${
                       isComplete
@@ -1202,6 +1263,20 @@ export function CleanupWizardClient({
               </button>
             ))}
           </div>
+
+          {reviewLoadError && (
+            <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+              <div className="text-xs text-red-800">
+                <strong>Couldn&apos;t load the review queue:</strong> {reviewLoadError}
+              </div>
+              <button
+                onClick={() => loadEntries(activeModule || undefined, reviewTab)}
+                className="shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg border border-red-300 text-red-700 hover:bg-red-100"
+              >
+                Retry
+              </button>
+            </div>
+          )}
 
           {/* Bulk-approve actions */}
           <div className="flex flex-wrap gap-2 mb-4">
@@ -1686,9 +1761,18 @@ function dateRangeLabel(mode: DateRangeMode, now: Date = new Date()): string {
   return `year-to-date (${fmtMonthDayYear(jan1)} through today)`;
 }
 
+/** What the three-way enumeration hands the panel (dry-run generate). */
+interface EnumerationData {
+  accounts: Array<{ label: string; kind: string; qbo_account_id: string | null; sources?: string[] }>;
+  undeclared_asks?: Array<{ label: string; qbo_account_id: string | null }>;
+  missing_from_qbo?: Array<{ name: string; kind: string }>;
+}
+
 function buildClientRequests(
   grades: Array<{ account_name: string; account_type: string; module: string | null }>,
-  dateMode: DateRangeMode
+  dateMode: DateRangeMode,
+  enumData?: EnumerationData | null,
+  coveredIds?: Set<string>
 ): ClientRequestItem[] {
   const rangeLabel = dateRangeLabel(dateMode);
   const items: ClientRequestItem[] = [];
@@ -1699,12 +1783,40 @@ function buildClientRequests(
     items.push({ id, text });
   };
 
+  // ── Three-way enumeration first (QBO COA + bank-feed evidence + the
+  // accounts the client attested to at onboarding): ONE named line per
+  // bank / credit-card / loan account that doesn't already have a matched
+  // statement uploaded. This is the complete list — the grade-derived
+  // items below only add the non-statement asks when it's available.
+  const hasEnum = !!enumData?.accounts?.length;
+  if (hasEnum) {
+    for (const a of enumData!.accounts) {
+      if (a.qbo_account_id && coveredIds?.has(String(a.qbo_account_id))) continue; // statement already on file
+      if (a.kind === "loan") {
+        push(`loan-${a.label}`, `Most recent loan statement for "${a.label}" showing the current balance and payment breakdown`);
+      } else if (a.kind === "credit_card") {
+        push(`cc-${a.label}`, `Credit card statements for "${a.label}" ${rangeLabel} — PDF or CSV`);
+      } else {
+        push(`bank-${a.label}`, `Bank statements for "${a.label}" ${rangeLabel} — PDF or CSV`);
+      }
+    }
+    // In the books but never declared at onboarding — the personal-card net.
+    for (const u of enumData!.undeclared_asks || []) {
+      const nm = u.label || "this account";
+      push(
+        `undeclared-${nm}`,
+        `"${nm}" shows activity in your books but wasn't on your onboarding account list — is it a business account we should keep reconciling, or personal?`
+      );
+    }
+  }
+
   const ownerAccounts: string[] = [];
   for (const g of grades) {
     const name = g.account_name;
     const type = (g.account_type || "").toLowerCase();
     switch (g.module) {
       case "bank_recon":
+        if (hasEnum) break; // enumeration already listed every bank/CC account
         if (type.includes("credit")) {
           push(`cc-${name}`, `Credit card statements for "${name}" ${rangeLabel} — PDF or CSV`);
         } else {
@@ -1712,6 +1824,7 @@ function buildClientRequests(
         }
         break;
       case "loans":
+        if (hasEnum) break; // enumeration already listed every loan account
         push(`loan-${name}`, `Most recent loan statement for "${name}" showing the current balance and payment breakdown`);
         break;
       case "shareholder_draws":
@@ -1749,9 +1862,47 @@ function NeedFromClientPanel({
   accountGrades: any[];
 }) {
   const [dateMode, setDateMode] = useState<DateRangeMode>("ytd");
+
+  // Three-way account enumeration (QBO COA + bank-feed evidence + onboarding
+  // attestation) via the statement-requests engine in DRY-RUN — display only,
+  // no request rows created until the bookkeeper actually sends. Statements
+  // already uploaded+matched drop their account off the ask list.
+  const [enumData, setEnumData] = useState<EnumerationData | null>(null);
+  const [coveredIds, setCoveredIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [genRes, stmtRes] = await Promise.all([
+          fetch(`/api/clients/${clientLinkId}/statement-requests/generate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ dry_run: true }),
+          }),
+          fetch(`/api/clients/${clientLinkId}/statements`),
+        ]);
+        if (cancelled) return;
+        if (genRes.ok) setEnumData(await genRes.json());
+        if (stmtRes.ok) {
+          const j = await stmtRes.json();
+          const s = new Set<string>();
+          for (const st of (j.statements || j || []) as any[]) {
+            if (st?.matched_qbo_account_id) s.add(String(st.matched_qbo_account_id));
+          }
+          setCoveredIds(s);
+        }
+      } catch {
+        /* enumeration is best-effort — the grade-derived list still renders */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [clientLinkId]);
+
   const suggested = useMemo(
-    () => buildClientRequests(accountGrades || [], dateMode),
-    [accountGrades, dateMode]
+    () => buildClientRequests(accountGrades || [], dateMode, enumData, coveredIds),
+    [accountGrades, dateMode, enumData, coveredIds]
   );
   const hasStatementItems = suggested.some((i) => i.id.startsWith("bank-") || i.id.startsWith("cc-"));
   const [checked, setChecked] = useState<Record<string, boolean>>({});
@@ -1862,10 +2013,20 @@ function NeedFromClientPanel({
         <ClipboardList size={14} /> Need from client
       </h3>
       <p className="text-xs text-ink-light mb-3">
-        Built from the issues above — statements and answers that unblock the cleanup. Uncheck
-        anything you already have, then send it as one portal message + email. The client replies
-        with attachments right in their portal.
+        One named line per bank, credit-card, and loan account — from QuickBooks, bank-feed
+        activity, and what the client declared at onboarding — minus anything with a statement
+        already uploaded. Uncheck what you don&apos;t need, then send it as one portal message +
+        email. The client replies with attachments right in their portal.
       </p>
+
+      {(enumData?.missing_from_qbo?.length || 0) > 0 && (
+        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <strong>Declared at onboarding but not in QuickBooks yet:</strong>{" "}
+          {enumData!.missing_from_qbo!.map((m) => `${m.name} (${m.kind.replace("_", " ")})`).join(", ")} — create
+          the account{enumData!.missing_from_qbo!.length === 1 ? "" : "s"} in QBO (bookkeeper action; the
+          statement line is still requested below).
+        </div>
+      )}
 
       {sentInfo ? (
         <div className="space-y-3">

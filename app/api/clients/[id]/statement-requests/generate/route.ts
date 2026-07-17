@@ -29,13 +29,20 @@ export const maxDuration = 120;
 const DECLARED_ACCOUNTS_TABLE = "onboarding_declared_accounts";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
   const { id: clientLinkId } = await context.params;
   const supabase = await createServerSupabase();
   const auth = await requireStaff(supabase);
   if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  // dry_run: enumerate + diff only — nothing inserted, nothing audited.
+  // The cleanup wizard's "Need from client" panel uses this to DISPLAY the
+  // complete per-account list without creating open requests as a side
+  // effect of loading the page.
+  const body = await request.json().catch(() => ({} as any));
+  const dryRun = body?.dry_run === true;
 
   const service = createServiceSupabase();
   const { data: client } = await service
@@ -140,6 +147,25 @@ export async function POST(
       status: "open",
       requested_by: auth.userId,
     }));
+  if (dryRun) {
+    return NextResponse.json({
+      dry_run: true,
+      accounts: accounts.map((a: any) => ({
+        label: a.label,
+        kind: a.kind,
+        sources: a.sources,
+        qbo_account_id: a.qbo_account_id ?? null,
+        last4: a.last4 ?? null,
+        feed_first_date: a.feed_first_date,
+      })),
+      would_create: toInsert.length,
+      already_requested: requests.length - toInsert.length,
+      undeclared_asks,
+      missing_from_qbo: accounts.missing ?? [],
+      books_start: booksStart,
+    });
+  }
+
   if (toInsert.length) {
     const { error: insErr } = await (service as any).from("statement_requests").insert(toInsert);
     if (insErr) return NextResponse.json({ error: `insert failed: ${insErr.message}` }, { status: 500 });
