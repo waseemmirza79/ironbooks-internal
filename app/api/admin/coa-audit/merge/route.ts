@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { getValidToken, fetchAllAccounts, inactivateAccount, QBOReauthRequiredError } from "@/lib/qbo";
-import { reclassAccountViaJournalEntry, repointItemsToAccount } from "@/lib/coa-reclass-je";
+import { reclassAccountViaJournalEntry, repointItemsToAccount, detachSubAccounts } from "@/lib/coa-reclass-je";
 import { computeCoaDrift, type DriftMasterRow } from "@/lib/coa-drift";
 
 export const dynamic = "force-dynamic";
@@ -96,17 +96,25 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Can't merge a ${source.AccountType} account into a ${target.AccountType} account — types must be compatible.` }, { status: 400 });
     }
 
-    // QBO won't inactivate an account that still has sub-accounts, so merging a
-    // parent would drain it but leave it stranded. Skip up front with a clear
-    // message — its children need re-parenting first (full COA cleanup).
+    // QBO won't inactivate an account that still has sub-accounts. Detach the
+    // source's children to the top level first so the now-childless parent can
+    // be drained + retired; the children keep their balances and can be
+    // merged/retyped on their own.
     const sourceHasChildren = accounts.some(
       (a) => String((a as any).ParentRef?.value || "") === sourceId && a.Active !== false
     );
+    let childrenDetached = 0;
     if (sourceHasChildren) {
-      return NextResponse.json({
-        ok: false, method: "je_reclass", source: source.Name, target: target.Name,
-        error: `"${source.Name}" has sub-accounts — re-parent or merge its children first (handled in the full COA cleanup).`,
-      }, { status: 200 });
+      const detach = await detachSubAccounts({
+        realmId: clientLink.qbo_realm_id, accessToken, parentId: sourceId, accounts: accounts as any,
+      });
+      childrenDetached = detach.detached;
+      if (detach.failures.length > 0) {
+        return NextResponse.json({
+          ok: false, method: "je_reclass", source: source.Name, target: target.Name,
+          error: `Couldn't re-parent the sub-accounts of "${source.Name}": ${detach.failures.join("; ")}`,
+        }, { status: 200 });
+      }
     }
 
     // Move the source account's balance onto the target via reclassifying
@@ -179,7 +187,7 @@ export async function POST(request: Request) {
         ytd_start: ytdStart, ytd_end: ytdEnd,
         amount_moved: je.moved, jes_posted: je.jesPosted,
         months_with_activity: je.monthsWithActivity, found_in_report: je.foundInReport,
-        items_repointed: repoint.repointed,
+        items_repointed: repoint.repointed, children_detached: childrenDetached,
         failures: je.failures, inactivated,
       } as any,
     } as any);
@@ -188,7 +196,7 @@ export async function POST(request: Request) {
       ok: je.failures.length === 0,
       method: "je_reclass",
       source: source.Name, target: target.Name,
-      amountMoved: je.moved, jesPosted: je.jesPosted, itemsRepointed: repoint.repointed,
+      amountMoved: je.moved, jesPosted: je.jesPosted, itemsRepointed: repoint.repointed, childrenDetached,
       monthsWithActivity: je.monthsWithActivity, foundInReport: je.foundInReport,
       inactivated, failures: je.failures,
       linesMoved: je.jesPosted, unsupported: 0, // back-compat for the existing UI

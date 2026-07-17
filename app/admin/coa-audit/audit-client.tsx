@@ -95,8 +95,11 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
       if (data.ok === false) { setMergeMsg((m) => ({ ...m, [p.sourceId]: data.error || "merge failed" })); return; }
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       const parts = data.method === "je_reclass"
-        ? [`moved $${Math.round(data.amountMoved || 0).toLocaleString()} via ${data.jesPosted || 0} JE${(data.jesPosted || 0) === 1 ? "" : "s"}`]
+        ? [(data.amountMoved || 0) > 0
+            ? `moved $${Math.round(data.amountMoved).toLocaleString()} via ${data.jesPosted || 0} JE${(data.jesPosted || 0) === 1 ? "" : "s"}`
+            : "nothing left to move"]
         : [`${data.linesMoved} line(s) moved`];
+      if (data.childrenDetached > 0) parts.push(`${data.childrenDetached} sub-account(s) re-parented`);
       if (data.itemsRepointed > 0) parts.push(`${data.itemsRepointed} item(s) re-pointed`);
       if (data.inactivated) parts.push("source retired");
       if (data.failures?.length) parts.push(`${data.failures.length} failed`);

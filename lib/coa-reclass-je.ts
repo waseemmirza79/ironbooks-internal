@@ -122,6 +122,50 @@ export async function reclassAccountViaJournalEntry(params: {
   return result;
 }
 
+export interface DetachResult {
+  detached: number;
+  failures: string[];
+}
+
+/**
+ * Detach a parent account's sub-accounts to the top level (SubAccount:false) so
+ * the now-childless parent can be drained + inactivated — QBO refuses to
+ * inactivate an account that still has sub-accounts. The children keep their own
+ * names/types/balances and become their own top-level accounts (mergeable/
+ * retypeable on their own). Mirrors updateAccountType's detach (SubAccount:false,
+ * no ParentRef).
+ */
+export async function detachSubAccounts(params: {
+  realmId: string;
+  accessToken: string;
+  parentId: string;
+  accounts: QBOAccount[];
+}): Promise<DetachResult> {
+  const { realmId, accessToken, parentId, accounts } = params;
+  const res: DetachResult = { detached: 0, failures: [] };
+  const children = accounts.filter(
+    (a) => String((a as any).ParentRef?.value || "") === parentId && a.Active !== false
+  );
+  for (const c of children as any[]) {
+    const body: any = {
+      Id: c.Id,
+      SyncToken: c.SyncToken,
+      sparse: true,
+      Name: c.Name,
+      AccountType: c.AccountType,
+      ...(c.AccountSubType && { AccountSubType: c.AccountSubType }),
+      SubAccount: false, // detach: no ParentRef sent
+    };
+    try {
+      await qboRequest(realmId, accessToken, `/account?minorversion=70`, { method: "POST", body: JSON.stringify(body) });
+      res.detached++;
+    } catch (e: any) {
+      res.failures.push(`detach "${c.Name}": ${String(e?.message || e).slice(0, 200)}`);
+    }
+  }
+  return res;
+}
+
 export interface ItemRepointResult {
   repointed: number;
   failures: string[];
