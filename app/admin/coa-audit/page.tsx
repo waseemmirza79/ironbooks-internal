@@ -22,7 +22,7 @@ export default async function CoaAuditPage() {
 
   const { data: clients } = await service
     .from("client_links")
-    .select("id, client_name")
+    .select("id, client_name, jurisdiction")
     .eq("is_active", true)
     .not("qbo_realm_id", "is", null)
     .order("client_name");
@@ -34,7 +34,7 @@ export default async function CoaAuditPage() {
         subtitle="How close each client's QuickBooks chart is to the master COA — read-only triage"
       />
       <div className="px-8 py-6 max-w-5xl">
-        <CoaAuditClient clients={(clients || []).map((c) => ({ id: c.id, client_name: c.client_name }))} />
+        <CoaAuditClient clients={(clients || []).map((c) => ({ id: c.id, client_name: c.client_name, jurisdiction: (c as any).jurisdiction ?? null }))} />
       </div>
     </AppShell>
   );

@@ -6,6 +6,12 @@ import { Loader2, Search, AlertTriangle, CheckCircle2, Wrench } from "lucide-rea
 interface ClientRow {
   id: string;
   client_name: string;
+  jurisdiction: string | null;
+}
+
+/** Normalize a client's jurisdiction to "CA" or "US" (default US). */
+function regionOf(c: ClientRow): "CA" | "US" {
+  return String(c.jurisdiction || "US").toUpperCase().startsWith("CA") ? "CA" : "US";
 }
 
 interface MergeProposal {
@@ -53,6 +59,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
   );
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [region, setRegion] = useState<"all" | "CA" | "US">("all");
   // Per-client selection of which fixes to apply.
   const [retypeSel, setRetypeSel] = useState<Record<string, Set<string>>>({});
   const [createSel, setCreateSel] = useState<Record<string, Set<string>>>({});
@@ -61,6 +68,10 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
   const [mergeSel, setMergeSel] = useState<Record<string, Record<string, string>>>({});
   const [mergeBusy, setMergeBusy] = useState<string | null>(null);
   const [mergeMsg, setMergeMsg] = useState<Record<string, string>>({});
+
+  const visibleClients = clients.filter((c) => region === "all" || regionOf(c) === region);
+  const caCount = clients.filter((c) => regionOf(c) === "CA").length;
+  const usCount = clients.length - caCount;
 
   function patch(id: string, p: Partial<RowState>) {
     setRows((prev) => ({ ...prev, [id]: { ...prev[id], ...p } }));
@@ -133,7 +144,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
 
   async function scanAll() {
     setBusy(true);
-    for (const c of clients) {
+    for (const c of visibleClients) {
       // eslint-disable-next-line no-await-in-loop
       await scan(c.id);
     }
@@ -255,7 +266,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
     });
   }
 
-  const done = Object.values(rows).filter((r) => r.status === "done");
+  const done = visibleClients.map((c) => rows[c.id]).filter((r) => r?.status === "done");
   const scored = done.length;
   const avg = scored ? Math.round(done.reduce((s, r) => s + (r.drift?.conformancePct ?? 0), 0) / scored) : 0;
   const needWork = done.filter((r) => (r.drift?.conformancePct ?? 100) < 90).length;
@@ -278,10 +289,22 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-teal text-white text-sm font-semibold hover:bg-teal-dark disabled:opacity-50"
         >
           {busy ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
-          Audit all clients
+          Audit {region === "all" ? "all" : region === "CA" ? "Canada" : "USA"} clients
         </button>
+        <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden text-xs font-semibold">
+          {(["all", "CA", "US"] as const).map((r) => (
+            <button
+              key={r}
+              onClick={() => setRegion(r)}
+              disabled={busy}
+              className={`px-3 py-1.5 disabled:opacity-50 ${r !== "all" ? "border-l border-gray-200" : ""} ${region === r ? "bg-teal text-white" : "bg-white text-ink-slate hover:bg-gray-50"}`}
+            >
+              {r === "all" ? `All (${clients.length})` : r === "CA" ? `🇨🇦 Canada (${caCount})` : `🇺🇸 USA (${usCount})`}
+            </button>
+          ))}
+        </div>
         <div className="text-xs text-ink-slate">
-          {scored}/{clients.length} audited
+          {scored}/{visibleClients.length} audited
           {scored > 0 && <> · avg conformance <span className={`font-bold ${scoreColor(avg)}`}>{avg}%</span> · <span className="text-red-600 font-semibold">{needWork} below 90%</span></>}
         </div>
       </div>
@@ -300,7 +323,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
             </tr>
           </thead>
           <tbody>
-            {clients.map((c) => {
+            {visibleClients.map((c) => {
               const r = rows[c.id];
               const d = r.drift;
               const fixable = d ? d.wrongType.length + d.missingRequired.length : 0;
