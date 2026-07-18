@@ -363,7 +363,7 @@ export async function retypeAccountViaRebuild(params: {
       const suffix = ` (pre-retype ${account.Id})`;
       const base = (realName + suffix).length > 100 ? realName.slice(0, 100 - suffix.length - 1) + "…" : realName;
       try {
-        source = await renameAccount(realmId, accessToken, account.Id, account.SyncToken, `${base}${suffix}`, { currentAccount: account });
+        source = await renameAccount(realmId, accessToken, account.Id, (account as any).SyncToken, `${base}${suffix}`, { currentAccount: account });
       } catch (e: any) {
         out.failures.push(`rename aside: ${String(e?.message || e).slice(0, 200)}`);
         return out;

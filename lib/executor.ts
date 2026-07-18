@@ -18,6 +18,11 @@ import {
   findDoubleClose,
   isDoubleCloseLocked,
 } from "./qbo-reclass";
+import {
+  reclassAccountViaJournalEntry,
+  repointItemsToAccount,
+  retypeAccountViaRebuild,
+} from "./coa-reclass-je";
 import { getClientEndCloses, type DoubleEndCloseSummary } from "./double";
 
 type SupabaseClient = ReturnType<typeof createServiceSupabase>;
@@ -604,11 +609,75 @@ export async function executeJob(jobId: string): Promise<{
     // is detached to top level; Stage 3.8 re-nests it afterwards.
     // ============================================================
     const retypes = liveActions.filter((a) => a.action === "retype" && !a.executed);
+    // A rebuild-based retype replaces the account with a correctly-typed twin
+    // (new QBO Id). Downstream stages that stored the OLD Id (merge targets)
+    // consult this map so they land on the twin.
+    const retypeIdRemap = new Map<string, string>();
     if (retypes.length > 0) {
       await logProgress(ctx, "stage_start", `Fixing account types on ${retypes.length} accounts`,
         { stage: "retype", total: retypes.length });
       const retypeAccounts = await qbo.fetchAllAccounts(ctx.realmId, ctx.accessToken);
       const retypeById = new Map(retypeAccounts.map((a) => [a.Id, a]));
+
+      // Rebuild path — QBO refuses (often SILENTLY, returning 200 with the old
+      // type) to change the type of an account that carries transactions. The
+      // rebuild renames the account aside, creates a correctly-typed twin with
+      // the real name (verifying + forcing the type), drains the old one into
+      // it via per-month reclassifying JEs + Item re-point, and retires it.
+      const rebuildRetype = async (action: any): Promise<void> => {
+        const r = await retypeAccountViaRebuild({
+          realmId: ctx.realmId,
+          accessToken: ctx.accessToken,
+          account: retypeById.get(action.qbo_account_id!) as any,
+          newType: action.new_type!,
+          newSubType: action.new_subtype!,
+          startDate: ctx.dateRangeStart,
+          endDate: ctx.dateRangeEnd,
+        });
+        if (r.failures.length === 0 && r.newAccountId) {
+          retypeIdRemap.set(action.qbo_account_id!, r.newAccountId);
+          await markActionComplete(ctx, action.id, r.newAccountId, {
+            retype_rebuild: true,
+            new_account_id: r.newAccountId,
+            verified_type: r.createdType,
+            amount_moved: r.drain?.moved ?? 0,
+            jes_posted: r.drain?.jesPosted ?? 0,
+            items_repointed: r.drain?.itemsRepointed ?? 0,
+            old_retired: r.drain?.inactivated ?? false,
+          });
+          await logActionResult(ctx, action.id, "qbo_retype_rebuild", {
+            account: action.current_name,
+            from: `${action.current_type}/${action.current_subtype}`,
+            to: `${action.new_type}/${action.new_subtype}`,
+            verified_type: r.createdType,
+            amount_moved: r.drain?.moved ?? 0,
+            jes_posted: r.drain?.jesPosted ?? 0,
+          });
+        } else {
+          const snap: any = retypeById.get(action.qbo_account_id!) || null;
+          pendingFailures.push({
+            intended_action: "retype",
+            account_id: action.qbo_account_id ?? null,
+            account_name: action.current_name || "Unknown account",
+            request_body: {
+              Id: action.qbo_account_id,
+              AccountType: action.new_type,
+              AccountSubType: action.new_subtype,
+            },
+            qbo_error: `retype rebuild failed: ${r.failures.join("; ").slice(0, 400)}`,
+            account_snapshot: snap ? {
+              Name: snap.Name,
+              AccountType: snap.AccountType,
+              AccountSubType: snap.AccountSubType,
+              SubAccount: snap.SubAccount,
+              ParentRef: snap.ParentRef,
+              CurrentBalance: snap.CurrentBalance,
+            } : null,
+          } as any);
+          await markActionFailed(ctx, action.id, `Retype rebuild failed (manual cleanup item created): ${r.failures.join("; ").slice(0, 300)}`);
+        }
+      };
+
       for (const action of retypes) {
         checkBudget(startTime);
         if (await shouldCancel(ctx)) {
@@ -631,36 +700,39 @@ export async function executeJob(jobId: string): Promise<{
               detachFromParent,
             }
           );
-          await markActionComplete(ctx, action.id, updated.Id, updated);
-          await logActionResult(ctx, action.id, "qbo_retype", {
-            account: action.current_name,
-            from: `${action.current_type}/${action.current_subtype}`,
-            to: `${action.new_type}/${action.new_subtype}`,
-            detached: detachFromParent,
-          });
+          // VERIFY the type actually landed — QBO returns 200 while silently
+          // keeping the old type on accounts with transactions. A blind
+          // markActionComplete here is how past cleanups "retyped" accounts
+          // that never changed (Dominion, 2026-07-17). On a silent no-op,
+          // fall through to the rebuild path.
+          if ((updated?.AccountType || "") === action.new_type) {
+            await markActionComplete(ctx, action.id, updated.Id, updated);
+            await logActionResult(ctx, action.id, "qbo_retype", {
+              account: action.current_name,
+              from: `${action.current_type}/${action.current_subtype}`,
+              to: `${action.new_type}/${action.new_subtype}`,
+              detached: detachFromParent,
+              verified: true,
+            });
+          } else {
+            await logProgress(ctx, "retype_silent_noop",
+              `QBO kept "${action.current_name}" as ${updated?.AccountType || action.current_type} — rebuilding as a correctly-typed twin instead`,
+              { account: action.current_name, wanted: action.new_type });
+            await rebuildRetype(action);
+          }
         } catch (e: any) {
           if (isQboLimitationError(e)) {
-            const snap: any = retypeById.get(action.qbo_account_id!) || null;
-            pendingFailures.push({
-              intended_action: "retype",
-              account_id: action.qbo_account_id ?? null,
-              account_name: action.current_name || "Unknown account",
-              request_body: {
-                Id: action.qbo_account_id,
-                AccountType: action.new_type,
-                AccountSubType: action.new_subtype,
-              },
-              qbo_error: String(e?.message || e),
-              account_snapshot: snap ? {
-                Name: snap.Name,
-                AccountType: snap.AccountType,
-                AccountSubType: snap.AccountSubType,
-                SubAccount: snap.SubAccount,
-                ParentRef: snap.ParentRef,
-                CurrentBalance: snap.CurrentBalance,
-              } : null,
-            } as any);
-            await markActionFailed(ctx, action.id, `QBO refused type change (manual cleanup item created): ${String(e?.message || e).slice(0, 300)}`);
+            // QBO refused the in-place type change — the rebuild path exists
+            // for exactly this. It files its own pendingFailure if it too fails.
+            await logProgress(ctx, "retype_rebuild_fallback",
+              `QBO refused the in-place type change for "${action.current_name}" — rebuilding as a correctly-typed twin`,
+              { account: action.current_name, error: String(e?.message || e).slice(0, 200) });
+            try {
+              await rebuildRetype(action);
+            } catch (rebuildErr: any) {
+              errors.push(`Retype rebuild ${action.current_name}: ${rebuildErr.message}`);
+              await markActionFailed(ctx, action.id, rebuildErr.message);
+            }
           } else {
             errors.push(`Retype ${action.current_name}: ${e.message}`);
             await markActionFailed(ctx, action.id, e.message);
@@ -1033,8 +1105,13 @@ export async function executeJob(jobId: string): Promise<{
         let targetResolveReason = "";
 
         if (action.new_qbo_account_id) {
-          targetAccount = postRenameById.get(action.new_qbo_account_id);
-          targetResolveReason = `stored target ID ${action.new_qbo_account_id}`;
+          // If the target was retyped via rebuild this run, its stored Id now
+          // points at the retired original — follow the remap to the twin.
+          const effectiveTargetId = retypeIdRemap.get(action.new_qbo_account_id) || action.new_qbo_account_id;
+          targetAccount = postRenameById.get(effectiveTargetId);
+          targetResolveReason = effectiveTargetId === action.new_qbo_account_id
+            ? `stored target ID ${action.new_qbo_account_id}`
+            : `stored target ID ${action.new_qbo_account_id} remapped to rebuilt twin ${effectiveTargetId}`;
           if (!targetAccount) {
             pendingFailures.push({
               intended_action: "rename",
@@ -1369,6 +1446,7 @@ export async function executeJob(jobId: string): Promise<{
             // before inactivating; anything left → keep the source ACTIVE and
             // report it, never inactivate-with-history.
             let residualReason: string | null = null;
+            let jeSweep: { moved: number; jesPosted: number; itemsRepointed: number } | null = null;
             if (linesNotApplied > 0) {
               residualReason = `${linesNotApplied} line(s) failed to move`;
             } else {
@@ -1381,6 +1459,54 @@ export async function executeJob(jobId: string): Promise<{
                 if (stillHasActivity) {
                   residualReason =
                     "account still has activity this stage can't move (deposit lines / JEs / invoice items)";
+                  // JE SWEEP — move the residue the line-reclass can't see
+                  // (deposit lines, JEs, invoice/item income) with per-month
+                  // reclassifying journal entries, then re-point any Items so
+                  // future sales docs post to the target. This is the income
+                  // blind spot that used to leave "(deleted)" balances on
+                  // statements. Post-sweep we do NOT re-run
+                  // accountHasTransactions (the sweep's own JEs are lines on
+                  // the source); the engine's per-month amounts net the source
+                  // to zero, so a clean sweep that actually found the account
+                  // on the P&L clears the residual.
+                  try {
+                    const sweep = await reclassAccountViaJournalEntry({
+                      realmId: ctx.realmId,
+                      accessToken: ctx.accessToken,
+                      source: sourceAccount,
+                      target: targetAccount,
+                      startDate: ctx.dateRangeStart,
+                      endDate: ctx.dateRangeEnd,
+                      memo: `Ironbooks merge (JE sweep): "${action.current_name}" → "${action.new_name}"`,
+                    });
+                    const repoint = await repointItemsToAccount({
+                      realmId: ctx.realmId,
+                      accessToken: ctx.accessToken,
+                      fromAccountId: action.qbo_account_id,
+                      toAccountId: targetAccount.Id,
+                      toAccountName: targetAccount.Name,
+                    });
+                    if (
+                      sweep.failures.length === 0 &&
+                      repoint.failures.length === 0 &&
+                      (sweep.foundInReport || sweep.jesPosted > 0)
+                    ) {
+                      jeSweep = { moved: sweep.moved, jesPosted: sweep.jesPosted, itemsRepointed: repoint.repointed };
+                      residualReason = null; // swept clean — safe to inactivate below
+                      await logProgress(ctx, "merge_je_sweep",
+                        `JE sweep moved $${Math.round(sweep.moved).toLocaleString()} of residual activity from "${action.current_name}" → "${action.new_name}" via ${sweep.jesPosted} JE(s)${repoint.repointed ? ` · ${repoint.repointed} item(s) re-pointed` : ""}`,
+                        { source: action.current_name, target: action.new_name, ...jeSweep });
+                    } else if (sweep.failures.length || repoint.failures.length) {
+                      residualReason += ` — JE sweep incomplete: ${[...sweep.failures, ...repoint.failures].join("; ").slice(0, 200)}`;
+                    } else {
+                      // Activity exists but the account never shows on the P&L
+                      // for this range (out-of-range or non-P&L activity).
+                      // Keep the source active — never inactivate unproven.
+                      residualReason += " — JE sweep found no P&L activity in the job's date range to move";
+                    }
+                  } catch (sweepErr: any) {
+                    residualReason += ` — JE sweep failed: ${String(sweepErr?.message || sweepErr).slice(0, 150)}`;
+                  }
                 }
               } catch (verifyErr: any) {
                 // Can't prove it's empty → don't inactivate. Safe default.
@@ -1415,11 +1541,13 @@ export async function executeJob(jobId: string): Promise<{
               await markActionComplete(ctx, action.id, targetAccount.Id, {
                 merged_into: action.new_name,
                 lines_moved: linesReclassed,
+                ...(jeSweep && { je_sweep: jeSweep }),
               });
               await logActionResult(ctx, action.id, "qbo_merge", {
                 from: action.current_name,
                 into: action.new_name,
                 lines_moved: linesReclassed,
+                ...(jeSweep && { je_sweep: jeSweep }),
               });
             }
           }
