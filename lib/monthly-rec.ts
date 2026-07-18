@@ -217,7 +217,7 @@ export interface StatementsPreview {
     netIncome: number;
     cogs: number;
     grossProfit: number;
-    lineItems: { label: string; amount: number; group: string }[];
+    lineItems: { label: string; amount: number; group: string; account_id?: string | null }[];
     /** Present when the client's revenue_recognition_mode adjusted revenue
      *  (deposits_only excludes CRM invoice-recognized income). Lets the UI /
      *  statement note the exclusion. Absent/zeroed under standard mode. */
@@ -295,7 +295,7 @@ export async function fetchStatementsPreview(
       totalIncome: pl.totalIncome,
       cogs: pl.cogs,
       netIncome: pl.netIncome,
-      lineItems: pl.lineItems.map((i) => ({ label: i.label, amount: i.amount, group: i.group })),
+      lineItems: pl.lineItems.map((i) => ({ label: i.label, amount: i.amount, group: i.group, account_id: i.account_id })),
     },
     revAdj
   );

@@ -47,7 +47,7 @@ export interface Statements {
      *  — declared here so the sectioned P&L view can render the waterfall. */
     cogs?: number;
     grossProfit?: number;
-    lineItems: { label: string; amount: number; group: string }[];
+    lineItems: { label: string; amount: number; group: string; account_id?: string | null }[];
   };
   bs: {
     lines: StatementLine[];
@@ -962,6 +962,108 @@ function AnalyzeFlagButton({ clientLinkId, period }: { clientLinkId: string; per
 }
 
 /**
+ * Read-only transaction list behind a single P&L line — click an account on
+ * the statement to investigate the transactions that make up its total for the
+ * period. Reuses /api/clients/[id]/account-transactions (ProfitAndLossDetail,
+ * which ties to the P&L line exactly).
+ */
+function TxnDrawer({
+  clientLinkId,
+  accountId,
+  accountName,
+  start,
+  end,
+  onClose,
+}: {
+  clientLinkId: string;
+  accountId: string;
+  accountName: string;
+  start: string;
+  end: string;
+  onClose: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<{ transactions: any[]; total: number; truncated: boolean } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setError(null);
+    fetch(`/api/clients/${clientLinkId}/account-transactions?account_id=${encodeURIComponent(accountId)}&start=${start}&end=${end}&kind=pl`)
+      .then(async (r) => {
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        return j;
+      })
+      .then((j) => alive && setData(j))
+      .catch((e) => alive && setError(e?.message || "Couldn't load transactions"))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [clientLinkId, accountId, start, end]);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex justify-end" onClick={onClose}>
+      <div className="bg-white w-full max-w-xl h-full overflow-hidden flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-bold text-navy text-sm truncate">{accountName}</div>
+            <div className="text-[11px] text-ink-light">
+              {start} → {end}
+              {data && ` · ${data.transactions.length} transaction${data.transactions.length === 1 ? "" : "s"} · ${money(data.total)} total`}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-ink-light hover:text-navy shrink-0"><XCircle size={18} /></button>
+        </div>
+        <div className="overflow-auto flex-1">
+          {loading ? (
+            <div className="p-8 text-center text-sm text-ink-slate flex items-center justify-center gap-2">
+              <Loader2 size={14} className="animate-spin" /> Pulling transactions…
+            </div>
+          ) : error ? (
+            <div className="p-5 text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg m-4">{error}</div>
+          ) : !data || data.transactions.length === 0 ? (
+            <div className="p-8 text-center text-sm text-ink-slate">No transactions on this line for the period.</div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-gray-50 border-b border-gray-100 text-[10px] uppercase tracking-wider text-ink-light">
+                <tr>
+                  <th className="px-3 py-2 text-left font-semibold">Date</th>
+                  <th className="px-3 py-2 text-left font-semibold">Payee / memo</th>
+                  <th className="px-3 py-2 text-right font-semibold">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {data.transactions.map((t, i) => (
+                  <tr key={t.id || i} className="hover:bg-gray-50/60 align-top">
+                    <td className="px-3 py-1.5 whitespace-nowrap text-ink-slate">{t.date}</td>
+                    <td className="px-3 py-1.5">
+                      <div className="text-navy">{t.name || <span className="text-ink-light">—</span>}</div>
+                      {t.memo && <div className="text-[10px] text-ink-light truncate max-w-[260px]">{t.memo}</div>}
+                      <div className="text-[10px] text-ink-light">{t.type}{t.doc_number ? ` · #${t.doc_number}` : ""}</div>
+                    </td>
+                    <td className={`px-3 py-1.5 text-right font-mono whitespace-nowrap ${Number(t.amount) < 0 ? "text-red-600" : "text-navy"}`}>
+                      ${money(t.amount)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {data?.truncated && (
+            <div className="px-4 py-2 text-[11px] text-amber-800 bg-amber-50 border-t border-amber-100">
+              Showing the first {data.transactions.length} — narrow the period to see the rest.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Client-format Profit & Loss: Income → COGS → Gross Profit → Operating
  * Expenses → Net, with each account under its section, a % of income column,
  * subtotals, and KPI flags on Gross Profit / Net when margins fall outside the
@@ -1013,10 +1115,13 @@ function PLStatementView({
     pct?: string;
     flag?: boolean;
     tone?: "navy" | "emerald" | "red";
+    accountId?: string | null;
   };
   const rows: PlRow[] = [];
-  const pushLines = (lines: { label: string; amount: number }[]) =>
-    lines.forEach((li) => rows.push({ kind: "line", label: li.label, amount: li.amount, pct: pctOfIncome(li.amount, income) }));
+  const pushLines = (lines: { label: string; amount: number; account_id?: string | null }[]) =>
+    lines.forEach((li) =>
+      rows.push({ kind: "line", label: li.label, amount: li.amount, pct: pctOfIncome(li.amount, income), accountId: li.account_id })
+    );
 
   rows.push({ kind: "section", label: "Income" });
   pushLines(incomeLines);
@@ -1042,12 +1147,32 @@ function PLStatementView({
 
   const toneText = (t?: string) => (t === "emerald" ? "text-emerald-700" : t === "red" ? "text-red-700" : "text-navy");
 
+  // Drill-down: click a P&L line to see the transactions behind it for the
+  // period. Needs the client + a resolvable month (period → start/end).
+  const [drill, setDrill] = useState<{ accountId: string; name: string } | null>(null);
+  const drillDates = (() => {
+    if (!period || !/^\d{4}-\d{2}$/.test(period)) return null;
+    const [y, m] = period.split("-").map(Number);
+    return { start: `${period}-01`, end: new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10) };
+  })();
+  const canDrill = !!(clientLinkId && drillDates);
+
   return (
     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
       <div className="px-4 py-2.5 bg-navy text-white text-sm font-bold flex items-center justify-between gap-3">
         <span>Profit &amp; Loss — {monthLabel}</span>
         {clientLinkId && <AnalyzeFlagButton clientLinkId={clientLinkId} period={period} />}
       </div>
+      {drill && drillDates && clientLinkId && (
+        <TxnDrawer
+          clientLinkId={clientLinkId}
+          accountId={drill.accountId}
+          accountName={drill.name}
+          start={drillDates.start}
+          end={drillDates.end}
+          onClose={() => setDrill(null)}
+        />
+      )}
 
       {(gpFlag || npFlag) && (
         <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-900 flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -1082,9 +1207,23 @@ function PLStatementView({
                 );
               }
               if (r.kind === "line") {
+                const clickable = canDrill && !!r.accountId;
                 return (
-                  <tr key={i} className="border-t border-gray-50">
-                    <td className="px-4 py-1 text-ink-slate pl-7">{r.label}</td>
+                  <tr key={i} className={`border-t border-gray-50 ${clickable ? "hover:bg-teal/5" : ""}`}>
+                    <td className="px-4 py-1 pl-7">
+                      {clickable ? (
+                        <button
+                          type="button"
+                          onClick={() => setDrill({ accountId: r.accountId!, name: r.label })}
+                          className="text-left text-ink-slate hover:text-teal-dark hover:underline inline-flex items-center gap-1"
+                          title="See the transactions on this line"
+                        >
+                          {r.label} <ChevronRight size={11} className="text-ink-light" />
+                        </button>
+                      ) : (
+                        <span className="text-ink-slate">{r.label}</span>
+                      )}
+                    </td>
                     <td className="px-4 py-1 text-right font-mono text-navy whitespace-nowrap">${money(r.amount || 0)}</td>
                     <td className="px-4 py-1 text-right font-mono text-ink-light whitespace-nowrap">{r.pct}</td>
                   </tr>

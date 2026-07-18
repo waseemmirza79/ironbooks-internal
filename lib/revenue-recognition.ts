@@ -130,7 +130,7 @@ export interface AdjustedPLTotals {
   totalIncome: number;
   grossProfit: number;
   netIncome: number;
-  lineItems: { label: string; amount: number; group: string }[];
+  lineItems: { label: string; amount: number; group: string; account_id?: string | null }[];
 }
 
 /**
@@ -144,7 +144,7 @@ export function applyRevenueAdjustment(
     totalIncome: number;
     cogs: number;
     netIncome: number;
-    lineItems: { label: string; amount: number; group: string }[];
+    lineItems: { label: string; amount: number; group: string; account_id?: string | null }[];
   },
   adj: RevenueAdjustment
 ): AdjustedPLTotals {
