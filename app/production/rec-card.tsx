@@ -43,6 +43,10 @@ export interface Statements {
     totalIncome: number;
     totalExpenses: number;
     netIncome: number;
+    /** COGS + Gross Profit are present on the snapshot (fetchStatementsPreview)
+     *  — declared here so the sectioned P&L view can render the waterfall. */
+    cogs?: number;
+    grossProfit?: number;
     lineItems: { label: string; amount: number; group: string }[];
   };
   bs: {
@@ -814,6 +818,156 @@ const money = (n: number) => {
   return v < 0 ? `(${s})` : s;
 };
 
+/** amount as a % of total income (the client-facing P&L column). */
+function pctOfIncome(n: number, income: number): string {
+  if (!(income > 0)) return "—";
+  return `${((n / income) * 100).toFixed(1)}%`;
+}
+
+/**
+ * Client-format Profit & Loss: Income → COGS → Gross Profit → Operating
+ * Expenses → Net, with each account under its section, a % of income column,
+ * subtotals, and KPI flags on Gross Profit / Net when margins fall outside the
+ * healthy band (same bands as the month-end red-flag gate: COGS 20–65% of
+ * revenue, net margin 10–35%). Drives both the month-end review and the
+ * cleanup wizard so the bookkeeper sees exactly what the client will.
+ */
+function PLStatementView({ pl, monthLabel }: { pl: Statements["pl"]; monthLabel: string }) {
+  const income = Number(pl.totalIncome) || 0;
+  const cogs = Number(pl.cogs) || 0;
+  const grossProfit = pl.grossProfit != null ? Number(pl.grossProfit) : income - cogs;
+  const opex = Number(pl.totalExpenses) || 0;
+  const net = Number(pl.netIncome) || 0;
+
+  const g = (li: { group?: string }) => String(li.group || "");
+  const hasCogsSection = /cogs|cost of goods/i;
+  const otherIncomeLines = pl.lineItems.filter((li) => /other\s*income/i.test(g(li)));
+  const otherExpenseLines = pl.lineItems.filter((li) => /other\s*expense/i.test(g(li)));
+  const incomeLines = pl.lineItems.filter(
+    (li) => /income/i.test(g(li)) && !/other/i.test(g(li)) && !hasCogsSection.test(g(li))
+  );
+  const cogsLines = pl.lineItems.filter((li) => hasCogsSection.test(g(li)));
+  const opexLines = pl.lineItems.filter(
+    (li) => /expense/i.test(g(li)) && !/other/i.test(g(li)) && !hasCogsSection.test(g(li))
+  );
+
+  // KPI bands — identical to lib/books-verification cogs_ratio / net_margin.
+  const cogsPct = income > 0 ? (cogs / income) * 100 : 0;
+  const netPct = income > 0 ? (net / income) * 100 : 0;
+  const gmPct = income > 0 ? (grossProfit / income) * 100 : 0;
+  const showCogs = cogs > 0.005 || cogsLines.length > 0;
+  const gpFlag = income > 0 && showCogs && (cogsPct < 20 || cogsPct > 65);
+  const npFlag = income > 0 && (netPct < 10 || netPct > 35);
+
+  type PlRow = {
+    kind: "section" | "line" | "subtotal" | "band";
+    label: string;
+    amount?: number;
+    pct?: string;
+    flag?: boolean;
+    tone?: "navy" | "emerald" | "red";
+  };
+  const rows: PlRow[] = [];
+  const pushLines = (lines: { label: string; amount: number }[]) =>
+    lines.forEach((li) => rows.push({ kind: "line", label: li.label, amount: li.amount, pct: pctOfIncome(li.amount, income) }));
+
+  rows.push({ kind: "section", label: "Income" });
+  pushLines(incomeLines);
+  rows.push({ kind: "subtotal", label: "Total Income", amount: income, pct: income > 0 ? "100.0%" : "—" });
+  if (showCogs) {
+    rows.push({ kind: "section", label: "Cost of Goods Sold" });
+    pushLines(cogsLines);
+    rows.push({ kind: "subtotal", label: "Total COGS", amount: cogs, pct: pctOfIncome(cogs, income) });
+    rows.push({ kind: "band", label: "Gross Profit", amount: grossProfit, pct: pctOfIncome(grossProfit, income), flag: gpFlag, tone: "navy" });
+  }
+  rows.push({ kind: "section", label: "Operating Expenses" });
+  pushLines(opexLines);
+  rows.push({ kind: "subtotal", label: "Total Operating Expenses", amount: opex, pct: pctOfIncome(opex, income) });
+  if (otherIncomeLines.length) {
+    rows.push({ kind: "section", label: "Other Income" });
+    pushLines(otherIncomeLines);
+  }
+  if (otherExpenseLines.length) {
+    rows.push({ kind: "section", label: "Other Expense" });
+    pushLines(otherExpenseLines);
+  }
+  rows.push({ kind: "band", label: `Net ${net >= 0 ? "Profit" : "Loss"}`, amount: net, pct: pctOfIncome(net, income), flag: npFlag, tone: net >= 0 ? "emerald" : "red" });
+
+  const toneText = (t?: string) => (t === "emerald" ? "text-emerald-700" : t === "red" ? "text-red-700" : "text-navy");
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <div className="px-4 py-2.5 bg-navy text-white text-sm font-bold">Profit &amp; Loss — {monthLabel}</div>
+
+      {(gpFlag || npFlag) && (
+        <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-900 flex flex-wrap items-center gap-x-4 gap-y-1">
+          <span className="inline-flex items-center gap-1 font-bold"><AlertTriangle size={13} className="text-amber-600" /> KPI check</span>
+          {gpFlag && (
+            <span>Gross margin <strong>{gmPct.toFixed(0)}%</strong> — outside the healthy 35–80% band (COGS {cogsPct.toFixed(0)}%).</span>
+          )}
+          {npFlag && (
+            <span>Net margin <strong>{netPct.toFixed(0)}%</strong> — outside the healthy 10–35% band.</span>
+          )}
+        </div>
+      )}
+
+      <div className="max-h-96 overflow-y-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-wider text-ink-light border-b border-gray-100 bg-gray-50/50">
+              <th className="px-4 py-1.5 text-left font-semibold">Account</th>
+              <th className="px-4 py-1.5 text-right font-semibold">Amount</th>
+              <th className="px-4 py-1.5 text-right font-semibold whitespace-nowrap">% of income</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => {
+              if (r.kind === "section") {
+                return (
+                  <tr key={i} className="bg-gray-50/70">
+                    <td colSpan={3} className="px-4 pt-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-ink-slate">
+                      {r.label}
+                    </td>
+                  </tr>
+                );
+              }
+              if (r.kind === "line") {
+                return (
+                  <tr key={i} className="border-t border-gray-50">
+                    <td className="px-4 py-1 text-ink-slate pl-7">{r.label}</td>
+                    <td className="px-4 py-1 text-right font-mono text-navy whitespace-nowrap">${money(r.amount || 0)}</td>
+                    <td className="px-4 py-1 text-right font-mono text-ink-light whitespace-nowrap">{r.pct}</td>
+                  </tr>
+                );
+              }
+              if (r.kind === "subtotal") {
+                return (
+                  <tr key={i} className="border-t border-gray-100 bg-gray-50/30">
+                    <td className="px-4 py-1 font-semibold text-navy">{r.label}</td>
+                    <td className="px-4 py-1 text-right font-mono font-semibold text-navy whitespace-nowrap">${money(r.amount || 0)}</td>
+                    <td className="px-4 py-1 text-right font-mono text-ink-slate whitespace-nowrap">{r.pct}</td>
+                  </tr>
+                );
+              }
+              // band (Gross Profit / Net)
+              return (
+                <tr key={i} className={`border-t-2 ${r.flag ? "border-amber-300 bg-amber-50/60" : "border-gray-200 bg-gray-50/60"}`}>
+                  <td className={`px-4 py-1.5 font-bold ${toneText(r.tone)}`}>
+                    {r.label}
+                    {r.flag && <span className="ml-1.5 text-[9px] font-bold uppercase text-amber-700 bg-amber-100 px-1 py-0.5 rounded">out of KPI</span>}
+                  </td>
+                  <td className={`px-4 py-1.5 text-right font-mono font-bold whitespace-nowrap ${toneText(r.tone)}`}>${money(r.amount || 0)}</td>
+                  <td className={`px-4 py-1.5 text-right font-mono font-semibold whitespace-nowrap ${r.flag ? "text-amber-700" : "text-ink-slate"}`}>{r.pct}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export function StatementsReview({
   statements,
   monthLabel,
@@ -824,45 +978,9 @@ export function StatementsReview({
   const { pl, bs, cfs } = statements;
   return (
     <div className="space-y-3">
-      {/* P&L */}
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-        <div className="px-4 py-2.5 bg-navy text-white text-sm font-bold">
-          Profit &amp; Loss — {monthLabel}
-        </div>
-        <div className="grid grid-cols-3 divide-x divide-gray-100 text-center border-b border-gray-100">
-          <div className="py-2.5">
-            <div className="text-[10px] uppercase tracking-wider text-ink-slate font-semibold">Income</div>
-            <div className="font-mono font-bold text-navy">${money(pl.totalIncome)}</div>
-          </div>
-          <div className="py-2.5">
-            <div className="text-[10px] uppercase tracking-wider text-ink-slate font-semibold">Expenses</div>
-            <div className="font-mono font-bold text-navy">${money(pl.totalExpenses)}</div>
-          </div>
-          <div className="py-2.5">
-            <div className="text-[10px] uppercase tracking-wider text-ink-slate font-semibold">
-              Net {pl.netIncome >= 0 ? "profit" : "loss"}
-            </div>
-            <div className={`font-mono font-bold ${pl.netIncome >= 0 ? "text-emerald-700" : "text-red-700"}`}>
-              ${money(pl.netIncome)}
-            </div>
-          </div>
-        </div>
-        <div className="max-h-56 overflow-y-auto">
-          <table className="w-full text-xs">
-            <tbody>
-              {pl.lineItems.map((li, i) => (
-                <tr key={i} className="border-t border-gray-50">
-                  <td className="px-4 py-1 text-ink-slate">
-                    <span className="text-ink-light">{li.group ? `${li.group} · ` : ""}</span>
-                    {li.label}
-                  </td>
-                  <td className="px-4 py-1 text-right font-mono text-navy whitespace-nowrap">${money(li.amount)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      {/* P&L — client-facing statement format: categories → accounts, % of
+          income, waterfall totals, and GP/NP KPI flags. */}
+      <PLStatementView pl={pl} monthLabel={monthLabel} />
 
       {!bs && (
         <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-ink-slate">
