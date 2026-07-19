@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Loader2, Search, AlertTriangle, CheckCircle2, Wrench } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Loader2, Search, AlertTriangle, CheckCircle2, Wrench, Clock } from "lucide-react";
 
 interface ClientRow {
   id: string;
@@ -48,9 +48,16 @@ interface RowState {
   applying?: boolean;
   fixMsg?: string;
   message?: string;
+  scannedAt?: string | null;
+  scannedBy?: string | null;
 }
 
 const EMPTY: RowState = { status: "idle", drift: null };
+
+/** A client is DONE when a scan found fewer than this many actionable issues. */
+const DONE_THRESHOLD = 4;
+/** Cached scans older than this read as "stale" (re-scan suggested). */
+const STALE_DAYS = 30;
 
 function scoreColor(pct: number) {
   if (pct >= 90) return "text-emerald-700";
@@ -58,10 +65,61 @@ function scoreColor(pct: number) {
   return "text-red-600";
 }
 
-export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
+/** Actionable issue count — matches "Fix all (N)": re-types + missing creates
+ *  + re-nests + confident merges. Correctly-left-alone accounts don't count. */
+function issueCountOf(d: Drift | null): number {
+  if (!d) return 0;
+  const merges = (d.mergeProposals || []).filter((p) => p.action === "merge").length;
+  return d.wrongType.length + d.missingRequired.length + (d.wrongParent?.length || 0) + merges;
+}
+
+function isDone(r: RowState | undefined): boolean {
+  return !!r && r.status === "done" && !!r.drift && issueCountOf(r.drift) < DONE_THRESHOLD;
+}
+
+function daysSince(iso?: string | null): number | null {
+  if (!iso) return null;
+  return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+}
+
+function isStale(iso?: string | null): boolean {
+  const d = daysSince(iso);
+  return d != null && d > STALE_DAYS;
+}
+
+function fmtWhen(iso?: string | null): string {
+  const d = daysSince(iso);
+  if (d == null) return "";
+  if (d <= 0) return "today";
+  if (d === 1) return "yesterday";
+  if (d < STALE_DAYS) return `${d}d ago`;
+  return new Date(iso as string).toLocaleDateString();
+}
+
+export function CoaAuditClient({
+  clients,
+  initialScans = {},
+}: {
+  clients: ClientRow[];
+  initialScans?: Record<string, { drift: Drift; scannedAt: string; scannedBy: string | null }>;
+}) {
   const [rows, setRows] = useState<Record<string, RowState>>(
-    Object.fromEntries(clients.map((c) => [c.id, { ...EMPTY }]))
+    Object.fromEntries(clients.map((c) => {
+      const s = initialScans[c.id];
+      return [c.id, s
+        ? { status: "done" as const, drift: s.drift, scannedAt: s.scannedAt, scannedBy: s.scannedBy }
+        : { ...EMPTY }];
+    }))
   );
+  // Seed fix selections from the cached scans once on mount, so "Fix all" and
+  // "review & fix" work straight from cache without forcing a re-scan.
+  useEffect(() => {
+    for (const c of clients) {
+      const d = initialScans[c.id]?.drift;
+      if (d) seedSelection(c.id, d);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [region, setRegion] = useState<"all" | "CA" | "US">("all");
@@ -141,7 +199,11 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
       const data = await res.json();
       if (data.reauth) { patch(id, { status: "reauth" }); return null; }
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      patch(id, { status: "done", drift: data });
+      patch(id, {
+        status: "done", drift: data,
+        scannedAt: data.scanned_at || new Date().toISOString(),
+        scannedBy: data.scanned_by_name ?? null,
+      });
       seedSelection(id, data);
       return data as Drift;
     } catch (e: any) {
@@ -153,6 +215,20 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
   async function scanAll() {
     setBusy(true);
     for (const c of visibleClients) {
+      // eslint-disable-next-line no-await-in-loop
+      await scan(c.id);
+    }
+    setBusy(false);
+  }
+
+  // Incremental scan: only clients never scanned or whose cached scan is stale.
+  // The whole point of persistence — no re-scanning what's already fresh.
+  async function scanStale() {
+    setBusy(true);
+    for (const c of visibleClients) {
+      const r = rows[c.id];
+      const fresh = r?.status === "done" && !!r.scannedAt && !isStale(r.scannedAt);
+      if (fresh) continue;
       // eslint-disable-next-line no-await-in-loop
       await scan(c.id);
     }
@@ -294,10 +370,26 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
     });
   }
 
-  const done = visibleClients.map((c) => rows[c.id]).filter((r) => r?.status === "done");
-  const scored = done.length;
-  const avg = scored ? Math.round(done.reduce((s, r) => s + (r.drift?.conformancePct ?? 0), 0) / scored) : 0;
-  const needWork = done.filter((r) => (r.drift?.conformancePct ?? 100) < 90).length;
+  // Partition the visible fleet: "needs attention" (top, worst-first) vs.
+  // "completed" (< DONE_THRESHOLD issues after a scan — dropped to the bottom).
+  const activeClients = visibleClients
+    .filter((c) => !isDone(rows[c.id]))
+    .sort((a, b) => {
+      const rank = (r: RowState) =>
+        r.status === "done" && r.drift ? -issueCountOf(r.drift)     // most issues first
+        : r.status === "reauth" || r.status === "error" ? 1000       // problems near the bottom
+        : 500;                                                       // never-scanned in between
+      return rank(rows[a.id]) - rank(rows[b.id]);
+    });
+  const completedClients = visibleClients.filter((c) => isDone(rows[c.id]));
+
+  const scannedRows = visibleClients.map((c) => rows[c.id]).filter((r) => r?.status === "done" && r.drift);
+  const scored = scannedRows.length;
+  const avg = scored ? Math.round(scannedRows.reduce((s, r) => s + r.drift!.conformancePct, 0) / scored) : 0;
+  const unscanned = visibleClients.filter((c) => rows[c.id]?.status === "idle").length;
+  const staleCount = visibleClients.filter((c) => { const r = rows[c.id]; return r?.status === "done" && isStale(r.scannedAt); }).length;
+  const strandedTotal = scannedRows.reduce((s, r) =>
+    s + (r.drift!.mergeProposals || []).filter((p) => p.deleted).reduce((a, p) => a + Math.abs(p.amount || 0), 0), 0);
 
   return (
     <div className="space-y-4">
@@ -307,17 +399,29 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
         detail you can apply the <strong>safe, deterministic fixes</strong> — re-type accounts into
         the right section and create missing required accounts — after reviewing each. Merges and
         renames of non-master accounts (which move transactions) stay in the reviewed per-client
-        cleanup.
+        cleanup. Scans are <strong>saved</strong> — the fleet loads from the last scan, so you only
+        re-scan what&apos;s new or stale (&gt;{STALE_DAYS}d). A client with fewer than {DONE_THRESHOLD} issues
+        drops to <strong>Completed</strong> at the bottom.
       </div>
 
       <div className="flex items-center gap-3 flex-wrap">
         <button
-          onClick={scanAll}
+          onClick={scanStale}
           disabled={busy}
+          title={`Scan only clients never scanned or last scanned over ${STALE_DAYS} days ago — skips everything already fresh`}
           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-teal text-white text-sm font-semibold hover:bg-teal-dark disabled:opacity-50"
         >
-          {busy ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
-          Audit {region === "all" ? "all" : region === "CA" ? "Canada" : "USA"} clients
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Clock size={14} />}
+          Scan new &amp; stale{unscanned + staleCount > 0 ? ` (${unscanned + staleCount})` : ""}
+        </button>
+        <button
+          onClick={scanAll}
+          disabled={busy}
+          title="Re-scan every visible client from scratch (hits QuickBooks for all)"
+          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 text-ink-slate text-sm font-semibold hover:bg-gray-50 disabled:opacity-50"
+        >
+          <Search size={14} />
+          Re-scan all
         </button>
         <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden text-xs font-semibold">
           {(["all", "CA", "US"] as const).map((r) => (
@@ -331,10 +435,15 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
             </button>
           ))}
         </div>
-        <div className="text-xs text-ink-slate">
-          {scored}/{visibleClients.length} audited
-          {scored > 0 && <> · avg conformance <span className={`font-bold ${scoreColor(avg)}`}>{avg}%</span> · <span className="text-red-600 font-semibold">{needWork} below 90%</span></>}
-        </div>
+      </div>
+
+      <div className="flex items-center gap-x-4 gap-y-1 flex-wrap text-xs text-ink-slate">
+        <span><span className="font-bold text-emerald-700">{completedClients.length}</span> completed</span>
+        <span><span className="font-bold text-red-600">{activeClients.filter((c) => rows[c.id].status === "done").length}</span> need attention</span>
+        {unscanned > 0 && <span><span className="font-bold text-ink-slate">{unscanned}</span> never scanned</span>}
+        {staleCount > 0 && <span><span className="font-bold text-amber-600">{staleCount}</span> stale</span>}
+        {scored > 0 && <span>avg conformance <span className={`font-bold ${scoreColor(avg)}`}>{avg}%</span></span>}
+        {strandedTotal > 0.5 && <span className="text-red-600 font-semibold">${Math.round(strandedTotal).toLocaleString()} stranded on deleted accounts (fleet)</span>}
       </div>
 
       <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
@@ -343,15 +452,22 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
             <tr>
               <th className="text-left px-4 py-2.5 font-semibold text-ink-slate">Client</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Conformance</th>
+              <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Issues</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Matched</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Wrong type</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Non-master</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Missing req.</th>
+              <th className="text-left px-4 py-2.5 font-semibold text-ink-slate">Last scan</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate"></th>
             </tr>
           </thead>
           <tbody>
-            {visibleClients.map((c) => {
+            {activeClients.length === 0 && (
+              <tr><td colSpan={9} className="px-4 py-6 text-center text-ink-light text-sm">
+                {scored === 0 ? "No scans yet — hit “Scan new & stale” to audit the fleet." : "🎉 Every visible client is under the issue threshold — see Completed below."}
+              </td></tr>
+            )}
+            {activeClients.map((c) => {
               const r = rows[c.id];
               const d = r.drift;
               const fixable = d ? d.wrongType.length + d.missingRequired.length + (d.wrongParent?.length || 0) : 0;
@@ -373,10 +489,21 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
                         "—"
                       )}
                     </td>
+                    <td className="px-4 py-2.5 text-right">
+                      {d ? <span className={`font-bold ${issueCountOf(d) < DONE_THRESHOLD ? "text-emerald-700" : "text-red-600"}`}>{issueCountOf(d)}</span> : "—"}
+                    </td>
                     <td className="px-4 py-2.5 text-right text-emerald-700">{d ? d.matched : "—"}</td>
                     <td className="px-4 py-2.5 text-right text-amber-700">{d ? d.wrongType.length : "—"}</td>
                     <td className="px-4 py-2.5 text-right text-orange-600">{d ? d.nonMaster.length : "—"}</td>
                     <td className="px-4 py-2.5 text-right text-red-600">{d ? d.missingRequired.length : "—"}</td>
+                    <td className="px-4 py-2.5 text-left text-xs text-ink-light whitespace-nowrap">
+                      {r.scannedAt ? (
+                        <span title={`${new Date(r.scannedAt).toLocaleString()}${r.scannedBy ? ` · ${r.scannedBy}` : ""}`}>
+                          <span className={isStale(r.scannedAt) ? "text-amber-600 font-semibold" : ""}>{fmtWhen(r.scannedAt)}</span>
+                          {r.scannedBy && <span className="block text-[10px] opacity-70">{r.scannedBy}</span>}
+                        </span>
+                      ) : "—"}
+                    </td>
                     <td className="px-4 py-2.5 text-right whitespace-nowrap">
                       {d && (fixable + mergeable > 0) && (
                         <button
@@ -404,7 +531,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
                   </tr>
                   {expanded === c.id && d && (
                     <tr key={`${c.id}-d`} className="border-b border-gray-100 bg-gray-50/60">
-                      <td colSpan={7} className="px-6 py-3 text-xs text-ink-slate space-y-3">
+                      <td colSpan={9} className="px-6 py-3 text-xs text-ink-slate space-y-3">
                         {d.wrongType.length > 0 && (
                           <div>
                             <div className="font-semibold text-amber-700 inline-flex items-center gap-1 mb-1"><AlertTriangle size={11} /> Wrong type — re-type into the right section ({d.wrongType.length})</div>
@@ -552,6 +679,51 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
           </tbody>
         </table>
       </div>
+
+      {completedClients.length > 0 && (
+        <details className="bg-white rounded-2xl border border-gray-100 overflow-hidden group" open>
+          <summary className="px-4 py-3 cursor-pointer font-semibold text-emerald-700 flex items-center gap-2 select-none hover:bg-gray-50">
+            <CheckCircle2 size={15} />
+            Completed ({completedClients.length})
+            <span className="font-normal text-ink-light text-xs">— under {DONE_THRESHOLD} issues, verified by last scan</span>
+          </summary>
+          <table className="w-full text-sm border-t border-gray-100">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-4 py-2 font-semibold text-ink-slate">Client</th>
+                <th className="text-right px-4 py-2 font-semibold text-ink-slate">Conformance</th>
+                <th className="text-right px-4 py-2 font-semibold text-ink-slate">Issues</th>
+                <th className="text-left px-4 py-2 font-semibold text-ink-slate">Completed</th>
+                <th className="text-left px-4 py-2 font-semibold text-ink-slate">By</th>
+                <th className="text-right px-4 py-2 font-semibold text-ink-slate"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {completedClients.map((c) => {
+                const r = rows[c.id];
+                const d = r.drift!;
+                return (
+                  <tr key={c.id} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="px-4 py-2 font-medium text-navy">{c.client_name}</td>
+                    <td className="px-4 py-2 text-right"><span className={`font-bold ${scoreColor(d.conformancePct)}`}>{d.conformancePct}%</span></td>
+                    <td className="px-4 py-2 text-right"><span className="font-bold text-emerald-700">{issueCountOf(d)}</span></td>
+                    <td className="px-4 py-2 text-left text-xs text-ink-light whitespace-nowrap" title={r.scannedAt ? new Date(r.scannedAt).toLocaleString() : ""}>
+                      <span className={isStale(r.scannedAt) ? "text-amber-600 font-semibold" : ""}>{fmtWhen(r.scannedAt) || "—"}</span>
+                      {isStale(r.scannedAt) && <span className="ml-1 text-[10px] text-amber-600">stale</span>}
+                    </td>
+                    <td className="px-4 py-2 text-left text-xs text-ink-light">{r.scannedBy || "—"}</td>
+                    <td className="px-4 py-2 text-right whitespace-nowrap">
+                      <button onClick={() => scan(c.id)} disabled={busy || r.applying} className="text-xs font-semibold text-teal hover:text-teal-dark disabled:opacity-50">
+                        {r.status === "scanning" ? <Loader2 size={12} className="animate-spin inline" /> : "re-scan"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </details>
+      )}
     </div>
   );
 }

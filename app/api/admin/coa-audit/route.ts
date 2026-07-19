@@ -29,7 +29,7 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const service = createServiceSupabase();
-  const { data: actor } = await service.from("users").select("role").eq("id", user.id).single();
+  const { data: actor } = await service.from("users").select("role, full_name").eq("id", user.id).single();
   if ((actor as any)?.role !== "admin") {
     return NextResponse.json({ error: "Admin only" }, { status: 403 });
   }
@@ -189,15 +189,60 @@ export async function POST(request: Request) {
       };
     });
 
-    return NextResponse.json({
+    const allProposals = [...mergeProposals, ...deletedProposals];
+    const responseBody = {
       client_link_id: clientLink.id,
       client_name: clientLink.client_name,
       jurisdiction,
       ...drift,
       mergeTargets,
-      mergeProposals: [...mergeProposals, ...deletedProposals],
+      mergeProposals: allProposals,
       deletedWithBalance: deletedWithBalance.length,
       aiSuggestions: !aiFailed,
+    };
+
+    // Actionable issue count — matches the "Fix all (N)" badge: re-types +
+    // missing-required creates + re-nests + confident merges. Non-master banks/
+    // assets/loans that are correctly left alone are NOT counted. < 4 => done.
+    const mergeCandidates = allProposals.filter((p) => p.action === "merge").length;
+    const issueCount =
+      drift.wrongType.length + drift.missingRequired.length +
+      (drift.wrongParent?.length || 0) + mergeCandidates;
+    const strandedCents = Math.round(
+      deletedWithBalance.reduce((s, d) => s + Math.abs(d.amount || 0), 0) * 100
+    );
+    const scannedAt = new Date().toISOString();
+    const scannedByName = ((actor as any)?.full_name as string) || null;
+
+    // Cache the scan so the fleet view hydrates without re-hitting QuickBooks.
+    // Best-effort: never fail the scan if the table isn't there yet (pre-135).
+    try {
+      await (service as any).from("coa_audit_scans").upsert({
+        client_link_id: clientLink.id,
+        conformance_pct: drift.conformancePct,
+        total_active: drift.totalActive,
+        matched: drift.matched,
+        wrong_type: drift.wrongType.length,
+        non_master: drift.nonMaster.length,
+        missing_required: drift.missingRequired.length,
+        wrong_parent: drift.wrongParent?.length || 0,
+        merge_candidates: mergeCandidates,
+        deleted_with_balance: deletedWithBalance.length,
+        stranded_cents: strandedCents,
+        issue_count: issueCount,
+        payload: responseBody,
+        scanned_at: scannedAt,
+        scanned_by: user.id,
+        scanned_by_name: scannedByName,
+      } as any, { onConflict: "client_link_id" });
+    } catch { /* table absent pre-migration — scan still returns */ }
+
+    return NextResponse.json({
+      ...responseBody,
+      issueCount,
+      strandedCents,
+      scanned_at: scannedAt,
+      scanned_by_name: scannedByName,
     });
   } catch (err: any) {
     if (err instanceof QBOReauthRequiredError) {

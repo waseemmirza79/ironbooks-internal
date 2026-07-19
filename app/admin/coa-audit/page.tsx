@@ -27,14 +27,30 @@ export default async function CoaAuditPage() {
     .not("qbo_realm_id", "is", null)
     .order("client_name");
 
+  // Hydrate from the last cached scan of each client (migration 135) so the
+  // fleet view loads instantly instead of re-scanning QuickBooks. Degrades to
+  // "unscanned" if the table isn't there yet.
+  let initialScans: Record<string, { drift: any; scannedAt: string; scannedBy: string | null }> = {};
+  try {
+    const { data: scans } = await (service as any)
+      .from("coa_audit_scans")
+      .select("client_link_id, payload, scanned_at, scanned_by_name");
+    for (const s of (scans as any[]) || []) {
+      if (s?.payload) initialScans[s.client_link_id] = { drift: s.payload, scannedAt: s.scanned_at, scannedBy: s.scanned_by_name ?? null };
+    }
+  } catch { /* table absent pre-migration — start empty */ }
+
   return (
     <AppShell>
       <TopBar
         title="COA Audit"
         subtitle="How close each client's QuickBooks chart is to the master COA — read-only triage"
       />
-      <div className="px-8 py-6 max-w-5xl">
-        <CoaAuditClient clients={(clients || []).map((c) => ({ id: c.id, client_name: c.client_name, jurisdiction: (c as any).jurisdiction ?? null }))} />
+      <div className="px-8 py-6 max-w-6xl">
+        <CoaAuditClient
+          clients={(clients || []).map((c) => ({ id: c.id, client_name: c.client_name, jurisdiction: (c as any).jurisdiction ?? null }))}
+          initialScans={initialScans}
+        />
       </div>
     </AppShell>
   );
