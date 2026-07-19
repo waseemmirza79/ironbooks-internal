@@ -17,8 +17,16 @@ export default async function CoaAuditPage() {
   if (!user) redirect("/auth/login");
 
   const service = createServiceSupabase();
-  const { data: actor } = await service.from("users").select("role").eq("id", user.id).single();
+  const { data: actor } = await service.from("users").select("role, email").eq("id", user.id).single();
   if ((actor as any)?.role !== "admin") redirect("/");
+
+  // Owner-only (Mike): the multi-select batch Fix-all runner. Gated by email —
+  // there's no dedicated owner role, and this is the one control that writes to
+  // many clients' books at once, so it stays off for every other admin.
+  const OWNER_EMAILS = new Set(["mike@paintergrowth.com"]);
+  const isOwner =
+    OWNER_EMAILS.has(String((actor as any)?.email || "").toLowerCase()) ||
+    OWNER_EMAILS.has(String(user.email || "").toLowerCase());
 
   const { data: clients } = await service
     .from("client_links")
@@ -50,6 +58,7 @@ export default async function CoaAuditPage() {
         <CoaAuditClient
           clients={(clients || []).map((c) => ({ id: c.id, client_name: c.client_name, jurisdiction: (c as any).jurisdiction ?? null }))}
           initialScans={initialScans}
+          isOwner={isOwner}
         />
       </div>
     </AppShell>

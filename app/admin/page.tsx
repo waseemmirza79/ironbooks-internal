@@ -2,7 +2,7 @@ import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { createServerSupabase } from "@/lib/supabase";
 import Link from "next/link";
-import { Users, FileCheck, Shield, Activity, AlertTriangle, ArrowRight, Clock, Mail, CreditCard, RefreshCw, Phone, Repeat, Video, Landmark, ReceiptText, CheckCheck, ListChecks, Copy, TrendingUp } from "lucide-react";
+import { Users, FileCheck, Shield, Activity, AlertTriangle, ArrowRight, Clock, Mail, CreditCard, RefreshCw, Phone, Repeat, Landmark, ReceiptText, CheckCheck, ListChecks, Copy, TrendingUp } from "lucide-react";
 
 export default async function AdminOverviewPage() {
   const supabase = await createServerSupabase();
@@ -142,12 +142,6 @@ export default async function AdminOverviewPage() {
               icon: Mail,
               title: "Bulk email",
               desc: "Email some or all clients · rich text · unsubscribe-aware",
-            },
-            {
-              href: "/admin/call-matching",
-              icon: Video,
-              title: "Call matching",
-              desc: "Match Grain call recordings to clients · manual matches teach auto-matching",
             },
             {
               href: "/admin/resync-logins",

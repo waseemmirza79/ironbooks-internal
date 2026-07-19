@@ -58,6 +58,8 @@ const EMPTY: RowState = { status: "idle", drift: null };
 const DONE_THRESHOLD = 4;
 /** Cached scans older than this read as "stale" (re-scan suggested). */
 const STALE_DAYS = 30;
+/** Owner-only batch: how many clients' Fix-all pipelines run concurrently. */
+const BATCH_CONCURRENCY = 3;
 
 function scoreColor(pct: number) {
   if (pct >= 90) return "text-emerald-700";
@@ -99,9 +101,12 @@ function fmtWhen(iso?: string | null): string {
 export function CoaAuditClient({
   clients,
   initialScans = {},
+  isOwner = false,
 }: {
   clients: ClientRow[];
   initialScans?: Record<string, { drift: Drift; scannedAt: string; scannedBy: string | null }>;
+  /** Owner-only (Mike): unlocks the multi-select batch Fix-all runner. */
+  isOwner?: boolean;
 }) {
   const [rows, setRows] = useState<Record<string, RowState>>(
     Object.fromEntries(clients.map((c) => {
@@ -132,6 +137,9 @@ export function CoaAuditClient({
   const [mergeSel, setMergeSel] = useState<Record<string, Record<string, string>>>({});
   const [mergeBusy, setMergeBusy] = useState<string | null>(null);
   const [mergeMsg, setMergeMsg] = useState<Record<string, string>>({});
+  // Owner-only batch: which clients are ticked, and batch progress text.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchMsg, setBatchMsg] = useState<string>("");
 
   const visibleClients = clients.filter((c) => region === "all" || regionOf(c) === region);
   const caCount = clients.filter((c) => regionOf(c) === "CA").length;
@@ -263,13 +271,23 @@ export function CoaAuditClient({
     }
   }
 
-  // One-click per client: approve + apply EVERY fix at once — all re-types,
-  // all missing-account creates, and all merges that have a target. Merges
-  // with no confident target are left for manual review. One confirm, then it
-  // runs the batch fix and each merge sequentially, and re-scans at the end.
-  async function applyAll(id: string, clientName: string) {
+  // Count of actionable fixes for a client from its current drift + selections
+  // (mirrors the row's "Fix all (N)" badge). Used to gate batch selection.
+  function fixCountOf(id: string): number {
     const d = rows[id]?.drift;
-    if (!d) return;
+    if (!d) return 0;
+    const fixable = d.wrongType.length + d.missingRequired.length + (d.wrongParent?.length || 0);
+    const mergeable = (d.mergeProposals || []).filter((p) => p.action === "merge" && (mergeSel[id]?.[p.sourceId] || p.targetId)).length;
+    return fixable + mergeable;
+  }
+
+  // The full Fix-all pipeline for ONE client — NO confirmation prompt. Applies
+  // every re-type / missing-create / re-nest, re-scans, then runs each merge
+  // that has a target. Updates the row's inline status as it goes and returns a
+  // one-line summary. Shared by the single button and the owner batch runner.
+  async function runAllFixes(id: string): Promise<string> {
+    const d = rows[id]?.drift;
+    if (!d) return "not scanned";
     const retype = d.wrongType.map((w) => w.id);
     const create = [...d.missingRequired];
     const reparent = (d.wrongParent || []).map((w) => w.id);
@@ -279,22 +297,10 @@ export function CoaAuditClient({
       .filter((x) => x.targetId);
     const mergesTotal = (d.mergeProposals || []).filter((p) => p.action === "merge").length;
     const skipped = mergesTotal - mergeList.length;
-    if (retype.length + create.length + reparent.length + mergeList.length === 0) return;
-
-    const tName = (tid: string, p: MergeProposal) =>
-      (d.mergeTargets || []).find((t) => t.id === tid)?.name || p.targetName || "target";
-    const mergeLines = mergeList.map(({ p, targetId }) => `   • ${p.sourceName} → ${tName(targetId, p)}`).join("\n");
-    const msg =
-      `Approve & apply ALL fixes to ${clientName}'s live QuickBooks?\n\n` +
-      `• ${retype.length} account re-type(s)\n` +
-      `• ${create.length} new account(s)\n` +
-      `• ${reparent.length} re-nest(s) under master headings\n` +
-      `• ${mergeList.length} merge(s) — each moves ALL year-to-date transactions (including already-closed months) onto the target and deactivates the source:\n${mergeLines || "   (none)"}\n\n` +
-      (skipped ? `${skipped} non-master account(s) have no clear target and are left for manual review.\n\n` : "") +
-      `This rewrites the books. Continue?`;
-    if (!confirm(msg)) return;
-
-    setExpanded(id);
+    if (retype.length + create.length + reparent.length + mergeList.length === 0) {
+      patch(id, { applying: false, fixMsg: "nothing to fix" });
+      return "nothing to fix";
+    }
     patch(id, { applying: true, fixMsg: "applying re-types & new accounts…" });
     const summary: string[] = [];
     try {
@@ -305,7 +311,7 @@ export function CoaAuditClient({
           body: JSON.stringify({ client_link_id: id, retype_account_ids: retype, create_account_names: create, reparent_account_ids: reparent }),
         });
         const data = await res.json();
-        if (data.reauth) { patch(id, { applying: false, fixMsg: "QBO needs reconnect" }); return; }
+        if (data.reauth) { patch(id, { applying: false, fixMsg: "QBO needs reconnect" }); return "reconnect QBO"; }
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         if (data.retyped?.length) summary.push(`${data.retyped.length} re-typed`);
         if (data.created?.length) summary.push(`${data.created.length} created`);
@@ -354,11 +360,88 @@ export function CoaAuditClient({
       if (skipped) summary.push(`${skipped} left for review`);
     } catch (e: any) {
       patch(id, { applying: false, fixMsg: e.message });
-      return;
+      return e.message;
     }
     // Refresh conformance, then show the aggregate result.
     await scan(id);
-    patch(id, { applying: false, fixMsg: summary.join(" · ") || "no changes" });
+    const s = summary.join(" · ") || "no changes";
+    patch(id, { applying: false, fixMsg: s });
+    return s;
+  }
+
+  // One-click per client: approve + apply EVERY fix at once — all re-types,
+  // all missing-account creates, and all merges that have a target. Merges
+  // with no confident target are left for manual review. One confirm, then it
+  // runs the batch fix and each merge sequentially, and re-scans at the end.
+  async function applyAll(id: string, clientName: string) {
+    const d = rows[id]?.drift;
+    if (!d) return;
+    const retype = d.wrongType.map((w) => w.id);
+    const create = [...d.missingRequired];
+    const reparent = (d.wrongParent || []).map((w) => w.id);
+    const mergeList = (d.mergeProposals || [])
+      .filter((p) => p.action === "merge")
+      .map((p) => ({ p, targetId: mergeSel[id]?.[p.sourceId] || p.targetId || "" }))
+      .filter((x) => x.targetId);
+    const mergesTotal = (d.mergeProposals || []).filter((p) => p.action === "merge").length;
+    const skipped = mergesTotal - mergeList.length;
+    if (retype.length + create.length + reparent.length + mergeList.length === 0) return;
+
+    const tName = (tid: string, p: MergeProposal) =>
+      (d.mergeTargets || []).find((t) => t.id === tid)?.name || p.targetName || "target";
+    const mergeLines = mergeList.map(({ p, targetId }) => `   • ${p.sourceName} → ${tName(targetId, p)}`).join("\n");
+    const msg =
+      `Approve & apply ALL fixes to ${clientName}'s live QuickBooks?\n\n` +
+      `• ${retype.length} account re-type(s)\n` +
+      `• ${create.length} new account(s)\n` +
+      `• ${reparent.length} re-nest(s) under master headings\n` +
+      `• ${mergeList.length} merge(s) — each moves ALL year-to-date transactions (including already-closed months) onto the target and deactivates the source:\n${mergeLines || "   (none)"}\n\n` +
+      (skipped ? `${skipped} non-master account(s) have no clear target and are left for manual review.\n\n` : "") +
+      `This rewrites the books. Continue?`;
+    if (!confirm(msg)) return;
+    setExpanded(id);
+    await runAllFixes(id);
+  }
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  // Owner-only: run the full Fix-all pipeline across the ticked clients, a few
+  // at a time, after ONE confirmation for the whole batch.
+  async function runSelected() {
+    if (!isOwner) return;
+    const ids = activeClients.map((c) => c.id).filter((id) => selected.has(id) && fixCountOf(id) > 0);
+    if (ids.length === 0) return;
+    const names = ids.map((id) => clients.find((c) => c.id === id)?.client_name || id);
+    const preview = names.slice(0, 15).map((n) => `   • ${n}`).join("\n") + (names.length > 15 ? `\n   … and ${names.length - 15} more` : "");
+    const totalFixes = ids.reduce((s, id) => s + fixCountOf(id), 0);
+    if (!confirm(
+      `Run “Fix all” on ${ids.length} client(s)' LIVE QuickBooks — ${totalFixes} total fixes?\n\n${preview}\n\n` +
+      `Each client is re-typed, re-nested, missing accounts created, and duplicate accounts merged (moving YTD transactions + retiring the drained source). This rewrites their books. Continue?`
+    )) return;
+    setBusy(true);
+    const queue = [...ids];
+    let done = 0;
+    setBatchMsg(`0/${ids.length} clients processed…`);
+    const worker = async () => {
+      while (queue.length) {
+        const id = queue.shift();
+        if (!id) break;
+        // eslint-disable-next-line no-await-in-loop
+        await runAllFixes(id);
+        done++;
+        setBatchMsg(`${done}/${ids.length} clients processed…`);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, ids.length) }, worker));
+    setBusy(false);
+    setBatchMsg(`✓ Fix-all complete on ${ids.length} client(s)`);
+    setSelected(new Set());
   }
 
   function toggle(setter: typeof setRetypeSel, id: string, key: string) {
@@ -446,10 +529,47 @@ export function CoaAuditClient({
         {strandedTotal > 0.5 && <span className="text-red-600 font-semibold">${Math.round(strandedTotal).toLocaleString()} stranded on deleted accounts (fleet)</span>}
       </div>
 
+      {isOwner && (
+        <div className="flex items-center gap-3 flex-wrap p-3 bg-amber-50 border border-amber-200 rounded-xl">
+          <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wide bg-amber-100 px-2 py-1 rounded">Owner batch</span>
+          <button
+            onClick={runSelected}
+            disabled={busy || selected.size === 0}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700 disabled:opacity-50"
+          >
+            {busy && batchMsg ? <Loader2 size={14} className="animate-spin" /> : <Wrench size={14} />}
+            Run Fix all on {selected.size} selected
+          </button>
+          {selected.size > 0 && !busy && (
+            <button onClick={() => setSelected(new Set())} className="text-xs font-semibold text-ink-slate hover:text-navy underline">clear</button>
+          )}
+          {batchMsg && <span className="text-xs text-amber-900 font-medium">{batchMsg}</span>}
+          <span className="text-xs text-ink-light">Tick clients below, then run Fix-all across all of them ({BATCH_CONCURRENCY} at a time). Visible to you only.</span>
+        </div>
+      )}
+
       <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
+              {isOwner && (
+                <th className="px-3 py-2.5 w-8">
+                  {(() => {
+                    const elig = activeClients.filter((c) => fixCountOf(c.id) > 0).map((c) => c.id);
+                    const allOn = elig.length > 0 && elig.every((id) => selected.has(id));
+                    return (
+                      <input
+                        type="checkbox"
+                        checked={allOn}
+                        disabled={busy || elig.length === 0}
+                        onChange={(e) => setSelected(e.target.checked ? new Set(elig) : new Set())}
+                        className="accent-amber-600"
+                        title="Select all eligible"
+                      />
+                    );
+                  })()}
+                </th>
+              )}
               <th className="text-left px-4 py-2.5 font-semibold text-ink-slate">Client</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Conformance</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Issues</th>
@@ -463,7 +583,7 @@ export function CoaAuditClient({
           </thead>
           <tbody>
             {activeClients.length === 0 && (
-              <tr><td colSpan={9} className="px-4 py-6 text-center text-ink-light text-sm">
+              <tr><td colSpan={isOwner ? 10 : 9} className="px-4 py-6 text-center text-ink-light text-sm">
                 {scored === 0 ? "No scans yet — hit “Scan new & stale” to audit the fleet." : "🎉 Every visible client is under the issue threshold — see Completed below."}
               </td></tr>
             )}
@@ -474,7 +594,20 @@ export function CoaAuditClient({
               const mergeable = d ? (d.mergeProposals || []).filter((p) => p.action === "merge" && (mergeSel[c.id]?.[p.sourceId] || p.targetId)).length : 0;
               return (
                 <>
-                  <tr key={c.id} className="border-b border-gray-100 hover:bg-gray-50">
+                  <tr key={c.id} className={`border-b border-gray-100 hover:bg-gray-50 ${isOwner && selected.has(c.id) ? "bg-amber-50/60" : ""}`}>
+                    {isOwner && (
+                      <td className="px-3 py-2.5">
+                        {fixCountOf(c.id) > 0 && (
+                          <input
+                            type="checkbox"
+                            checked={selected.has(c.id)}
+                            disabled={busy || r.applying}
+                            onChange={() => toggleSelect(c.id)}
+                            className="accent-amber-600"
+                          />
+                        )}
+                      </td>
+                    )}
                     <td className="px-4 py-2.5 font-medium text-navy">{c.client_name}</td>
                     <td className="px-4 py-2.5 text-right">
                       {r.status === "done" && d ? (
@@ -531,7 +664,7 @@ export function CoaAuditClient({
                   </tr>
                   {expanded === c.id && d && (
                     <tr key={`${c.id}-d`} className="border-b border-gray-100 bg-gray-50/60">
-                      <td colSpan={9} className="px-6 py-3 text-xs text-ink-slate space-y-3">
+                      <td colSpan={isOwner ? 10 : 9} className="px-6 py-3 text-xs text-ink-slate space-y-3">
                         {d.wrongType.length > 0 && (
                           <div>
                             <div className="font-semibold text-amber-700 inline-flex items-center gap-1 mb-1"><AlertTriangle size={11} /> Wrong type — re-type into the right section ({d.wrongType.length})</div>
