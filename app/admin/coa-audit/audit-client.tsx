@@ -31,6 +31,7 @@ interface Drift {
   wrongType: { id: string; name: string; currentType: string; masterType: string }[];
   nonMaster: { id: string; name: string; type: string }[];
   missingRequired: string[];
+  wrongParent?: { id: string; name: string; currentParent: string | null; masterParent: string | null }[];
   conformancePct: number;
   mergeTargets?: { id: string; name: string }[];
   mergeProposals?: MergeProposal[];
@@ -63,6 +64,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
   // Per-client selection of which fixes to apply.
   const [retypeSel, setRetypeSel] = useState<Record<string, Set<string>>>({});
   const [createSel, setCreateSel] = useState<Record<string, Set<string>>>({});
+  const [reparentSel, setReparentSel] = useState<Record<string, Set<string>>>({});
   // Merge: chosen target per source account (clientId → sourceId → targetId),
   // in-flight source, and per-source result message.
   const [mergeSel, setMergeSel] = useState<Record<string, Record<string, string>>>({});
@@ -82,6 +84,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
   function seedSelection(id: string, d: Drift) {
     setRetypeSel((prev) => ({ ...prev, [id]: new Set(d.wrongType.map((w) => w.id)) }));
     setCreateSel((prev) => ({ ...prev, [id]: new Set(d.missingRequired) }));
+    setReparentSel((prev) => ({ ...prev, [id]: new Set((d.wrongParent || []).map((w) => w.id)) }));
     const m: Record<string, string> = {};
     for (const p of d.mergeProposals || []) if (p.action === "merge") m[p.sourceId] = p.targetId || "";
     setMergeSel((prev) => ({ ...prev, [id]: m }));
@@ -154,14 +157,15 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
   async function applyFix(id: string, clientName: string) {
     const retype = [...(retypeSel[id] || [])];
     const create = [...(createSel[id] || [])];
-    if (retype.length === 0 && create.length === 0) return;
-    if (!confirm(`Apply to ${clientName}'s live QuickBooks: ${retype.length} account re-type(s) + ${create.length} new account(s)? This re-writes the chart. (Merges/renames of other accounts are handled separately in the reviewed cleanup.)`)) return;
+    const reparent = [...(reparentSel[id] || [])];
+    if (retype.length === 0 && create.length === 0 && reparent.length === 0) return;
+    if (!confirm(`Apply to ${clientName}'s live QuickBooks: ${retype.length} account re-type(s) + ${create.length} new account(s) + ${reparent.length} re-nest(s)? This re-writes the chart. (Merges/renames of other accounts are handled separately in the reviewed cleanup.)`)) return;
     patch(id, { applying: true, fixMsg: undefined });
     try {
       const res = await fetch("/api/admin/coa-audit/fix", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_link_id: id, retype_account_ids: retype, create_account_names: create }),
+        body: JSON.stringify({ client_link_id: id, retype_account_ids: retype, create_account_names: create, reparent_account_ids: reparent }),
       });
       const data = await res.json();
       if (data.reauth) { patch(id, { applying: false, fixMsg: "QBO needs reconnect" }); return; }
@@ -169,6 +173,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
       const parts: string[] = [];
       if (data.retyped?.length) parts.push(`${data.retyped.length} re-typed`);
       if (data.created?.length) parts.push(`${data.created.length} created`);
+      if (data.renested?.length) parts.push(`${data.renested.length} re-nested`);
       if (data.failed?.length) parts.push(`${data.failed.length} failed`);
       patch(id, { applying: false, status: "done", drift: data.drift, fixMsg: parts.join(" · ") || "no changes" });
       if (data.drift) seedSelection(id, data.drift);
@@ -186,13 +191,14 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
     if (!d) return;
     const retype = d.wrongType.map((w) => w.id);
     const create = [...d.missingRequired];
+    const reparent = (d.wrongParent || []).map((w) => w.id);
     const mergeList = (d.mergeProposals || [])
       .filter((p) => p.action === "merge")
       .map((p) => ({ p, targetId: mergeSel[id]?.[p.sourceId] || p.targetId || "" }))
       .filter((x) => x.targetId);
     const mergesTotal = (d.mergeProposals || []).filter((p) => p.action === "merge").length;
     const skipped = mergesTotal - mergeList.length;
-    if (retype.length + create.length + mergeList.length === 0) return;
+    if (retype.length + create.length + reparent.length + mergeList.length === 0) return;
 
     const tName = (tid: string, p: MergeProposal) =>
       (d.mergeTargets || []).find((t) => t.id === tid)?.name || p.targetName || "target";
@@ -201,6 +207,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
       `Approve & apply ALL fixes to ${clientName}'s live QuickBooks?\n\n` +
       `• ${retype.length} account re-type(s)\n` +
       `• ${create.length} new account(s)\n` +
+      `• ${reparent.length} re-nest(s) under master headings\n` +
       `• ${mergeList.length} merge(s) — each moves ALL year-to-date transactions (including already-closed months) onto the target and deactivates the source:\n${mergeLines || "   (none)"}\n\n` +
       (skipped ? `${skipped} non-master account(s) have no clear target and are left for manual review.\n\n` : "") +
       `This rewrites the books. Continue?`;
@@ -210,17 +217,18 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
     patch(id, { applying: true, fixMsg: "applying re-types & new accounts…" });
     const summary: string[] = [];
     try {
-      if (retype.length || create.length) {
+      if (retype.length || create.length || reparent.length) {
         const res = await fetch("/api/admin/coa-audit/fix", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ client_link_id: id, retype_account_ids: retype, create_account_names: create }),
+          body: JSON.stringify({ client_link_id: id, retype_account_ids: retype, create_account_names: create, reparent_account_ids: reparent }),
         });
         const data = await res.json();
         if (data.reauth) { patch(id, { applying: false, fixMsg: "QBO needs reconnect" }); return; }
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         if (data.retyped?.length) summary.push(`${data.retyped.length} re-typed`);
         if (data.created?.length) summary.push(`${data.created.length} created`);
+        if (data.renested?.length) summary.push(`${data.renested.length} re-nested`);
         if (data.failed?.length) summary.push(`${data.failed.length} fix-failed`);
       }
       let merged = 0, mergeFail = 0, tooLarge = 0;
@@ -326,7 +334,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
             {visibleClients.map((c) => {
               const r = rows[c.id];
               const d = r.drift;
-              const fixable = d ? d.wrongType.length + d.missingRequired.length : 0;
+              const fixable = d ? d.wrongType.length + d.missingRequired.length + (d.wrongParent?.length || 0) : 0;
               const mergeable = d ? (d.mergeProposals || []).filter((p) => p.action === "merge" && (mergeSel[c.id]?.[p.sourceId] || p.targetId)).length : 0;
               return (
                 <>
@@ -399,6 +407,25 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
                                 <label key={name} className="flex items-center gap-2 cursor-pointer hover:text-navy">
                                   <input type="checkbox" checked={createSel[c.id]?.has(name) ?? false} onChange={() => toggle(setCreateSel, c.id, name)} className="accent-teal" />
                                   <span className="text-navy">{name}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {(d.wrongParent?.length || 0) > 0 && (
+                          <div>
+                            <div className="font-semibold text-violet-700 mb-1">
+                              Wrong nesting — move under the master heading ({d.wrongParent!.length})
+                            </div>
+                            <div className="text-ink-light mb-1">
+                              Right account, wrong spot — sitting under a legacy parent instead of the standard heading. Missing headings get created automatically.
+                            </div>
+                            <div className="space-y-0.5">
+                              {d.wrongParent!.map((w) => (
+                                <label key={w.id} className="flex items-center gap-2 cursor-pointer hover:text-navy">
+                                  <input type="checkbox" checked={reparentSel[c.id]?.has(w.id) ?? false} onChange={() => toggle(setReparentSel, c.id, w.id)} className="accent-teal" />
+                                  <span className="font-medium text-navy">{w.name}</span>
+                                  <span className="text-ink-light">{w.currentParent || "top level"} → {w.masterParent || "top level"}</span>
                                 </label>
                               ))}
                             </div>
@@ -479,11 +506,11 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
                         <div className="flex items-center gap-3 pt-1">
                           <button
                             onClick={() => applyFix(c.id, c.client_name)}
-                            disabled={r.applying || ((retypeSel[c.id]?.size ?? 0) + (createSel[c.id]?.size ?? 0) === 0)}
+                            disabled={r.applying || ((retypeSel[c.id]?.size ?? 0) + (createSel[c.id]?.size ?? 0) + (reparentSel[c.id]?.size ?? 0) === 0)}
                             className="inline-flex items-center gap-1.5 bg-teal text-white text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-teal-dark disabled:opacity-50"
                           >
                             {r.applying ? <Loader2 size={12} className="animate-spin" /> : <Wrench size={12} />}
-                            Apply selected fixes ({(retypeSel[c.id]?.size ?? 0) + (createSel[c.id]?.size ?? 0)})
+                            Apply selected fixes ({(retypeSel[c.id]?.size ?? 0) + (createSel[c.id]?.size ?? 0) + (reparentSel[c.id]?.size ?? 0)})
                           </button>
                           {r.fixMsg && (
                             <span className="text-[11px] inline-flex items-center gap-1 text-navy">

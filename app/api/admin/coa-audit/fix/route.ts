@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { getValidToken, fetchAllAccounts, QBOReauthRequiredError } from "@/lib/qbo";
 import { computeRetypePlans, type RetypeMasterRow } from "@/lib/coa-retype";
-import { retypeAccountViaRebuild } from "@/lib/coa-reclass-je";
+import { retypeAccountViaRebuild, setAccountParent, ensureAccountExists } from "@/lib/coa-reclass-je";
 import { applyMasterCoaToClient, type MasterCoaRow } from "@/lib/apply-master-coa";
 import { computeCoaDrift, type DriftMasterRow } from "@/lib/coa-drift";
 import { normalizeAccountName } from "@/lib/account-name";
@@ -45,8 +45,9 @@ export async function POST(request: Request) {
   const clientLinkId = String(body.client_link_id || "");
   const retypeIds: string[] = Array.isArray(body.retype_account_ids) ? body.retype_account_ids.map(String) : [];
   const createNames: string[] = Array.isArray(body.create_account_names) ? body.create_account_names.map(String) : [];
+  const reparentIds: string[] = Array.isArray(body.reparent_account_ids) ? body.reparent_account_ids.map(String) : [];
   if (!clientLinkId) return NextResponse.json({ error: "client_link_id required" }, { status: 400 });
-  if (retypeIds.length === 0 && createNames.length === 0) {
+  if (retypeIds.length === 0 && createNames.length === 0 && reparentIds.length === 0) {
     return NextResponse.json({ error: "Nothing selected to fix" }, { status: 400 });
   }
 
@@ -80,6 +81,7 @@ export async function POST(request: Request) {
   const summary = {
     retyped: [] as string[],
     created: [] as string[],
+    renested: [] as string[],
     failed: [] as { account: string; message: string }[],
   };
   const retypeDebug: Array<{ account: string; newType: string; createdType: string | null; moved: number | null; inactivated: boolean | null }> = [];
@@ -136,6 +138,57 @@ export async function POST(request: Request) {
       }
     }
 
+    // ── Re-nest: master-matched accounts sitting under a legacy parent
+    //    ("General business expenses:Software Subscriptions" — Camellia)
+    //    move under their master heading, creating the heading if the client
+    //    doesn't have it yet; master-top-level accounts detach to top level.
+    //    Revalidated against live drift — selections that no longer apply
+    //    are skipped, not trusted. ──
+    if (reparentIds.length > 0) {
+      const accounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
+      const drift = computeCoaDrift(accounts as any, masterRows as DriftMasterRow[]);
+      const byId = new Map(accounts.map((a) => [a.Id, a]));
+      const masterByNorm = new Map(
+        (masterRows as any[]).map((m) => [normalizeAccountName(m.account_name), m])
+      );
+      const live = [...accounts]; // grows as we create headings
+      for (const wp of drift.wrongParent.filter((w) => reparentIds.includes(w.id))) {
+        const acct: any = byId.get(wp.id);
+        if (!acct) {
+          summary.failed.push({ account: wp.name, message: "account no longer exists" });
+          continue;
+        }
+        try {
+          if (!wp.masterParent) {
+            await setAccountParent({ realmId: clientLink.qbo_realm_id, accessToken, account: acct, parentId: null });
+            summary.renested.push(`${wp.name} → top level`);
+            continue;
+          }
+          const parentRow: any = masterByNorm.get(normalizeAccountName(wp.masterParent));
+          const parent = await ensureAccountExists({
+            realmId: clientLink.qbo_realm_id,
+            accessToken,
+            name: wp.masterParent,
+            accountType: parentRow?.qbo_account_type || acct.AccountType,
+            accountSubType: parentRow?.qbo_account_subtype || acct.AccountSubType,
+            allAccounts: live,
+          });
+          if (!live.some((a) => a.Id === parent.Id)) live.push(parent);
+          if ((parent.AccountType || "") !== (acct.AccountType || "")) {
+            summary.failed.push({
+              account: wp.name,
+              message: `can't nest under "${parent.Name}" — types differ (${acct.AccountType} vs ${parent.AccountType}); retype first`,
+            });
+            continue;
+          }
+          await setAccountParent({ realmId: clientLink.qbo_realm_id, accessToken, account: acct, parentId: parent.Id });
+          summary.renested.push(`${wp.name} → ${parent.Name}`);
+        } catch (e: any) {
+          summary.failed.push({ account: wp.name, message: String(e?.message || e).slice(0, 250) });
+        }
+      }
+    }
+
     // ── Create missing required (additive; reuses the existing primitive,
     //    scoped to the selected names, which it re-verifies as missing) ──
     if (createNames.length > 0) {
@@ -164,6 +217,7 @@ export async function POST(request: Request) {
         client_name: clientLink.client_name,
         retyped: summary.retyped,
         created: summary.created,
+        renested: summary.renested,
         failed: summary.failed,
         conformance_after: drift.conformancePct,
       } as any,

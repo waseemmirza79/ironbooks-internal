@@ -22,6 +22,8 @@ import {
   reclassAccountViaJournalEntry,
   repointItemsToAccount,
   retypeAccountViaRebuild,
+  setAccountParent,
+  ensureAccountExists,
 } from "./coa-reclass-je";
 import { getClientEndCloses, type DoubleEndCloseSummary } from "./double";
 
@@ -1621,61 +1623,99 @@ export async function executeJob(jobId: string): Promise<{
     // chart with the same AccountType (QBO 6000s otherwise); accounts that
     // are themselves parents are left alone (no subtree moves).
     try {
-      const { data: masterLeaves } = await ctx.supabase
+      // ALL master rows — the parent (heading) rows too, so a missing heading
+      // can be CREATED instead of silently skipping every child under it
+      // (Camellia, 2026-07-18: no "Office & Admin" account existed, so her
+      // master-named children stayed nested under the legacy "General
+      // business expenses" parent forever — with no log).
+      const { data: masterAllRows } = await ctx.supabase
         .from("master_coa")
-        .select("account_name, parent_account_name, is_parent, qbo_account_type")
-        .eq("jurisdiction", clientLink.jurisdiction || "US")
-        .eq("is_parent", false)
-        .not("parent_account_name", "is", null);
+        .select("account_name, parent_account_name, is_parent, qbo_account_type, qbo_account_subtype")
+        .eq("jurisdiction", clientLink.jurisdiction || "US");
+      const masterAll = ((masterAllRows as any[]) || []);
 
       const normName = (s: string) => String(s || "").toLowerCase().trim();
-      const parentByLeaf = new Map<string, { parent: string; type: string }>(
-        ((masterLeaves as any[]) || []).map((m) => [
+      const parentRowByNorm = new Map<string, any>(
+        masterAll.filter((m) => m.is_parent).map((m) => [normName(m.account_name), m])
+      );
+      // Every master LEAF, including top-level ones (parent: null) — a
+      // master-top-level account stuck under a legacy parent must be DE-nested.
+      const parentByLeaf = new Map<string, { parent: string | null; type: string }>(
+        masterAll.filter((m) => !m.is_parent).map((m) => [
           normName(m.account_name),
-          { parent: m.parent_account_name, type: m.qbo_account_type },
+          { parent: m.parent_account_name || null, type: m.qbo_account_type },
         ])
       );
 
       if (parentByLeaf.size > 0) {
         const fresh = await qbo.fetchAllAccounts(ctx.realmId, ctx.accessToken);
         const byName = new Map(fresh.map((a) => [normName(a.Name), a]));
+        const byId = new Map(fresh.map((a) => [a.Id, a]));
         const hasChildren = new Set(
           fresh.filter((a) => a.ParentRef?.value).map((a) => a.ParentRef!.value)
         );
 
-        const toReparent = fresh.filter((acct) => {
-          if (acct.Active === false) return false;
+        const toReparent: Array<{ acct: any; targetParentName: string | null }> = [];
+        for (const acct of fresh) {
+          if (acct.Active === false) continue;
           const m = parentByLeaf.get(normName(acct.Name));
-          if (!m) return false;
-          const parent = byName.get(normName(m.parent));
-          if (!parent || parent.Id === acct.Id) return false;
-          if (parent.AccountType !== acct.AccountType) {
-            // Not silent anymore: this is exactly what the retype stage exists
-            // to fix — if it still happens, the team should see it.
-            console.warn(
-              `[executor ${jobId}] re-parent skipped: "${acct.Name}" (${acct.AccountType}) cannot nest under "${parent.Name}" (${parent.AccountType}) — types differ; needs retype`
-            );
-            reparentTypeSkips.push(`"${acct.Name}" (${acct.AccountType}) under "${parent.Name}" (${parent.AccountType})`);
-            return false;
-          }
-          if (acct.ParentRef?.value === parent.Id) return false; // already right
-          if (hasChildren.has(acct.Id)) return false; // it's a parent itself
-          return true;
-        });
+          if (!m) continue;
+          if (hasChildren.has(acct.Id)) continue; // it's a parent itself — no subtree moves
+          const curParent = acct.ParentRef?.value ? byId.get(acct.ParentRef.value) : null;
+          const curNorm = curParent ? normName(curParent.Name) : null;
+          const wantNorm = m.parent ? normName(m.parent) : null;
+          if (curNorm === wantNorm) continue; // already right (incl. both top-level)
+          toReparent.push({ acct, targetParentName: m.parent });
+        }
 
         if (toReparent.length > 0) {
           await logProgress(ctx, "stage_start",
             `Re-parenting ${toReparent.length} existing accounts under master headings`,
             { stage: "reparent", total: toReparent.length });
 
-          for (const acct of toReparent) {
+          for (const { acct, targetParentName } of toReparent) {
             checkBudget(startTime);
             if (await shouldCancel(ctx)) {
               await logProgress(ctx, "cancellation_acknowledged", "Cancelled mid-run — exiting re-parent stage cleanly");
               return { success: false, errors, stats };
             }
-            const target = byName.get(normName(parentByLeaf.get(normName(acct.Name))!.parent))!;
             try {
+              // Master says top-level → detach from the legacy parent.
+              if (!targetParentName) {
+                await setAccountParent({ realmId: ctx.realmId, accessToken: ctx.accessToken, account: acct as any, parentId: null });
+                stats.reparented++;
+                await logActionResult(ctx, null, "qbo_reparent",
+                  { name: acct.Name, parent: null, detached_to_top: true });
+                continue;
+              }
+              // Find the master heading — CREATE it when the client doesn't
+              // have it (type/subtype from the master parent row).
+              let target = byName.get(normName(targetParentName));
+              if (!target) {
+                const pRow = parentRowByNorm.get(normName(targetParentName));
+                target = await ensureAccountExists({
+                  realmId: ctx.realmId,
+                  accessToken: ctx.accessToken,
+                  name: targetParentName,
+                  accountType: pRow?.qbo_account_type || acct.AccountType,
+                  accountSubType: pRow?.qbo_account_subtype || acct.AccountSubType,
+                  allAccounts: fresh as any,
+                });
+                (fresh as any).push(target);
+                byName.set(normName(target.Name), target);
+                await logActionResult(ctx, null, "qbo_create_parent",
+                  { name: target.Name, id: target.Id, created_for_reparent: true });
+                stats.created++;
+              }
+              if (target.Id === acct.Id) continue;
+              if (target.AccountType !== acct.AccountType) {
+                reparentTypeSkips.push(`"${acct.Name}" (${acct.AccountType}) under "${target.Name}" (${target.AccountType})`);
+                await logProgress(ctx, "warning",
+                  `Re-parent skipped: "${acct.Name}" (${acct.AccountType}) can't nest under "${target.Name}" (${target.AccountType}) — types differ; needs retype`,
+                  { account: acct.Name, parent: target.Name });
+                continue;
+              }
+              if (acct.ParentRef?.value === target.Id) continue; // already right
               await qbo.reparentAccount(
                 ctx.realmId, ctx.accessToken,
                 acct.Id, (acct as any).SyncToken, target.Id,
@@ -1691,7 +1731,7 @@ export async function executeJob(jobId: string): Promise<{
                 intended_action: "reparent",
                 account_id: acct.Id,
                 account_name: acct.Name,
-                request_body: { Id: acct.Id, ParentRef: { value: target.Id }, SubAccount: true },
+                request_body: { Id: acct.Id, target_parent: targetParentName, SubAccount: !!targetParentName },
                 qbo_error: String(e?.message || e),
                 account_snapshot: {
                   Name: acct.Name,
@@ -1704,7 +1744,7 @@ export async function executeJob(jobId: string): Promise<{
                 } as any,
               });
               await logProgress(ctx, "warning",
-                `Re-parent "${acct.Name}" → "${target.Name}" routed to manual cleanup`,
+                `Re-parent "${acct.Name}" → "${targetParentName || "top level"}" routed to manual cleanup`,
                 { reason: String(e?.message || e).slice(0, 200) });
             }
           }

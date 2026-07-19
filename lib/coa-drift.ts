@@ -26,6 +26,8 @@ export interface DriftMasterRow extends RetypeMasterRow {
 export interface DriftAccount extends RetypeClientAccount {
   Classification?: string;
   Active?: boolean;
+  ParentRef?: { value: string };
+  SubAccount?: boolean;
 }
 
 export interface CoaDrift {
@@ -34,6 +36,11 @@ export interface CoaDrift {
   wrongType: { id: string; name: string; currentType: string; masterType: string }[];
   nonMaster: { id: string; name: string; type: string }[];
   missingRequired: string[];
+  /** Master-matched accounts nested in the WRONG place — under a legacy
+   *  parent instead of the master heading (or nested when master says
+   *  top-level). The "General business expenses:Software Subscriptions"
+   *  class: leaf name conforms, structure doesn't (Camellia, 2026-07-18). */
+  wrongParent: { id: string; name: string; currentParent: string | null; masterParent: string | null }[];
   /** 0–100: matched ÷ (accounts that map to a master name). Higher = more
    *  conformant. Non-master accounts drag it down. */
   conformancePct: number;
@@ -63,15 +70,34 @@ export function computeCoaDrift(accounts: DriftAccount[], masterRows: DriftMaste
   let matched = 0;
   const wrongType: CoaDrift["wrongType"] = [];
   const nonMaster: CoaDrift["nonMaster"] = [];
+  const wrongParent: CoaDrift["wrongParent"] = [];
+
+  // For parent-name resolution + "is itself a parent" checks.
+  const byId = new Map(accounts.map((a) => [a.Id, a]));
+  const hasChildren = new Set(
+    accounts.filter((a) => a.Active !== false && a.ParentRef?.value).map((a) => String(a.ParentRef!.value))
+  );
 
   for (const a of active) {
     const norm = normalizeAccountName(a.Name);
-    const inMaster = masterLeafByNorm.has(norm);
+    const master = masterLeafByNorm.get(norm);
     const rt = retypeById.get(a.Id);
-    if (inMaster && rt) {
+    if (master && rt) {
       wrongType.push({ id: a.Id, name: a.Name, currentType: rt.current_type || "(none)", masterType: rt.new_type });
-    } else if (inMaster) {
+    } else if (master) {
       matched++;
+      // Structure check: right name+type, wrong nesting. Skip accounts that
+      // are themselves parents (no subtree moves) and skip when master has no
+      // opinion beyond "top-level" and the account already is.
+      if (!master.is_parent && !hasChildren.has(String(a.Id))) {
+        const currentParentName = a.ParentRef?.value ? (byId.get(String(a.ParentRef.value))?.Name ?? null) : null;
+        const masterParentName = master.parent_account_name || null;
+        const curNorm = currentParentName ? normalizeAccountName(currentParentName) : null;
+        const wantNorm = masterParentName ? normalizeAccountName(masterParentName) : null;
+        if (curNorm !== wantNorm) {
+          wrongParent.push({ id: a.Id, name: a.Name, currentParent: currentParentName, masterParent: masterParentName });
+        }
+      }
     } else {
       nonMaster.push({ id: a.Id, name: a.Name, type: a.AccountType || "(none)" });
     }
@@ -93,6 +119,7 @@ export function computeCoaDrift(accounts: DriftAccount[], masterRows: DriftMaste
     wrongType,
     nonMaster,
     missingRequired,
+    wrongParent,
     conformancePct,
   };
 }

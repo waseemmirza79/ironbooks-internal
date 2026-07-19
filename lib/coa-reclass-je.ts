@@ -242,6 +242,74 @@ export async function repointItemsToAccount(params: {
   return result;
 }
 
+/**
+ * Move an account under a new parent (or to top level with parentId null).
+ * Sparse update; echoes Name/type so QBO doesn't 2010. Caller guarantees the
+ * parent's AccountType matches (QBO 6000s otherwise).
+ */
+export async function setAccountParent(params: {
+  realmId: string;
+  accessToken: string;
+  account: QBOAccount;
+  parentId: string | null;
+}): Promise<void> {
+  const { realmId, accessToken, account, parentId } = params;
+  const body: any = {
+    Id: account.Id,
+    SyncToken: (account as any).SyncToken,
+    sparse: true,
+    Name: account.Name,
+    AccountType: account.AccountType,
+    ...(account.AccountSubType && { AccountSubType: account.AccountSubType }),
+  };
+  if (parentId) {
+    body.SubAccount = true;
+    body.ParentRef = { value: parentId };
+  } else {
+    body.SubAccount = false;
+  }
+  await qboRequest(realmId, accessToken, `/account?minorversion=70`, { method: "POST", body: JSON.stringify(body) });
+}
+
+/**
+ * Find an active account by (normalized) name, creating it if absent — with
+ * the same verify-and-force-type guard as the retype rebuild, since QBO
+ * coerces a new account's type to match a bad subtype. Used to materialize
+ * missing master PARENT headings before nesting children under them.
+ */
+export async function ensureAccountExists(params: {
+  realmId: string;
+  accessToken: string;
+  name: string;
+  accountType: string;
+  accountSubType?: string | null;
+  allAccounts: QBOAccount[];
+}): Promise<QBOAccount> {
+  const { realmId, accessToken, name, accountType, allAccounts } = params;
+  const existing = allAccounts.find(
+    (a) => a.Active !== false && normalizeAccountName(a.Name) === normalizeAccountName(name)
+  );
+  if (existing) return existing;
+  const subType = params.accountSubType || DEFAULT_SUBTYPE[accountType.toLowerCase()] || "";
+  let created: QBOAccount;
+  try {
+    created = await createAccount(realmId, accessToken, { name, accountType, accountSubType: subType });
+  } catch {
+    created = await createAccount(realmId, accessToken, {
+      name, accountType,
+      accountSubType: DEFAULT_SUBTYPE[accountType.toLowerCase()] || subType,
+    });
+  }
+  if ((created.AccountType || "").toLowerCase() !== accountType.toLowerCase()) {
+    created = await updateAccountType(realmId, accessToken, created.Id, (created as any).SyncToken, {
+      newType: accountType,
+      newSubType: DEFAULT_SUBTYPE[accountType.toLowerCase()] || subType,
+      currentAccount: created,
+    });
+  }
+  return created;
+}
+
 export interface DrainRetireResult {
   moved: number;
   jesPosted: number;
