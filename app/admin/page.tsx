@@ -126,6 +126,12 @@ export default async function AdminOverviewPage() {
         <div className="space-y-2 mb-6">
           {[
             {
+              href: "/admin/billing",
+              icon: CreditCard,
+              title: "Billing",
+              desc: "Subscription revenue — Stripe-synced + manual entries · MRR, dunning, reconciliation banner · billing_admin",
+            },
+            {
               href: "/admin/daily-recon",
               icon: Repeat,
               title: "Daily recon engine",
