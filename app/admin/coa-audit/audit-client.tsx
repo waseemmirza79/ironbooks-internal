@@ -127,7 +127,7 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
     }
   }
 
-  async function scan(id: string): Promise<void> {
+  async function scan(id: string): Promise<Drift | null> {
     patch(id, { status: "scanning", message: undefined, fixMsg: undefined });
     try {
       const res = await fetch("/api/admin/coa-audit", {
@@ -136,12 +136,14 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
         body: JSON.stringify({ client_link_id: id }),
       });
       const data = await res.json();
-      if (data.reauth) return patch(id, { status: "reauth" });
+      if (data.reauth) { patch(id, { status: "reauth" }); return null; }
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       patch(id, { status: "done", drift: data });
       seedSelection(id, data);
+      return data as Drift;
     } catch (e: any) {
       patch(id, { status: "error", message: e.message });
+      return null;
     }
   }
 
@@ -231,10 +233,25 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
         if (data.renested?.length) summary.push(`${data.renested.length} re-nested`);
         if (data.failed?.length) summary.push(`${data.failed.length} fix-failed`);
       }
+      // Re-types rebuild accounts under NEW ids — merge proposals captured
+      // before the fix phase can point at retired shells and 400 with
+      // "Source account no longer exists" (Co Painting, 2026-07-18). When the
+      // fix phase ran, re-scan and rebuild the merge list from the fresh chart.
+      let mergeRun = mergeList;
+      if (mergeList.length > 0 && (retype.length || create.length || reparent.length)) {
+        patch(id, { fixMsg: "re-scanning before merges…" });
+        const fresh = await scan(id);
+        if (fresh) {
+          mergeRun = (fresh.mergeProposals || [])
+            .filter((p) => p.action === "merge" && p.targetId)
+            .map((p) => ({ p, targetId: p.targetId as string }));
+        }
+        patch(id, { applying: true });
+      }
       let merged = 0, mergeFail = 0, tooLarge = 0;
-      for (let i = 0; i < mergeList.length; i++) {
-        const { p, targetId } = mergeList[i];
-        patch(id, { fixMsg: `merging ${i + 1}/${mergeList.length}: ${p.sourceName}…` });
+      for (let i = 0; i < mergeRun.length; i++) {
+        const { p, targetId } = mergeRun[i];
+        patch(id, { fixMsg: `merging ${i + 1}/${mergeRun.length}: ${p.sourceName}…` });
         try {
           // eslint-disable-next-line no-await-in-loop
           const res = await fetch("/api/admin/coa-audit/merge", {
