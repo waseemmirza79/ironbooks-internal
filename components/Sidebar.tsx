@@ -27,6 +27,7 @@ const dailyNav: { href: string; label: string; icon: any; senior?: boolean; newT
   // with a pipeline toggle. The old routes still work for deep links.
   { href: "/board", label: "Pipelines", icon: ClipboardCheck },
   { href: "/clients", label: "Clients", icon: Users },
+  { href: "/coa-audit", label: "COA Audit", icon: ListChecks },
   { href: "/history", label: "History", icon: Clock },
 ];
 

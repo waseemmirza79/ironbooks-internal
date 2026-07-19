@@ -30,8 +30,12 @@ export async function POST(request: Request) {
 
   const service = createServiceSupabase();
   const { data: actor } = await service.from("users").select("role, full_name").eq("id", user.id).single();
-  if ((actor as any)?.role !== "admin") {
-    return NextResponse.json({ error: "Admin only" }, { status: 403 });
+  // Read-only drift scan — open to bookkeeping staff (the fleet COA view moved
+  // out of /admin so bookkeepers can triage their clients). Clients and
+  // billing-only admins are not bookkeeping staff.
+  const scanRole = (actor as any)?.role || "bookkeeper";
+  if (["client", "billing_admin"].includes(scanRole)) {
+    return NextResponse.json({ error: "Staff only" }, { status: 403 });
   }
 
   const body = await request.json().catch(() => ({}));

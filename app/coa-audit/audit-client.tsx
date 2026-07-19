@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Loader2, Search, AlertTriangle, CheckCircle2, Wrench, Clock } from "lucide-react";
+import { LIFECYCLE_META, type LifecycleStatus } from "@/lib/client-lifecycle";
 
 interface ClientRow {
   id: string;
@@ -79,6 +80,18 @@ function isDone(r: RowState | undefined): boolean {
   return !!r && r.status === "done" && !!r.drift && issueCountOf(r.drift) < DONE_THRESHOLD;
 }
 
+/** $ stranded on retired ("deleted") accounts still carrying a balance. */
+function strandedOf(d: Drift | null): number {
+  if (!d) return 0;
+  return (d.mergeProposals || []).filter((p) => p.deleted).reduce((a, p) => a + Math.abs(p.amount || 0), 0);
+}
+
+/** How many retired accounts still carry a balance on this client. */
+function deletedCountOf(d: Drift | null): number {
+  if (!d) return 0;
+  return (d.mergeProposals || []).filter((p) => p.deleted).length;
+}
+
 function daysSince(iso?: string | null): number | null {
   if (!iso) return null;
   return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
@@ -101,12 +114,18 @@ function fmtWhen(iso?: string | null): string {
 export function CoaAuditClient({
   clients,
   initialScans = {},
+  initialStages = {},
   isOwner = false,
+  canFix = true,
 }: {
   clients: ClientRow[];
   initialScans?: Record<string, { drift: Drift; scannedAt: string; scannedBy: string | null }>;
+  /** Per-client cleanup-flow stage (deriveLifecycleStatus), for the Stage column. */
+  initialStages?: Record<string, LifecycleStatus>;
   /** Owner-only (Mike): unlocks the multi-select batch Fix-all runner. */
   isOwner?: boolean;
+  /** Whether this user can run fixes/merges (viewers are read-only). */
+  canFix?: boolean;
 }) {
   const [rows, setRows] = useState<Record<string, RowState>>(
     Object.fromEntries(clients.map((c) => {
@@ -548,7 +567,7 @@ export function CoaAuditClient({
         </div>
       )}
 
-      <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+      <div className="bg-white rounded-2xl border border-gray-100 overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
@@ -571,19 +590,21 @@ export function CoaAuditClient({
                 </th>
               )}
               <th className="text-left px-4 py-2.5 font-semibold text-ink-slate">Client</th>
+              <th className="text-left px-4 py-2.5 font-semibold text-ink-slate">Stage</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Conformance</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Issues</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Matched</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Wrong type</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Non-master</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Missing req.</th>
+              <th className="text-right px-4 py-2.5 font-semibold text-ink-slate" title="$ stranded on retired accounts still carrying a balance (count of such accounts)">Stranded</th>
               <th className="text-left px-4 py-2.5 font-semibold text-ink-slate">Last scan</th>
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate"></th>
             </tr>
           </thead>
           <tbody>
             {activeClients.length === 0 && (
-              <tr><td colSpan={isOwner ? 10 : 9} className="px-4 py-6 text-center text-ink-light text-sm">
+              <tr><td colSpan={isOwner ? 12 : 11} className="px-4 py-6 text-center text-ink-light text-sm">
                 {scored === 0 ? "No scans yet — hit “Scan new & stale” to audit the fleet." : "🎉 Every visible client is under the issue threshold — see Completed below."}
               </td></tr>
             )}
@@ -609,6 +630,13 @@ export function CoaAuditClient({
                       </td>
                     )}
                     <td className="px-4 py-2.5 font-medium text-navy">{c.client_name}</td>
+                    <td className="px-4 py-2.5">
+                      {initialStages[c.id] ? (
+                        <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded ${LIFECYCLE_META[initialStages[c.id]].tone}`}>
+                          {LIFECYCLE_META[initialStages[c.id]].label}
+                        </span>
+                      ) : <span className="text-ink-light">—</span>}
+                    </td>
                     <td className="px-4 py-2.5 text-right">
                       {r.status === "done" && d ? (
                         <span className={`font-bold ${scoreColor(d.conformancePct)}`}>{d.conformancePct}%</span>
@@ -629,6 +657,14 @@ export function CoaAuditClient({
                     <td className="px-4 py-2.5 text-right text-amber-700">{d ? d.wrongType.length : "—"}</td>
                     <td className="px-4 py-2.5 text-right text-orange-600">{d ? d.nonMaster.length : "—"}</td>
                     <td className="px-4 py-2.5 text-right text-red-600">{d ? d.missingRequired.length : "—"}</td>
+                    <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                      {d && strandedOf(d) > 0.5 ? (
+                        <span className="text-red-600 font-semibold" title={`${deletedCountOf(d)} retired account(s) still carry a balance`}>
+                          ${Math.round(strandedOf(d)).toLocaleString()}
+                          <span className="text-[10px] font-normal text-ink-light"> · {deletedCountOf(d)}</span>
+                        </span>
+                      ) : d ? <span className="text-emerald-700">—</span> : "—"}
+                    </td>
                     <td className="px-4 py-2.5 text-left text-xs text-ink-light whitespace-nowrap">
                       {r.scannedAt ? (
                         <span title={`${new Date(r.scannedAt).toLocaleString()}${r.scannedBy ? ` · ${r.scannedBy}` : ""}`}>
@@ -638,7 +674,7 @@ export function CoaAuditClient({
                       ) : "—"}
                     </td>
                     <td className="px-4 py-2.5 text-right whitespace-nowrap">
-                      {d && (fixable + mergeable > 0) && (
+                      {d && canFix && (fixable + mergeable > 0) && (
                         <button
                           onClick={() => applyAll(c.id, c.client_name)}
                           disabled={r.applying}
@@ -664,7 +700,7 @@ export function CoaAuditClient({
                   </tr>
                   {expanded === c.id && d && (
                     <tr key={`${c.id}-d`} className="border-b border-gray-100 bg-gray-50/60">
-                      <td colSpan={isOwner ? 10 : 9} className="px-6 py-3 text-xs text-ink-slate space-y-3">
+                      <td colSpan={isOwner ? 12 : 11} className="px-6 py-3 text-xs text-ink-slate space-y-3">
                         {d.wrongType.length > 0 && (
                           <div>
                             <div className="font-semibold text-amber-700 inline-flex items-center gap-1 mb-1"><AlertTriangle size={11} /> Wrong type — re-type into the right section ({d.wrongType.length})</div>
@@ -753,14 +789,16 @@ export function CoaAuditClient({
                                             {p.confident && sel === p.targetId && (
                                               <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">suggested</span>
                                             )}
-                                            <button
-                                              onClick={() => applyMerge(c.id, c.client_name, p, targets)}
-                                              disabled={!sel || mergeBusy === p.sourceId || !!mergeBusy || r.applying}
-                                              className="text-[11px] font-bold text-white bg-orange-600 hover:bg-orange-700 px-2.5 py-1 rounded disabled:opacity-50 inline-flex items-center gap-1"
-                                            >
-                                              {mergeBusy === p.sourceId ? <Loader2 size={11} className="animate-spin" /> : null}
-                                              Approve merge
-                                            </button>
+                                            {canFix && (
+                                              <button
+                                                onClick={() => applyMerge(c.id, c.client_name, p, targets)}
+                                                disabled={!sel || mergeBusy === p.sourceId || !!mergeBusy || r.applying}
+                                                className="text-[11px] font-bold text-white bg-orange-600 hover:bg-orange-700 px-2.5 py-1 rounded disabled:opacity-50 inline-flex items-center gap-1"
+                                              >
+                                                {mergeBusy === p.sourceId ? <Loader2 size={11} className="animate-spin" /> : null}
+                                                Approve merge
+                                              </button>
+                                            )}
                                             {mergeMsg[p.sourceId] && (
                                               <span className="text-[11px] text-navy">{mergeMsg[p.sourceId]}</span>
                                             )}
@@ -789,6 +827,7 @@ export function CoaAuditClient({
                           );
                         })()}
                         <div className="flex items-center gap-3 pt-1">
+                          {canFix && (
                           <button
                             onClick={() => applyFix(c.id, c.client_name)}
                             disabled={r.applying || ((retypeSel[c.id]?.size ?? 0) + (createSel[c.id]?.size ?? 0) + (reparentSel[c.id]?.size ?? 0) === 0)}
@@ -797,6 +836,7 @@ export function CoaAuditClient({
                             {r.applying ? <Loader2 size={12} className="animate-spin" /> : <Wrench size={12} />}
                             Apply selected fixes ({(retypeSel[c.id]?.size ?? 0) + (createSel[c.id]?.size ?? 0) + (reparentSel[c.id]?.size ?? 0)})
                           </button>
+                          )}
                           {r.fixMsg && (
                             <span className="text-[11px] inline-flex items-center gap-1 text-navy">
                               <CheckCircle2 size={11} className="text-emerald-600" /> {r.fixMsg}

@@ -37,8 +37,11 @@ export async function POST(request: Request) {
 
   const service = createServiceSupabase();
   const { data: actor } = await service.from("users").select("role").eq("id", user.id).single();
-  if ((actor as any)?.role !== "admin") {
-    return NextResponse.json({ error: "Admin only" }, { status: 403 });
+  // Writes to the client's chart — open to bookkeeping staff who can run
+  // cleanup (bookkeeper/lead/admin). Viewers are read-only; clients and
+  // billing-only admins are not bookkeeping staff.
+  if (!["admin", "lead", "bookkeeper"].includes((actor as any)?.role)) {
+    return NextResponse.json({ error: "Bookkeeping staff only" }, { status: 403 });
   }
 
   const body = await request.json().catch(() => ({}));

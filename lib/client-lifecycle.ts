@@ -90,7 +90,7 @@ export function deriveLifecycleStatus(c: LifecycleInput): LifecycleStatus {
   return "needs_cleanup";
 }
 
-const ACTIVE_JOB_STATUSES = ["pending", "executing", "in_review", "failed"];
+export const ACTIVE_JOB_STATUSES = ["pending", "executing", "in_review", "failed"];
 
 /**
  * Derive the lifecycle status for ONE client (profile header, etc.). Mirrors the

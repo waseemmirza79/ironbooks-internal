@@ -168,10 +168,10 @@ export default async function AdminOverviewPage() {
               desc: "CRM-pushed invoices double-counting deposit revenue (Dominion pattern) · review pairs + set deposits-only per client",
             },
             {
-              href: "/admin/coa-audit",
+              href: "/coa-audit",
               icon: ListChecks,
-              title: "COA audit (read-only)",
-              desc: "How close each client's QuickBooks chart is to the master COA · conformance % · triage for the standardization pass",
+              title: "COA audit",
+              desc: "How close each client's QuickBooks chart is to the master COA · conformance % · cleanup stage · triage for the standardization pass (now open to all bookkeeping staff)",
             },
             {
               href: "/admin/reapply-skipped",
