@@ -1501,15 +1501,16 @@ function PLTab({
   const incomeRows = filtered
     .filter((r) => r.classification === "Revenue")
     .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+  // Match COGS by full type OR QBO's abbreviated report group ("COGS") — a
+  // deleted account that isn't in the active account list falls back to the
+  // report's group key, which reads "COGS", so a "cost of goods sold"-only
+  // test wrongly dumped those into Operating Expenses (Despres, 2026-07-18).
+  const isCogsType = (t: string) => /cost of goods sold|\bcogs\b/i.test(t || "");
   const cogsRows = filtered
-    .filter(
-      (r) => r.classification === "Expense" && /cost of goods sold/i.test(r.accountType)
-    )
+    .filter((r) => r.classification === "Expense" && isCogsType(r.accountType))
     .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
   const expenseRows = filtered
-    .filter(
-      (r) => r.classification === "Expense" && !/cost of goods sold/i.test(r.accountType)
-    )
+    .filter((r) => r.classification === "Expense" && !isCogsType(r.accountType))
     .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
 
   // Gross profit + margins for the KPI band (same bands as the month-end
