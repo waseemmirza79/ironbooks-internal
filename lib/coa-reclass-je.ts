@@ -37,7 +37,17 @@ const DEFAULT_SUBTYPE: Record<string, string> = {
 };
 import { fetchProfitAndLossByMonth } from "@/lib/qbo-pl-by-month";
 import { fetchProfitAndLoss } from "@/lib/qbo-reports";
+import {
+  fetchTransactionsForAccount, reclassifyTransactionLines,
+  SUPPORTED_TX_TYPES, type SupportedTxType,
+} from "@/lib/qbo-reclass";
 import { normalizeAccountName } from "@/lib/account-name";
+
+// Above this many movable lines, skip line-by-line reclass and let the balance
+// JE carry the whole account — moving hundreds of transactions inline would
+// blow the function timeout. (Detail is preserved for the common case; only
+// very large accounts fall back to a lump JE.)
+const MAX_RECLASS_LINES = 500;
 
 /**
  * Strip a leading QBO account-number prefix from each ":"-segment. QBO's P&L
@@ -381,6 +391,7 @@ export async function ensureAccountExists(params: {
 export interface DrainRetireResult {
   moved: number;
   jesPosted: number;
+  linesMoved: number;
   monthsWithActivity: number;
   foundInReport: boolean;
   itemsRepointed: number;
@@ -409,7 +420,7 @@ export async function drainAndRetireAccount(params: {
 }): Promise<DrainRetireResult> {
   const { realmId, accessToken, source, target, startDate, endDate, memo, allAccounts } = params;
   const out: DrainRetireResult = {
-    moved: 0, jesPosted: 0, monthsWithActivity: 0, foundInReport: false,
+    moved: 0, jesPosted: 0, linesMoved: 0, monthsWithActivity: 0, foundInReport: false,
     itemsRepointed: 0, childrenDetached: 0, inactivated: false, failures: [],
   };
 
@@ -422,6 +433,41 @@ export async function drainAndRetireAccount(params: {
     out.failures.push(...d.failures.map((f) => `re-parent ${f}`));
   }
 
+  // Move the ACTUAL transactions first (line-reclass) so the target account's
+  // drill-down shows the real transactions — not one lump "COA merge" JE
+  // (Despres, 2026-07-18). Only the four account-based expense types move this
+  // way; income/deposit/JE-posted activity is swept by the balance JE after.
+  try {
+    const { lines } = await fetchTransactionsForAccount(realmId, accessToken, source.Id, startDate, endDate);
+    const movable = lines.filter((l) => SUPPORTED_TX_TYPES.includes(l.transaction_type as SupportedTxType));
+    if (movable.length > 0 && movable.length <= MAX_RECLASS_LINES) {
+      const byTx = new Map<string, typeof movable>();
+      for (const l of movable) {
+        if (!byTx.has(l.transaction_id)) byTx.set(l.transaction_id, []);
+        byTx.get(l.transaction_id)!.push(l);
+      }
+      for (const [txId, txLines] of byTx) {
+        try {
+          const res = await reclassifyTransactionLines(realmId, accessToken, {
+            txType: txLines[0].transaction_type as SupportedTxType,
+            txId,
+            lineUpdates: txLines.map((l) => ({ line_id: l.line_id, new_account_id: target.Id, new_account_name: target.Name })),
+            auditMemo: memo,
+          });
+          out.linesMoved += res.lines_applied;
+          for (const na of res.lines_not_applied) out.failures.push(`line ${txId}: ${na.reason}`);
+        } catch (e: any) {
+          out.failures.push(`reclass ${txLines[0].transaction_type}/${txId}: ${String(e?.message || e).slice(0, 150)}`);
+        }
+      }
+    }
+  } catch (e: any) {
+    out.failures.push(`fetch source transactions: ${String(e?.message || e).slice(0, 150)}`);
+  }
+
+  // Sweep whatever line-reclass couldn't move (income/deposit/JE/invoice items,
+  // or an over-cap account) with per-month reclassifying JEs. Runs against the
+  // POST-line-reclass P&L, so it only moves the residual — no double count.
   const je = await reclassAccountViaJournalEntry({ realmId, accessToken, source, target, startDate, endDate, memo });
   out.moved = je.moved; out.jesPosted = je.jesPosted; out.monthsWithActivity = je.monthsWithActivity;
   out.foundInReport = je.foundInReport; out.failures.push(...je.failures);

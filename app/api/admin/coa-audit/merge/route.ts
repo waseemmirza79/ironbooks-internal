@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { getValidToken, fetchAllAccounts, fetchAllAccountsIncludingInactive, inactivateAccount, QBOReauthRequiredError } from "@/lib/qbo";
-import { reclassAccountViaJournalEntry, repointItemsToAccount, detachSubAccounts, reactivateAccount } from "@/lib/coa-reclass-je";
+import { drainAndRetireAccount, reactivateAccount } from "@/lib/coa-reclass-je";
 import { computeCoaDrift, type DriftMasterRow } from "@/lib/coa-drift";
 
 export const dynamic = "force-dynamic";
@@ -105,69 +105,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Can't merge a ${source.AccountType} account into a ${target.AccountType} account — types must be compatible.` }, { status: 400 });
     }
 
-    // QBO won't inactivate an account that still has sub-accounts. Detach the
-    // source's children to the top level first so the now-childless parent can
-    // be drained + retired; the children keep their balances and can be
-    // merged/retyped on their own.
-    const sourceHasChildren = accounts.some(
-      (a) => String((a as any).ParentRef?.value || "") === sourceId && a.Active !== false
-    );
-    let childrenDetached = 0;
-    if (sourceHasChildren) {
-      const detach = await detachSubAccounts({
-        realmId: clientLink.qbo_realm_id, accessToken, parentId: sourceId, accounts: accounts as any,
-      });
-      childrenDetached = detach.detached;
-      if (detach.failures.length > 0) {
-        return NextResponse.json({
-          ok: false, method: "je_reclass", source: source.Name, target: target.Name,
-          error: `Couldn't re-parent the sub-accounts of "${source.Name}": ${detach.failures.join("; ")}`,
-        }, { status: 200 });
-      }
-    }
-
-    // Move the source account's balance onto the target via reclassifying
-    // journal entries (lib/coa-reclass-je). QBO can't merge via API and can't
-    // reclass invoice/sales-receipt income by line, so a per-month JE is the
-    // one mechanism that works for EVERY account type — income, expense, COGS —
-    // and for cross-type moves. Then retire the drained source.
-    const jeMemo = `SNAP COA merge: "${source.Name}" → "${target.Name}"`;
-    const je = await reclassAccountViaJournalEntry({
+    // Consolidate the source into the target: move the ACTUAL transactions
+    // first (line-reclass, so the target's drill-down shows real transactions,
+    // not one lump JE), sweep the residual (income/deposit/JE/invoice items)
+    // via per-month JEs, re-point Items, detach sub-accounts, and retire the
+    // source only once it's confirmed zeroed. Shared with the retype rebuild.
+    const drain = await drainAndRetireAccount({
       realmId: clientLink.qbo_realm_id,
       accessToken,
       source: source as any,
       target: target as any,
       startDate: ytdStart,
       endDate: ytdEnd,
-      memo: jeMemo,
+      memo: `SNAP COA merge: "${source.Name}" → "${target.Name}"`,
+      allAccounts: accounts as any,
     });
-
-    // Re-point any Items (products/services) that post to the source account
-    // onto the target — otherwise QBO blocks inactivation ("used by a product
-    // or service") and future invoices/bills keep landing on the retired
-    // account. Failures fold into je.failures so we never retire a source that
-    // still has live item links.
-    const repoint = await repointItemsToAccount({
-      realmId: clientLink.qbo_realm_id, accessToken,
-      fromAccountId: sourceId, toAccountId: target.Id, toAccountName: target.Name,
-    });
-    for (const f of repoint.failures) je.failures.push(`re-point ${f}`);
-
-    // Retire the drained source only if every month posted cleanly. An empty
-    // source (no P&L activity in range) is also safe to inactivate.
-    let inactivated = false;
-    if (je.failures.length === 0) {
-      try {
-        const fresh = (await fetchAllAccounts(clientLink.qbo_realm_id, accessToken)).find((a) => a.Id === sourceId) as any;
-        if (fresh && fresh.Active !== false) {
-          await inactivateAccount(clientLink.qbo_realm_id, accessToken, sourceId, fresh.SyncToken, fresh);
-        }
-        inactivated = true;
-      } catch (e: any) {
-        je.failures.push(`inactivate source: ${e.message}`);
-        inactivated = false;
-      }
-    }
+    const childrenDetached = drain.childrenDetached;
+    const inactivated = drain.inactivated;
 
     // Master rows → fresh drift for the in-place re-score.
     const industryRaw = ((clientLink as any).industry as string) || "painters";
@@ -192,25 +146,25 @@ export async function POST(request: Request) {
         client_link_id: clientLink.id,
         client_name: clientLink.client_name,
         source: source.Name, target: target.Name,
-        method: "je_reclass",
+        method: "line_reclass+je",
         reactivated_deleted_source: reactivated,
         ytd_start: ytdStart, ytd_end: ytdEnd,
-        amount_moved: je.moved, jes_posted: je.jesPosted,
-        months_with_activity: je.monthsWithActivity, found_in_report: je.foundInReport,
-        items_repointed: repoint.repointed, children_detached: childrenDetached,
-        failures: je.failures, inactivated,
+        lines_moved: drain.linesMoved, amount_swept: drain.moved, jes_posted: drain.jesPosted,
+        months_with_activity: drain.monthsWithActivity, found_in_report: drain.foundInReport,
+        items_repointed: drain.itemsRepointed, children_detached: childrenDetached,
+        failures: drain.failures, inactivated,
       } as any,
     } as any);
 
     return NextResponse.json({
-      ok: je.failures.length === 0,
-      method: "je_reclass",
+      ok: drain.failures.length === 0,
+      method: "line_reclass+je",
       source: source.Name, target: target.Name,
-      amountMoved: je.moved, jesPosted: je.jesPosted, itemsRepointed: repoint.repointed, childrenDetached, reactivated,
-      monthsWithActivity: je.monthsWithActivity, foundInReport: je.foundInReport,
-      inactivated, failures: je.failures,
-      linesMoved: je.jesPosted, unsupported: 0, // back-compat for the existing UI
-      error: je.failures.length ? je.failures.join(" · ") : undefined,
+      linesMoved: drain.linesMoved, amountMoved: drain.moved, jesPosted: drain.jesPosted,
+      itemsRepointed: drain.itemsRepointed, childrenDetached, reactivated,
+      monthsWithActivity: drain.monthsWithActivity, foundInReport: drain.foundInReport,
+      inactivated, failures: drain.failures, unsupported: 0,
+      error: drain.failures.length ? drain.failures.join(" · ") : undefined,
       drift,
     });
   } catch (err: any) {

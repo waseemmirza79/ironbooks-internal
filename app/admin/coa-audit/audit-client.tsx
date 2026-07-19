@@ -112,11 +112,10 @@ export function CoaAuditClient({ clients }: { clients: ClientRow[] }) {
       if (data.tooLarge) { setMergeMsg((m) => ({ ...m, [p.sourceId]: data.error })); return; }
       if (data.ok === false) { setMergeMsg((m) => ({ ...m, [p.sourceId]: data.error || "merge failed" })); return; }
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      const parts = data.method === "je_reclass"
-        ? [(data.amountMoved || 0) > 0
-            ? `moved $${Math.round(data.amountMoved).toLocaleString()} via ${data.jesPosted || 0} JE${(data.jesPosted || 0) === 1 ? "" : "s"}`
-            : "nothing left to move"]
-        : [`${data.linesMoved} line(s) moved`];
+      const parts: string[] = [];
+      if (data.linesMoved) parts.push(`${data.linesMoved} txn(s) moved`);
+      if ((data.amountMoved || 0) > 0 && data.jesPosted) parts.push(`$${Math.round(data.amountMoved).toLocaleString()} swept via ${data.jesPosted} JE${data.jesPosted === 1 ? "" : "s"}`);
+      if (!data.linesMoved && !((data.amountMoved || 0) > 0)) parts.push("nothing to move");
       if (data.childrenDetached > 0) parts.push(`${data.childrenDetached} sub-account(s) re-parented`);
       if (data.itemsRepointed > 0) parts.push(`${data.itemsRepointed} item(s) re-pointed`);
       if (data.inactivated) parts.push("source retired");
