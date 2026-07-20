@@ -5,19 +5,25 @@ import { deliverClientEmail } from "@/lib/ask-client-email";
 export const dynamic = "force-dynamic";
 
 /**
- * POST /api/clients/[id]/ask-client-transactions
+ * POST /api/clients/[id]/ask-client
  *
- * Sends a "questions about these transactions" email to the client, composed
- * in the P&L / account drill-down drawer (select rows → Ask Client → edit →
- * send). The modal renders the branded HTML + plain-text and posts them here;
- * we ship it via Resend (tracked) so there's a real message id + a durable
- * row in client_email_log, and a green "sent" verification in the UI.
+ * The generic ask-client send endpoint behind the shared AskClientComposer.
+ * Any client-scoped surface (P&L drill, an account view, a cleanup step) can
+ * open the composer and post here; it delegates to the one delivery path
+ * (lib/ask-client-email.ts) so branding, delivery proof and the unified
+ * client_email_log history are identical everywhere.
  *
- * Recipient: active portal-user emails, else client_links.client_email.
- * reply_to = the sending bookkeeper so the client's answers land in their inbox.
- *
- * Body: { subject, html, text, account_name?, transaction_count? }
+ * Body: { subject, html, text, email_type?, context? }
+ * email_type is whitelisted so the log stays clean; unknown → "ask_client".
  */
+const ALLOWED_TYPES = new Set([
+  "ask_client",
+  "ask_client_txns",
+  "reclass_questions",
+  "statement_request",
+  "docs_request",
+]);
+
 export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> }
@@ -46,14 +52,22 @@ export async function POST(
     .single();
   if (!client) return NextResponse.json({ error: "Client not found" }, { status: 404 });
 
-  let body: { subject?: string; html?: string; text?: string; account_name?: string; transaction_count?: number };
+  let body: {
+    subject?: string;
+    html?: string;
+    text?: string;
+    email_type?: string;
+    context?: Record<string, any>;
+  };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
-  // One shared delivery path (resolve → send → log → audit). See
-  // lib/ask-client-email.ts.
+
+  const emailType =
+    body.email_type && ALLOWED_TYPES.has(body.email_type) ? body.email_type : "ask_client";
+
   const r = await deliverClientEmail({
     service,
     clientLinkId,
@@ -63,12 +77,9 @@ export async function POST(
     subject: body.subject || "",
     html: body.html || "",
     text: body.text || "",
-    emailType: "ask_client_txns",
-    auditEventType: "ask_client_transactions_email_sent",
-    auditExtra: {
-      account_name: body.account_name || null,
-      transaction_count: body.transaction_count || null,
-    },
+    emailType,
+    auditEventType: "ask_client_email_sent",
+    auditExtra: { email_type: emailType, ...(body.context || {}) },
   });
   return NextResponse.json(r.body, { status: r.status });
 }
