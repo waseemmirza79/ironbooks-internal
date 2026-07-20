@@ -92,6 +92,8 @@ interface ClientRow {
   // Prior-year taxes filing status (migration 32)
   py_taxes_filed?: boolean;
   py_taxes_filed_through_year?: number | null;
+  /** Macro-stage (lifecycle spine): onboarding | cleanup | production. */
+  macroStage?: "onboarding" | "cleanup" | "production" | null;
   // Clients-table revamp columns
   qbo_connected?: boolean;
   daily_recon_enabled?: boolean;
@@ -126,11 +128,13 @@ const STATUS_CONFIG: Record<string, { icon: any; color: string; bg: string; labe
 
 export function ClientsList({
   initialClients,
+  initialStage = "all",
   bookkeepers,
   currentUserId,
   canEdit,
 }: {
   initialClients: ClientRow[];
+  initialStage?: "all" | "onboarding" | "cleanup" | "production";
   bookkeepers: Bookkeeper[];
   currentUserId: string;
   canEdit: boolean;
@@ -139,6 +143,7 @@ export function ClientsList({
   const [clients, setClients] = useState(initialClients);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all_active");
+  const [stageFilter, setStageFilter] = useState<"all" | "onboarding" | "cleanup" | "production">(initialStage);
   const [assignmentFilter, setAssignmentFilter] = useState<string>("all");
   const [jurisdictionFilter, setJurisdictionFilter] = useState<string>("all");
   const [view, setView] = useState<"grid" | "table">("table");
@@ -147,6 +152,10 @@ export function ClientsList({
   // Filters
   const filtered = useMemo(() => {
     let r = clients;
+
+    if (stageFilter !== "all") {
+      r = r.filter((c) => c.macroStage === stageFilter);
+    }
 
     if (statusFilter === "all_active") {
       r = r.filter((c) => c.is_active && c.status !== "churned");
@@ -181,7 +190,18 @@ export function ClientsList({
     }
 
     return r;
-  }, [clients, search, statusFilter, assignmentFilter, jurisdictionFilter, currentUserId]);
+  }, [clients, search, statusFilter, stageFilter, assignmentFilter, jurisdictionFilter, currentUserId]);
+
+  // Stage pill counts (macro-stage spine).
+  const stageCounts = useMemo(() => {
+    const a = clients.filter((c) => c.is_active && c.status !== "churned");
+    return {
+      all: a.length,
+      onboarding: a.filter((c) => c.macroStage === "onboarding").length,
+      cleanup: a.filter((c) => c.macroStage === "cleanup").length,
+      production: a.filter((c) => c.macroStage === "production").length,
+    };
+  }, [clients]);
 
   // Counts for filter pills
   const statusCounts = useMemo(() => {
@@ -242,6 +262,27 @@ export function ClientsList({
 
   return (
     <div>
+      {/* Stage pills — the lifecycle spine (primary organizing dimension). */}
+      <div className="flex items-center gap-2 mb-3 overflow-x-auto pb-1">
+        {([
+          ["all", "All stages", stageCounts.all],
+          ["onboarding", "Onboarding", stageCounts.onboarding],
+          ["cleanup", "Cleanup", stageCounts.cleanup],
+          ["production", "Production", stageCounts.production],
+        ] as const).map(([key, label, count]) => (
+          <button
+            key={key}
+            onClick={() => setStageFilter(key as any)}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${
+              stageFilter === key ? "bg-navy text-white" : "bg-white text-ink-slate border border-gray-200 hover:border-gray-300"
+            }`}
+          >
+            {label}
+            <span className={`text-xs ${stageFilter === key ? "text-white/70" : "text-ink-light"}`}>{count}</span>
+          </button>
+        ))}
+      </div>
+
       {/* Status filter pills */}
       <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-1">
         <FilterPill

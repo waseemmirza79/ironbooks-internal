@@ -8,10 +8,18 @@ import { CompletedAccounts } from "./completed-accounts";
 import { InReviewAccounts } from "./in-review-accounts";
 import { ManagerDashboard, type ManagerRow } from "./manager-dashboard";
 import { StripeInviteSuggestions, type StripeInviteSuggestion } from "./stripe-invite-suggestions";
-import { deriveLifecycleStatus } from "@/lib/client-lifecycle";
+import { deriveLifecycleStatus, macroStageOfStatus } from "@/lib/client-lifecycle";
 import { previousMonthPeriod } from "@/lib/monthly-rec";
 
-export default async function ClientsPage() {
+export default async function ClientsPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ stage?: string }>;
+}) {
+  const sp = (await searchParams) || {};
+  const initialStage = ["onboarding", "cleanup", "production"].includes(sp.stage || "")
+    ? (sp.stage as "onboarding" | "cleanup" | "production")
+    : "all";
   // Watchdog: auto-fail any job that's been hung in `executing` past its
   // window before we render. Cheap (indexed UPDATEs, usually 0 rows) and
   // means a bookkeeper hitting the clients page after a silent worker
@@ -624,7 +632,11 @@ export default async function ClientsPage() {
           canEdit={!!canEdit}
         />
         <ClientsList
-          initialClients={activeClients.map((c: any) => ({ ...c, lifecycle: lifecycleById.get(c.id) ?? null })) as any}
+          initialClients={activeClients.map((c: any) => {
+            const lc = lifecycleById.get(c.id) ?? null;
+            return { ...c, lifecycle: lc, macroStage: lc ? macroStageOfStatus(lc) : null };
+          }) as any}
+          initialStage={initialStage}
           bookkeepers={bookkeepersRes.data || []}
           currentUserId={user?.id || ""}
           canEdit={!!canEdit}
