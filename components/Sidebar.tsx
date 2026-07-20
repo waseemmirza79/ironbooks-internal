@@ -7,7 +7,7 @@ import {
   Shield, CreditCard, ChevronDown, ChevronRight, Sun, TrendingUp,
   HeartPulse, Gauge, BadgeCheck,
   ClipboardCheck, ListChecks, UserPlus, GraduationCap, Settings as SettingsIcon, Inbox, ListTodo, LifeBuoy, ExternalLink, Landmark, Mail,
-  Home as HomeIcon, Eye, FileText,
+  Home as HomeIcon, Eye, FileText, CalendarClock,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
@@ -40,6 +40,7 @@ const productionNav: { href: string; label: string; icon: any; senior?: boolean 
  *  starts from the client workspace. */
 const toolsNav = [
   { href: "/statements", label: "Statements", icon: FileText },
+  { href: "/prior-year-cleanup", label: "Prior-Year Cleanup", icon: CalendarClock },
   { href: "/coa-audit", label: "COA Audit", icon: ListChecks },
   { href: "/history", label: "History", icon: Clock },
   { href: "/tax-exports", label: "Tax Exports", icon: Landmark },
