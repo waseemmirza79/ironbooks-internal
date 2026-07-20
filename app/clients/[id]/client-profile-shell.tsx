@@ -294,37 +294,67 @@ export function ClientProfileShell({ clientLink, actorRole, overview, financials
       )}
       {activeTab === "billing" && <BillingTab clientLinkId={clientLink.id} />}
       {activeTab === "pl" && (
-        <PLTab
-          financials={financials}
-          clientLinkId={clientLink.id}
-          onDrill={(accountId, accountName) =>
-            setDrill({
-              accountId,
-              accountName,
-              kind: "pl",
-              start: financials.overview?.primaryMonth.start || "",
-              end: financials.overview?.primaryMonth.end || "",
-            })
-          }
-        />
+        <div className="space-y-3">
+          {canImpersonate && (
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50/60 px-3 py-2">
+              <span className="text-xs text-ink-slate">
+                This is the bookkeeper view (COA check). Preview the exact P&amp;L the client sees in their portal.
+              </span>
+              <ViewAsClientButton
+                clientLinkId={clientLink.id}
+                portalPath="/portal/profit-loss"
+                label="See client's P&L"
+                title="Open the client's portal P&L in a new tab — exactly what they see"
+              />
+            </div>
+          )}
+          <PLTab
+            financials={financials}
+            clientLinkId={clientLink.id}
+            onDrill={(accountId, accountName) =>
+              setDrill({
+                accountId,
+                accountName,
+                kind: "pl",
+                start: financials.overview?.primaryMonth.start || "",
+                end: financials.overview?.primaryMonth.end || "",
+              })
+            }
+          />
+        </div>
       )}
       {activeTab === "bs" && (
-        <BSTab
-          financials={financials}
-          clientLinkId={clientLink.id}
-          onDrill={(accountId, accountName) =>
-            setDrill({
-              accountId,
-              accountName,
-              kind: "bs",
-              // BS drill defaults to last 90 days of activity hitting the
-              // account — gives the bookkeeper context without flooding
-              // them with multi-year history on the first click.
-              start: ymdDaysAgo(90),
-              end: ymdToday(),
-            })
-          }
-        />
+        <div className="space-y-3">
+          {canImpersonate && (
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50/60 px-3 py-2">
+              <span className="text-xs text-ink-slate">
+                Preview the exact Balance Sheet the client sees in their portal.
+              </span>
+              <ViewAsClientButton
+                clientLinkId={clientLink.id}
+                portalPath="/portal/balance-sheet"
+                label="See client's Balance Sheet"
+                title="Open the client's portal Balance Sheet in a new tab — exactly what they see"
+              />
+            </div>
+          )}
+          <BSTab
+            financials={financials}
+            clientLinkId={clientLink.id}
+            onDrill={(accountId, accountName) =>
+              setDrill({
+                accountId,
+                accountName,
+                kind: "bs",
+                // BS drill defaults to last 90 days of activity hitting the
+                // account — gives the bookkeeper context without flooding
+                // them with multi-year history on the first click.
+                start: ymdDaysAgo(90),
+                end: ymdToday(),
+              })
+            }
+          />
+        </div>
       )}
       {activeTab === "bank" && <BankTab financials={financials} clientLinkId={clientLink.id} />}
 
@@ -2596,7 +2626,19 @@ function formatCurrencyExact(n: number): string {
   })}`;
 }
 
-function ViewAsClientButton({ clientLinkId }: { clientLinkId: string }) {
+function ViewAsClientButton({
+  clientLinkId,
+  portalPath = "/portal",
+  label = "View as client",
+  title = "Open this client's portal in a new tab as if you were them — for QA, screenshots, or debugging what they see",
+}: {
+  clientLinkId: string;
+  /** Where in the portal to land — e.g. "/portal/profit-loss" to preview the
+   *  exact client-facing P&L. */
+  portalPath?: string;
+  label?: string;
+  title?: string;
+}) {
   const [loading, setLoading] = useState(false);
 
   async function handleViewAs() {
@@ -2613,9 +2655,9 @@ function ViewAsClientButton({ clientLinkId }: { clientLinkId: string }) {
         setLoading(false);
         return;
       }
-      // Open the portal in a new tab so the bookkeeper doesn't lose the
-      // internal context they were just looking at.
-      window.open(data.redirect || "/portal", "_blank");
+      // Impersonation cookie is set — open the requested portal page directly
+      // so the bookkeeper sees exactly what the client sees, in a new tab.
+      window.open(portalPath || data.redirect || "/portal", "_blank");
     } catch (e: any) {
       alert(e?.message || "Failed");
     } finally {
@@ -2628,10 +2670,10 @@ function ViewAsClientButton({ clientLinkId }: { clientLinkId: string }) {
       onClick={handleViewAs}
       disabled={loading}
       className="inline-flex items-center gap-1.5 text-xs font-semibold text-teal hover:text-teal-dark border border-gray-200 hover:border-teal bg-white px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
-      title="Open this client's portal in a new tab as if you were them — for QA, screenshots, or debugging what they see"
+      title={title}
     >
       {loading ? <Loader2 size={14} className="animate-spin" /> : <ExternalLink size={14} />}
-      View as client
+      {label}
     </button>
   );
 }
