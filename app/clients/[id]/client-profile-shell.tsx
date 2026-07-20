@@ -285,6 +285,7 @@ export function ClientProfileShell({ clientLink, actorRole, overview, financials
           clientName={clientLink.client_name}
           cleanupCompletedAt={clientLink.cleanup_completed_at || null}
           initialSequence={clientLink.cleanup_sequence ?? null}
+          stage={macroStage ?? null}
           onNavigateTab={(tab) => setActiveTab(tab)}
         />
       )}

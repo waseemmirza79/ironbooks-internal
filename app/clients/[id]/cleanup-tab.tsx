@@ -11,6 +11,7 @@ import {
   MinusCircle,
   Loader2,
 } from "lucide-react";
+import { MonthCloseFlow } from "./month-close-flow";
 import {
   CLEANUP_STEPS,
   effectiveStepStatus,
@@ -45,12 +46,14 @@ export function CleanupTab({
   clientName,
   cleanupCompletedAt,
   initialSequence,
+  stage,
   onNavigateTab,
 }: {
   clientLinkId: string;
   clientName: string;
   cleanupCompletedAt?: string | null;
   initialSequence?: CleanupSequenceState | { cleanup_sequence?: any } | null;
+  stage?: "onboarding" | "cleanup" | "production" | null;
   onNavigateTab?: (tab: "overview" | "bs" | "pl") => void;
 }) {
   // Accept either a normalized state or a raw row; normalize once.
@@ -82,6 +85,12 @@ export function CleanupTab({
   const signals = { cleanupCompletedAt: cleanupCompletedAt || null };
   const currentKey = activeCleanupStep(state, signals);
   const progress = cleanupProgress(state, signals);
+
+  // Production clients don't do cleanup — they run a monthly close. Same tab,
+  // stage-appropriate flow. (Checked after hooks to respect rules-of-hooks.)
+  if (stage === "production") {
+    return <MonthCloseFlow clientLinkId={clientLinkId} clientName={clientName} />;
+  }
 
   async function setStep(step: CleanupStepKey, status: CleanupStepStatus) {
     setSaving(step);
