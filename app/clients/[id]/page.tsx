@@ -405,6 +405,8 @@ export default async function ClientProfilePage({
         actorRole={role}
         onboarding={onboarding}
         bsCleanupOwed={bsCleanupOwed}
+        macroStage={macroStage}
+        lifecycleStatus={lifecycle}
         overview={{
           outstanding,
           activity,

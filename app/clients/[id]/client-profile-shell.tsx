@@ -34,6 +34,8 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { CleanupTab } from "./cleanup-tab";
+import { StageBanner } from "./stage-banner";
+import type { MacroStage, LifecycleStatus } from "@/lib/client-lifecycle";
 import { NotesPanel } from "./notes-panel";
 import { UrgentFlagButton } from "./urgent-flag-button";
 import type {
@@ -162,6 +164,10 @@ interface Props {
   onboarding?: OnboardingProfile | null;
   /** BS cleanup deferred → still owed (amber banner on Overview). */
   bsCleanupOwed?: boolean;
+  /** Lifecycle stage + detailed status (computed server-side) — drives the
+   *  in-body StageBanner + the stage-aware default tab. */
+  macroStage?: MacroStage | null;
+  lifecycleStatus?: LifecycleStatus | null;
 }
 
 type TabId = "overview" | "cleanup" | "profile" | "billing" | "pl" | "bs" | "bank" | "notes" | "activity";
@@ -178,8 +184,13 @@ const TABS: { id: TabId; label: string; icon: any }[] = [
   { id: "activity", label: "Activity", icon: Clock },
 ];
 
-export function ClientProfileShell({ clientLink, actorRole, overview, financials, onboarding, bsCleanupOwed }: Props) {
-  const [activeTab, setActiveTab] = useState<TabId>("overview");
+export function ClientProfileShell({ clientLink, actorRole, overview, financials, onboarding, bsCleanupOwed, macroStage, lifecycleStatus }: Props) {
+  // Stage-aware default tab: cleanup-stage clients land on the cleanup sequence
+  // (where their work is); everyone else on Overview. Initial only — the user
+  // can click anywhere.
+  const [activeTab, setActiveTab] = useState<TabId>(
+    macroStage === "cleanup" ? "cleanup" : "overview"
+  );
   const canImpersonate = actorRole === "admin" || actorRole === "lead";
 
   // Drill-down drawer state — shared across P&L and BS tabs. Holds the
@@ -241,6 +252,17 @@ export function ClientProfileShell({ clientLink, actorRole, overview, financials
           )}
         </div>
       </div>
+
+      {/* Stage banner — leads the workspace with the client's lifecycle stage
+          and the single next action, so the bookkeeper isn't guessing which of
+          nine tabs to open. */}
+      {macroStage && (
+        <StageBanner
+          stage={macroStage}
+          status={lifecycleStatus}
+          onGoToTab={(tab) => setActiveTab(tab as TabId)}
+        />
+      )}
 
       {/* Tab strip — top-level navigation between financial views. Tabs are
           stateful (no URL change) so we keep page state per tab without
