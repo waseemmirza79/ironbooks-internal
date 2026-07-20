@@ -97,13 +97,6 @@ type ClientLink = {
   profile_updated_at?: string | null;
 };
 
-/** A client is "really linked" to Double when double_client_id is set AND
- *  isn't a "pending_" placeholder — those are created at silent-invite
- *  time before a real Double match has been picked. */
-function isLinkedToDouble(cl: { double_client_id: string | null }): boolean {
-  return !!cl.double_client_id && !cl.double_client_id.startsWith("pending_");
-}
-
 interface OverviewBundle {
   outstanding: OutstandingWork | null;
   activity: ActivityEvent[];
@@ -242,12 +235,6 @@ export function ClientProfileShell({ clientLink, actorRole, overview, financials
           </Link>
           {canImpersonate && <ViewAsClientButton clientLinkId={clientLink.id} />}
           <ResendLoginLink clientLinkId={clientLink.id} />
-          <DoubleLinkControl
-            clientLinkId={clientLink.id}
-            doubleName={clientLink.double_client_name}
-            isLinked={isLinkedToDouble(clientLink)}
-            canUnlink={actorRole === "admin" || actorRole === "lead"}
-          />
           {canImpersonate && (
             <DeleteClientButton clientLinkId={clientLink.id} clientName={clientLink.client_name} />
           )}
@@ -2619,96 +2606,6 @@ function formatCurrencyExact(n: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
-}
-
-function DoubleLinkControl({
-  clientLinkId,
-  doubleName,
-  isLinked,
-  canUnlink,
-}: {
-  clientLinkId: string;
-  doubleName: string | null;
-  isLinked: boolean;
-  canUnlink: boolean;
-}) {
-  const router = useRouter();
-  const [unlinking, setUnlinking] = useState(false);
-
-  // Not yet linked → keep the original CTA. Mirrors the prior single-button
-  // behaviour so unmatched clients see no change.
-  if (!isLinked) {
-    return (
-      <Link
-        href={`/clients/${clientLinkId}/match-double`}
-        className="inline-flex items-center gap-1.5 text-xs font-semibold text-ink-slate hover:text-navy border border-gray-200 hover:border-gray-300 bg-white px-3 py-2 rounded-lg transition-colors"
-      >
-        <SettingsIcon size={14} />
-        Match to Double
-      </Link>
-    );
-  }
-
-  // Linked → show the bound name as a badge, plus an Unlink CTA (admin/lead
-  // only). The badge is a Link to /match-double so a re-match flow stays
-  // one click away even before unlinking.
-  async function handleUnlink() {
-    if (!doubleName) return;
-    if (
-      !confirm(
-        `Unlink "${doubleName}" from this client?\n\n` +
-        `This removes the Double Finance association. You can re-match at ` +
-        `any time. SNAP's Double sync (reclass completion, end-close pulls, ` +
-        `etc) will stop until a new match is made.`
-      )
-    ) {
-      return;
-    }
-    setUnlinking(true);
-    try {
-      const res = await fetch(`/api/clients/${clientLinkId}/unlink-double`, {
-        method: "POST",
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error || "Unlink failed");
-        setUnlinking(false);
-        return;
-      }
-      // Server-rendered page → force a refresh so the chip flips back to
-      // "Match to Double" without manual reload.
-      router.refresh();
-    } catch (e: any) {
-      alert(e?.message || "Unlink failed");
-      setUnlinking(false);
-    }
-  }
-
-  return (
-    <div className="inline-flex items-center gap-1">
-      <Link
-        href={`/clients/${clientLinkId}/match-double`}
-        className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-800 border border-emerald-300 hover:border-emerald-500 bg-emerald-50 hover:bg-emerald-100 px-3 py-2 rounded-lg transition-colors max-w-[260px]"
-        title={`Linked to Double: ${doubleName}\nClick to re-match a different Double client`}
-      >
-        <SettingsIcon size={14} className="shrink-0" />
-        <span className="truncate">
-          Double: <span className="font-bold">{doubleName || "(unnamed)"}</span>
-        </span>
-      </Link>
-      {canUnlink && (
-        <button
-          onClick={handleUnlink}
-          disabled={unlinking}
-          className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 hover:text-red-800 border border-red-200 hover:border-red-400 bg-white hover:bg-red-50 px-2.5 py-2 rounded-lg transition-colors disabled:opacity-50"
-          title="Unlink this client from Double (admin/lead only)"
-        >
-          {unlinking ? <Loader2 size={12} className="animate-spin" /> : <XIcon size={12} />}
-          Unlink
-        </button>
-      )}
-    </div>
-  );
 }
 
 function ViewAsClientButton({ clientLinkId }: { clientLinkId: string }) {

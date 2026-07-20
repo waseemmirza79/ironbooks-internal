@@ -4,6 +4,8 @@ import { useState, useMemo, Component, useEffect, useRef, type ReactNode } from 
 import { CommsTracker } from "./comms-tracker";
 import { PyTaxesWidget } from "./py-taxes-widget";
 import { LIFECYCLE_META, type LifecycleStatus } from "@/lib/client-lifecycle";
+import { InReviewAccounts, type InReviewClient } from "./in-review-accounts";
+import { StripeInviteSuggestions, type StripeInviteSuggestion } from "./stripe-invite-suggestions";
 import { LifecyclePill } from "@/components/LifecyclePill";
 import { ClientBadges } from "@/components/ClientBadges";
 import type { AttentionState } from "@/lib/client-attention-state";
@@ -96,6 +98,9 @@ interface ClientRow {
   py_taxes_filed_through_year?: number | null;
   /** Macro-stage (lifecycle spine): onboarding | cleanup | production. */
   macroStage?: "onboarding" | "cleanup" | "production" | null;
+  /** Folded-in filter flags (from the retired strips). */
+  needs_review?: boolean;
+  stripe_pending?: boolean;
   // Clients-table revamp columns
   qbo_connected?: boolean;
   daily_recon_enabled?: boolean;
@@ -134,12 +139,17 @@ export function ClientsList({
   bookkeepers,
   currentUserId,
   canEdit,
+  inReviewClients = [],
+  stripeSuggestions = [],
 }: {
   initialClients: ClientRow[];
   initialStage?: "all" | "onboarding" | "cleanup" | "production";
   bookkeepers: Bookkeeper[];
   currentUserId: string;
   canEdit: boolean;
+  /** Folded-in action panels — shown only when their filter pill is active. */
+  inReviewClients?: InReviewClient[];
+  stripeSuggestions?: StripeInviteSuggestion[];
 }) {
   const router = useRouter();
   const [clients, setClients] = useState(initialClients);
@@ -175,6 +185,10 @@ export function ClientsList({
       // no filter
     } else if (statusFilter === "inactive") {
       r = r.filter((c) => !c.is_active || c.status === "churned");
+    } else if (statusFilter === "in_review") {
+      r = r.filter((c) => c.needs_review);
+    } else if (statusFilter === "stripe") {
+      r = r.filter((c) => c.stripe_pending);
     } else {
       r = r.filter((c) => c.status === statusFilter && c.is_active);
     }
@@ -226,6 +240,8 @@ export function ClientsList({
       paused: active.filter((c) => c.status === "paused").length,
       flagged: clients.filter((c) => c.flagged_cleanups > 0).length,
       archived: clients.filter((c) => !c.is_active || c.status === "churned").length,
+      in_review: clients.filter((c) => c.needs_review).length,
+      stripe: clients.filter((c) => c.stripe_pending).length,
     };
   }, [clients]);
 
@@ -351,6 +367,29 @@ export function ClientsList({
             />
           </>
         )}
+        {/* Folded-in strips: In Review + Stripe pending are now filter pills;
+            their action panels render above the table only when active. */}
+        {(statusCounts.in_review > 0 || statusCounts.stripe > 0) && (
+          <div className="w-px h-6 bg-gray-200 mx-1" />
+        )}
+        {statusCounts.in_review > 0 && (
+          <StatusPill
+            label="In Review"
+            count={statusCounts.in_review}
+            active={statusFilter === "in_review"}
+            onClick={() => setStatusFilter(statusFilter === "in_review" ? "all_active" : "in_review")}
+            color="#7C3AED"
+          />
+        )}
+        {statusCounts.stripe > 0 && (
+          <StatusPill
+            label="Stripe"
+            count={statusCounts.stripe}
+            active={statusFilter === "stripe"}
+            onClick={() => setStatusFilter(statusFilter === "stripe" ? "all_active" : "stripe")}
+            color="#635BFF"
+          />
+        )}
         {/* Archived — the dedicated store for inactivated clients. They're
             excluded from every other view; this is the only place they
             surface, each with a Reactivate button to bring them back. */}
@@ -424,6 +463,19 @@ export function ClientsList({
         </div>
       </div>
 
+      {/* Folded-in action panels — the old always-on strips, now shown only
+          when their filter pill is active. */}
+      {statusFilter === "in_review" && inReviewClients.length > 0 && (
+        <div className="mb-4">
+          <InReviewAccounts clients={inReviewClients} canApprove={canEdit} />
+        </div>
+      )}
+      {statusFilter === "stripe" && stripeSuggestions.length > 0 && (
+        <div className="mb-4">
+          <StripeInviteSuggestions suggestions={stripeSuggestions} />
+        </div>
+      )}
+
       <div className="text-xs text-ink-slate mb-3">
         {filtered.length} of {clients.length} clients
       </div>
@@ -442,11 +494,10 @@ export function ClientsList({
         <div className="rounded-xl overflow-hidden bg-white border border-gray-200">
           <div
             className="grid items-center px-5 py-3 text-xs font-bold uppercase tracking-wider bg-gray-50 text-ink-slate border-b border-gray-200"
-            style={{ gridTemplateColumns: "1.7fr 1fr 0.9fr 1fr 0.9fr 0.9fr 1fr 0.7fr" }}
+            style={{ gridTemplateColumns: "1.7fr 1fr 1fr 0.9fr 0.9fr 1fr 0.7fr" }}
           >
             <div>Client</div>
             <div>Status</div>
-            <div>Double</div>
             <div>Assigned</div>
             <div>Portal</div>
             <div>Stripe</div>
@@ -676,7 +727,7 @@ function ClientRow({
       className={`grid items-center px-5 py-3 border-b border-gray-100 hover:bg-teal-lighter transition-colors ${
         !client.is_active ? "opacity-50" : ""
       }`}
-      style={{ gridTemplateColumns: "1.7fr 1fr 0.9fr 1fr 0.9fr 0.9fr 1fr 0.7fr" }}
+      style={{ gridTemplateColumns: "1.7fr 1fr 1fr 0.9fr 0.9fr 1fr 0.7fr" }}
     >
       <Link
         href={`/clients/${client.id}`}
@@ -728,22 +779,6 @@ function ClientRow({
             </span>
           );
         })()}
-      </div>
-
-      {/* Double column */}
-      <div className="min-w-0">
-        {client.double_client_id?.startsWith("pending_") ? (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-red-50 text-red-700 border border-red-200">
-            Not matched
-          </span>
-        ) : (
-          <div className="min-w-0">
-            <div className="text-xs font-semibold text-navy truncate" title={client.double_client_name || ""}>
-              {client.double_client_name || `ID ${client.double_client_id}`}
-            </div>
-            <div className="text-[10px] text-ink-slate">Linked</div>
-          </div>
-        )}
       </div>
 
       <div className="relative">
@@ -969,15 +1004,6 @@ function ClientRow({
       </div>
 
       <div className="flex items-center gap-1 flex-wrap">
-        {client.double_client_id?.startsWith("pending_") ? (
-          <Link
-            href={`/clients/${client.id}/match-double`}
-            className="px-2 py-1 rounded text-[10px] font-semibold bg-red-600 hover:bg-red-700 text-white"
-            title="Match this client to a Double HQ record"
-          >
-            Match
-          </Link>
-        ) : (
           <>
             {/* Continue an in-flight / errored cleanup. Shown only when the
                 client has a resumable COA job (executing, in_review, failed). */}
@@ -1018,7 +1044,6 @@ function ClientRow({
               onEmail={() => setEmailOpen(true)}
             />
           </>
-        )}
       </div>
 
       <div className="flex justify-end items-center gap-1">
@@ -1191,16 +1216,6 @@ function ClientCard({
         ) : (
           <span className="italic">Unassigned</span>
         )}
-        <div className="flex items-center gap-1 mt-1">
-          <span className="text-ink-light">Double:</span>
-          {client.double_client_id?.startsWith("pending_") ? (
-            <span className="font-semibold text-red-700">Not matched</span>
-          ) : (
-            <span className="font-semibold text-navy truncate" title={client.double_client_name || ""}>
-              {client.double_client_name || `ID ${client.double_client_id}`}
-            </span>
-          )}
-        </div>
         {client.last_cleanup_at && (
           <div className="flex items-center gap-1 mt-1">
             <Clock size={10} />
@@ -1244,21 +1259,12 @@ function ClientCard({
       </div>
 
       <div className="flex gap-2">
-        {client.double_client_id?.startsWith("pending_") ? (
-          <Link
-            href={`/clients/${client.id}/match-double`}
-            className="flex-1 text-center px-3 py-1.5 rounded-md text-xs font-semibold bg-red-600 hover:bg-red-700 text-white"
-          >
-            Match Double →
-          </Link>
-        ) : (
-          <Link
-            href={`/clients/${client.id}`}
-            className="flex-1 text-center px-3 py-1.5 rounded-md text-xs font-semibold bg-teal hover:bg-teal-dark text-white"
-          >
-            Open client
-          </Link>
-        )}
+        <Link
+          href={`/clients/${client.id}`}
+          className="flex-1 text-center px-3 py-1.5 rounded-md text-xs font-semibold bg-teal hover:bg-teal-dark text-white"
+        >
+          Open client
+        </Link>
       </div>
       {emailOpen && (
         <EmailClientModal

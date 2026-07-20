@@ -76,9 +76,9 @@ export async function POST(
     auditEventType: "reclass_questions_email_sent",
     auditExtra: { reclass_job_id: jobId },
     noRecipientMessage:
-      "No email on file for this client. Use “Copy Email Body + Table” and paste it into Double instead.",
+      "No email on file for this client. Use “Copy Email Body + Table” and send it manually instead.",
     sendFailedMessage: (err) =>
-      `Email didn't send — ${err}. Fix the issue or use “Copy for Double” as a fallback.`,
+      `Email didn't send — ${err}. Fix the issue or use “Copy Email Body + Table” as a fallback.`,
   });
   return NextResponse.json(r.body, { status: r.status });
 }
