@@ -195,18 +195,9 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 px-2.5 py-3 overflow-y-auto">
-        <Link
-          href="/jobs/new"
-          className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all mb-4 ${
-            cleanupActive
-              ? "bg-teal text-white shadow-sm"
-              : "bg-teal hover:bg-teal-dark text-white"
-          }`}
-        >
-          <Sparkles size={16} />
-          <span>New Cleanup</span>
-        </Link>
-
+        {/* No global "New Cleanup" button — cleanup always starts from a client
+            (Pipelines → a client card's "Continue cleanup", or the client
+            workspace Cleanup tab), never a picker-first flow. */}
         <NavSection label="Work" />
         {dailyNav
           .filter((item) => !item.senior || isSenior)

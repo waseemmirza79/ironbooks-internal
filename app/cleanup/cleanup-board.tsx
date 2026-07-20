@@ -328,13 +328,6 @@ export function CleanupBoard() {
           statements are sent to the client and the account moves to{" "}
           <strong>Production</strong> (ongoing management).
         </p>
-        <Link
-          href="/jobs/new"
-          className="inline-flex items-center gap-1.5 bg-teal hover:bg-teal-dark text-white text-xs font-bold px-3 py-2 rounded-lg"
-        >
-          <Plus size={13} />
-          New Cleanup
-        </Link>
       </div>
 
       {/* Escalations — triage happens ON the board, not in another tool. */}
