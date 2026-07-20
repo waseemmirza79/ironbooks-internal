@@ -394,7 +394,7 @@ async function undoOneOperation(ctx: {
         done.jes_deleted++;
         done.amount_moved_back = r2(done.amount_moved_back + Math.abs(op.amount || 0));
       } catch (e: any) {
-        failures.push(`delete JE ${op.txn_id}: ${String(e?.message || e).slice(0, 160)}`);
+        failures.push(`delete JE ${op.txn_id}: ${String(e?.message || e).slice(0, 400)}`);
       }
       continue;
     }
@@ -419,12 +419,15 @@ async function undoOneOperation(ctx: {
       done.amount_moved_back = r2(done.amount_moved_back + Math.abs(op.amount || 0));
       for (const na of res.lines_not_applied || []) failures.push(`line ${op.txn_id}: ${(na as any).reason}`);
     } catch (e: any) {
-      failures.push(`repoint ${op.txn_type}/${op.txn_id}: ${String(e?.message || e).slice(0, 160)}`);
+      failures.push(`repoint ${op.txn_type}/${op.txn_id}: ${String(e?.message || e).slice(0, 400)}`);
     }
   }
 
-  // ── C) Post-steps ──
+  // ── C) Post-steps ── (cosmetic: reactivations / renames. A failure here
+  // does NOT undo the balance restoration above, so it's reported separately
+  // and never fails the operation — finish it by hand in QBO's COA.)
   const post: string[] = [];
+  const postStepFailures: string[] = [];
   try {
     if (isRetype) {
       // Twin should be drained now — retire it FIRST so the clean name frees
@@ -439,7 +442,7 @@ async function undoOneOperation(ctx: {
       post.push(`reactivated "${source.Name}"`);
     }
   } catch (e: any) {
-    failures.push(`post-step: ${String(e?.message || e).slice(0, 200)}`);
+    postStepFailures.push(String(e?.message || e).slice(0, 400));
   }
 
   try {
@@ -455,6 +458,7 @@ async function undoOneOperation(ctx: {
         retype: isRetype,
         ...done,
         post_steps: post,
+        post_step_failures: postStepFailures,
         failures: failures.slice(0, 30),
       } as any,
     } as any);
@@ -463,11 +467,12 @@ async function undoOneOperation(ctx: {
   }
 
   return NextResponse.json({
-    ok: failures.length === 0,
+    ok: failures.length === 0, // post-step issues don't fail the op
     client: client.client_name,
     undo: { source: source.Name, target: target.Name, memo, retype: isRetype },
     executed: done,
     post_steps: post,
+    post_step_failures: postStepFailures,
     manual_items: ops.filter((o) => o.kind === "manual"),
     failures,
     note: "Verify this operation in QBO (P&L / account history), then fire the next row's undo_payload.",
