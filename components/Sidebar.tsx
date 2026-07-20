@@ -7,6 +7,7 @@ import {
   Shield, CreditCard, ChevronDown, ChevronRight, Sun, TrendingUp,
   HeartPulse, Gauge, BadgeCheck,
   ClipboardCheck, ListChecks, UserPlus, GraduationCap, Settings as SettingsIcon, Inbox, ListTodo, LifeBuoy, ExternalLink, Landmark, Mail,
+  Home as HomeIcon, Eye,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
@@ -19,6 +20,9 @@ import { StripeConnectModal } from "./StripeConnectModal";
  *  you start them from the client — cleanup-board card steps, the /clients
  *  row quick-actions, or the profile Cleanup tab — already scoped. */
 const dailyNav: { href: string; label: string; icon: any; senior?: boolean; newTab?: boolean }[] = [
+  // Home unifies Today + Inbox + Tasks into one hub (re-IA). The individual
+  // routes still work and stay listed until the nav shrink lands.
+  { href: "/home", label: "Home", icon: HomeIcon },
   { href: "/today", label: "Today", icon: Sun },
   { href: "/inbox", label: "Inbox", icon: Inbox },
   { href: "/support", label: "Support", icon: LifeBuoy, newTab: true },
@@ -35,6 +39,9 @@ const dailyNav: { href: string; label: string; icon: any; senior?: boolean; newT
  *  files, escalations, flagged transactions — one queue). The daily-recon
  *  engine controls live on the /admin hub. */
 const productionNav: { href: string; label: string; icon: any; senior?: boolean }[] = [
+  // Oversight unifies Approvals + Advisor + Fleet Health into one senior hub
+  // (re-IA). Individual routes stay listed until the nav shrink lands.
+  { href: "/oversight", label: "Oversight", icon: Eye, senior: true },
   // Production board folded into /board (Pipelines toggle) with the other kanbans.
   { href: "/approvals", label: "Approvals", icon: BadgeCheck, senior: true },
 ];
