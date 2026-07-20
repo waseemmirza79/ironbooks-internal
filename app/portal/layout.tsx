@@ -8,6 +8,7 @@ import { MessagesNavLink } from "./messages-nav-link";
 import { FinancialStatementsNav } from "./financial-statements-nav";
 import { SignOutButton } from "./sign-out-button";
 import { ImpersonationBanner } from "./impersonation-banner";
+import { OnboardingNagBanner } from "./onboarding-nag-banner";
 import { SupportWidget } from "./support-widget";
 import { tryResolvePortalContext } from "@/lib/portal-context";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
@@ -156,6 +157,19 @@ export default async function PortalLayout({ children }: { children: React.React
     }
   }
 
+  // Onboarding nag — persistent "finish setup" strip until the new client
+  // completes the required steps (form + docs). Self-hides on the wizard page.
+  let needsOnboarding = false;
+  try {
+    const { data: obRow } = await (service as any)
+      .from("client_links")
+      .select("status, cleanup_completed_at, daily_recon_enabled, portal_onboarding")
+      .eq("id", ctx.clientLinkId)
+      .maybeSingle();
+    const { shouldShowOnboarding, onboardingRequiredDone, readOnboardingState } = await import("@/lib/portal-onboarding");
+    needsOnboarding = !!obRow && shouldShowOnboarding(obRow) && !onboardingRequiredDone(readOnboardingState(obRow));
+  } catch { /* pre-migration env — no nag */ }
+
   return (
     <div className="min-h-screen bg-[var(--app-canvas)]">
       {ctx.impersonating && (
@@ -167,6 +181,7 @@ export default async function PortalLayout({ children }: { children: React.React
           portalClients={portalClients}
         />
       )}
+      {needsOnboarding && <OnboardingNagBanner />}
       <div className="flex">
         <aside className="w-60 bg-[#0F1F2E] text-white min-h-screen flex flex-col">
           <div className="px-5 py-5 border-b border-white/10">
