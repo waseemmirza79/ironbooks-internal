@@ -1309,12 +1309,6 @@ function QboConnectionBanner({
             >
               {palette.buttonText} <ArrowRight size={15} />
             </a>
-            <Link
-              href={`/clients/${clientLinkId}/match-double`}
-              className={`text-xs font-semibold ${palette.body} hover:underline`}
-            >
-              Open client settings
-            </Link>
           </div>
         </div>
       </div>
@@ -1333,12 +1327,12 @@ function NoQboState({ clientLinkId }: { clientLinkId: string }) {
       <div className="text-xs text-ink-slate mb-3">
         Financial reports need a live QBO connection for this client.
       </div>
-      <Link
-        href={`/clients/${clientLinkId}/match-double`}
+      <a
+        href={`/api/qbo/connect?client_link_id=${clientLinkId}`}
         className="inline-flex items-center gap-1.5 text-xs font-semibold text-teal hover:text-teal-dark"
       >
-        Configure client settings →
-      </Link>
+        Connect QuickBooks →
+      </a>
     </div>
   );
 }

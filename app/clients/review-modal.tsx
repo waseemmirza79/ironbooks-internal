@@ -210,7 +210,7 @@ export function CleanupReviewModal({
             </div>
             <p className="text-xs text-ink-slate leading-relaxed">
               The clipboard will contain a branded email with the PDF link
-              embedded. Paste into Double&apos;s client portal email and send to{" "}
+              embedded. Paste it into your email client and send to{" "}
               <span className="font-semibold text-navy">{client.client_name}</span>.
             </p>
             <button
@@ -219,7 +219,7 @@ export function CleanupReviewModal({
               className="w-full inline-flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
             >
               {emailCopied ? <CheckCircle2 size={15} /> : <Mail size={15} />}
-              {emailCopied ? "Copied — paste into Double!" : "Copy branded email to clipboard"}
+              {emailCopied ? "Copied to clipboard!" : "Copy branded email to clipboard"}
             </button>
           </div>
 
