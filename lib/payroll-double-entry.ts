@@ -334,6 +334,16 @@ const REIMBURSEMENT_MEMO = /\b(reimburs\w*|repa(?:id|yment)|expense\s*report|mil
 // ("INTUIT *QBooks Payroll TORONTO ON", a real expense that should stay put).
 const PAYROLL_DEPOSIT_MEMO = /payroll[\s\w-]{0,30}deposit|direct\s*dep(?:osit)?[\s\w-]{0,20}payroll|\bnet\s*pay\b/i;
 
+// The payroll PROVIDER as the payee/memo on a bank-fed line — Intuit funding
+// drafts (payee "QuickBooks Payroll", memo "PAYROLL INTUIT 93222334 IDX…"),
+// Gusto/ADP/etc. When gross paycheques are already booked, these drafts are
+// the net-pay + tax FUNDING leg — expensing them re-books the same wages
+// (Taro 2026-07-19: ~$52K/month of Intuit drafts in Admin Team Salaries on
+// top of the gross paycheques). May occasionally catch a provider's service
+// FEE — acceptable: suspects are human-reviewed before anything moves.
+const PAYROLL_PROVIDER_SIG =
+  /(?:quickbooks|intuit)[\s\w.*-]{0,20}payroll|payroll[\s\w.*-]{0,12}intuit|\bgusto\b|\badp\b|paychex|ceridian|dayforce|wagepoint|payworks|rippling|wave\s*payroll|payment\s*evolution/i;
+
 /**
  * Is this bank posting a payroll net-pay outflow that duplicates a paycheque —
  * whether by named employee OR by the payroll-provider deposit memo? Used by
@@ -345,9 +355,12 @@ export function isPayrollCashDuplicate(
   memo: string | null | undefined,
   roster: Set<string>,
 ): boolean {
-  const m = memo || "";
-  if (REIMBURSEMENT_MEMO.test(m)) return false;
-  return isPayrollEmployee(name, roster) || PAYROLL_DEPOSIT_MEMO.test(m);
+  // Match against payee AND memo together — Taro's drafts carry the provider
+  // in the NAME ("QuickBooks Payroll") and the bank text in the memo
+  // ("PAYROLL INTUIT 93222334"), and either alone can be the only signal.
+  const blob = `${name || ""} ${memo || ""}`;
+  if (REIMBURSEMENT_MEMO.test(blob)) return false;
+  return isPayrollEmployee(name, roster) || PAYROLL_DEPOSIT_MEMO.test(blob) || PAYROLL_PROVIDER_SIG.test(blob);
 }
 
 /**
@@ -452,16 +465,21 @@ export function detectLaborDuplication(
     }
   }
 
-  // 2) Any OTHER account carrying those employees' pay via a recordable txn
-  //    is a phantom labor line.
+  // 2) Any recordable (bank-fed) posting that re-books pay whose gross is
+  //    already on a paycheque is a phantom labor line — matched ROW by ROW,
+  //    not by account. Taro (2026-07-19) hid ~$52K/month of provider funding
+  //    drafts INSIDE a wage account that also carries gross paycheques
+  //    (Admin Team Salaries), so the old "skip paycheque accounts" guard was
+  //    exactly what blinded the scan. The paycheque rows themselves are the
+  //    legit wage record and are skipped by TYPE below.
   const byAccount = new Map<string, LaborSuspectAccount>();
   if (employees.size > 0) {
     for (const r of rows) {
-      if (paychequeAccounts.has(r.account)) continue;      // legit paycheque line
+      if (PAYCHEQUE_TXN_TYPE.test(r.txn_type)) continue;   // the gross posting itself
       if (!RECORDABLE_TXN_TYPE.test(r.txn_type)) continue;
-      // A net-pay duplicate is either a named employee's pay OR a payroll-
-      // provider deposit (blank name, "…PAYROLL Payroll Deposit" memo).
-      // Reimbursements excluded inside the helper.
+      // A net-pay duplicate is a named employee's pay, a payroll-provider
+      // deposit memo, OR a provider funding draft (payee "QuickBooks
+      // Payroll" / memo "PAYROLL INTUIT …"). Reimbursements excluded.
       if (!isPayrollCashDuplicate(r.name, r.memo, employees)) continue;
       const p = normPerson(r.name);
       const e = byAccount.get(r.account) || { account: r.account, postings: 0, total: 0, employees: 0, by_type: {}, sample_memos: [], cash_total: 0, invoice_total: 0, reason: "", txns: [] };
@@ -474,9 +492,10 @@ export function detectLaborDuplication(
       if (r.memo && e.sample_memos.length < 4 && !e.sample_memos.includes(r.memo)) e.sample_memos.push(r.memo);
       e.txns.push({ date: r.date || "", amount: r.amount, name: r.name, memo: (r.memo || "").slice(0, 60), txn_type: r.txn_type, kind });
       byAccount.set(r.account, e);
-      // track distinct employees per account via a side set (skip blank names
-      // from unnamed payroll-provider deposits)
-      if (p) (e as any)._people ? (e as any)._people.add(p) : ((e as any)._people = new Set([p]));
+      // track distinct employees per account via a side set — only names on
+      // the paycheque roster count (the provider payee "QuickBooks Payroll"
+      // must not display as an employee)
+      if (p && employees.has(p)) (e as any)._people ? (e as any)._people.add(p) : ((e as any)._people = new Set([p]));
     }
   }
 
