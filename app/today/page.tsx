@@ -72,6 +72,17 @@ export default async function TodayPage({
   const { data: clients } = await clientsQuery.order("client_name");
   const eligibleClients = (clients || []) as any[];
 
+  // Manager-rejected cleanups bounced back to this bookkeeper to rework
+  // (cleanup_review_state = 'failed_review'). Top of "Your work".
+  let rejectedQuery = service
+    .from("client_links")
+    .select("id, client_name, cleanup_review_notes, cleanup_review_rejected_at, assigned_bookkeeper_id")
+    .eq("is_active", true)
+    .eq("cleanup_review_state" as any, "failed_review");
+  if (scopeUserId) rejectedQuery = rejectedQuery.eq("assigned_bookkeeper_id", scopeUserId);
+  const { data: rejectedRows } = await rejectedQuery.order("cleanup_review_rejected_at", { ascending: false });
+  const rejectedForRework = (rejectedRows || []) as any[];
+
   // ─── Client answers to ask-client transaction questions ───
   // The client picked an account in their portal; the bookkeeper confirms
   // (default) or applies an alternative. Scoped like every other widget.
@@ -479,6 +490,7 @@ export default async function TodayPage({
   // viewing the whole fleet, cleanup lives in the Team band instead — so
   // don't count it toward the personal "Your work" total in that case.
   const workCount =
+    rejectedForRework.length +
     pendingFlags.length +
     pendingReclassRequests.length +
     clientAnswers.length +
@@ -536,6 +548,33 @@ export default async function TodayPage({
             </div>
           ) : (
             <div className="space-y-4">
+              {/* Manager-rejected cleanups to rework — highest priority. */}
+              {rejectedForRework.length > 0 && (
+                <div className="rounded-2xl border border-red-200 bg-red-50/60 p-4">
+                  <div className="text-sm font-bold text-red-800 mb-2">
+                    Sent back — needs rework ({rejectedForRework.length})
+                  </div>
+                  <div className="space-y-2">
+                    {rejectedForRework.map((r) => (
+                      <Link
+                        key={r.id}
+                        href={`/clients/${r.id}?tab=cleanup`}
+                        className="block rounded-lg border border-red-200 bg-white px-3 py-2 hover:border-red-400 transition-colors"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-semibold text-navy">{r.client_name}</span>
+                          <span className="text-[11px] text-red-700 font-semibold">Failed review →</span>
+                        </div>
+                        {r.cleanup_review_notes && (
+                          <p className="text-xs text-ink-slate mt-0.5">
+                            <span className="font-semibold">Manager:</span> {r.cleanup_review_notes}
+                          </p>
+                        )}
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
               {/* Client-waiting items first (a human is blocked on a reply),
                   then your cleanup deadlines. Each widget self-manages its
                   resolve state and hides at zero rows. */}

@@ -19,6 +19,7 @@ export type LifecycleStatus =
   | "bs_cleanup"        // reclass done, balance-sheet cleanup outstanding
   | "ready_to_close"    // pipeline done (BS skipped/finished), not yet submitted for review
   | "ready_for_review"  // cleanup submitted, awaiting manager approval (cleanup_review_state='in_review')
+  | "failed_review"     // manager rejected — bounced back to the bookkeeper to rework
   | "waiting_on_client" // blocked waiting on the client
   | "completed"         // cleanup signed off, not yet promoted to production
   | "in_production"     // signed off + daily recon on
@@ -71,7 +72,8 @@ export function deriveMacroStage(c: LifecycleInput): MacroStage {
   // The moment they connect or any COA/reclass work exists, they're in Cleanup.
   const anyCleanupWork =
     !!c.has_active_coa || !!c.has_active_reclass || !!c.has_complete_coa ||
-    !!c.has_complete_reclass || c.cleanup_review_state === "in_review";
+    !!c.has_complete_reclass || c.cleanup_review_state === "in_review" ||
+    c.cleanup_review_state === "failed_review";
   if (c.status === "onboarding" && !c.qbo_connected && !anyCleanupWork) return "onboarding";
   return "cleanup";
 }
@@ -97,6 +99,7 @@ export const LIFECYCLE_META: Record<LifecycleStatus, { label: string; tone: stri
   ready_to_close:    { label: "Ready to close",    tone: "bg-fuchsia-50 text-fuchsia-700",  order: 5,  group: "Review" },
   waiting_on_client: { label: "Waiting on client", tone: "bg-amber-50 text-amber-700",      order: 6,  group: "Review" },
   ready_for_review:  { label: "Ready for review",  tone: "bg-violet-50 text-violet-700",    order: 7,  group: "Review" },
+  failed_review:     { label: "Failed review",     tone: "bg-red-50 text-red-700",          order: 6.5, group: "Review" },
   completed:         { label: "Completed",         tone: "bg-emerald-50 text-emerald-700",  order: 8,  group: "Live" },
   in_production:     { label: "In production",     tone: "bg-teal/10 text-teal",            order: 9,  group: "Live" },
   done:              { label: "Done",              tone: "bg-emerald-100 text-emerald-800", order: 10, group: "Live" },
@@ -118,6 +121,8 @@ export function deriveLifecycleStatus(c: LifecycleInput): LifecycleStatus {
   if (c.cleanup_completed_at) return "completed";
 
   // ── Manager-actionable ──
+  // Rejected by the manager — bounced back to the bookkeeper to rework.
+  if (c.cleanup_review_state === "failed_review") return "failed_review";
   if (c.cleanup_review_state === "in_review") return "ready_for_review";
   if (c.open_ask_client) return "waiting_on_client";
 
