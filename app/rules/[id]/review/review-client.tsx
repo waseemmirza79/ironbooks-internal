@@ -318,10 +318,14 @@ function RuleRow({
   const statusColors: Record<string, { bg: string; color: string }> = {
     pending: { bg: "#FEF3C7", color: "#F59E0B" },
     approved: { bg: "#D1FAE5", color: "#10B981" },
+    active: { bg: "#D1FAE5", color: "#10B981" },
     rejected: { bg: "#FEE2E2", color: "#DC2626" },
     pushed: { bg: "#E8F2F0", color: "#2D7A75" },
   };
-  const sc = statusColors[rule.status || "pending"];
+  // Fall back to a neutral chip for any status not in the map — a rule with an
+  // unmapped status (e.g. "active") used to crash the whole review page here
+  // (Cannot read properties of undefined reading 'bg').
+  const sc = statusColors[rule.status || "pending"] || { bg: "#EEF2F4", color: "#5B6B78" };
 
   return (
     <div
