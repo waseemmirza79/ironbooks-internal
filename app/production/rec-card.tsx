@@ -1225,7 +1225,7 @@ function PLStatementView({
                       )}
                     </td>
                     <td className="px-4 py-1 text-right font-mono text-navy whitespace-nowrap">${money(r.amount || 0)}</td>
-                    <td className="px-4 py-1 text-right font-mono text-ink-light whitespace-nowrap">{r.pct}</td>
+                    <td className="px-4 py-1 text-right font-mono text-teal whitespace-nowrap">{r.pct}</td>
                   </tr>
                 );
               }
@@ -1234,7 +1234,7 @@ function PLStatementView({
                   <tr key={i} className="border-t border-gray-100 bg-gray-50/30">
                     <td className="px-4 py-1 font-semibold text-navy">{r.label}</td>
                     <td className="px-4 py-1 text-right font-mono font-semibold text-navy whitespace-nowrap">${money(r.amount || 0)}</td>
-                    <td className="px-4 py-1 text-right font-mono text-ink-slate whitespace-nowrap">{r.pct}</td>
+                    <td className="px-4 py-1 text-right font-mono text-teal-dark font-semibold whitespace-nowrap">{r.pct}</td>
                   </tr>
                 );
               }
@@ -1246,7 +1246,7 @@ function PLStatementView({
                     {r.flag && <span className="ml-1.5 text-[9px] font-bold uppercase text-amber-700 bg-amber-100 px-1 py-0.5 rounded">out of KPI</span>}
                   </td>
                   <td className={`px-4 py-1.5 text-right font-mono font-bold whitespace-nowrap ${toneText(r.tone)}`}>${money(r.amount || 0)}</td>
-                  <td className={`px-4 py-1.5 text-right font-mono font-semibold whitespace-nowrap ${r.flag ? "text-amber-700" : "text-ink-slate"}`}>{r.pct}</td>
+                  <td className={`px-4 py-1.5 text-right font-mono font-semibold whitespace-nowrap ${r.flag ? "text-amber-700" : "text-teal-dark"}`}>{r.pct}</td>
                 </tr>
               );
             })}

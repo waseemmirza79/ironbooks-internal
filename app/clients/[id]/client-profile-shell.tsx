@@ -1736,7 +1736,7 @@ function PLSection({
                 >
                   {formatCurrency(r.amount)}
                 </div>
-                <div className="font-mono text-[10px] text-ink-light w-11 text-right shrink-0" title="% of income">
+                <div className="font-mono text-[10px] text-teal w-11 text-right shrink-0" title="% of income">
                   {pctOfIncomeLabel(r.amount, income)}
                 </div>
                 {clickable && (
@@ -1754,7 +1754,7 @@ function PLSection({
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <div className="font-mono text-sm font-bold text-navy">{formatCurrency(total)}</div>
-            <div className="font-mono text-[10px] text-ink-slate w-11 text-right">{pctOfIncomeLabel(total, income)}</div>
+            <div className="font-mono text-[10px] text-teal-dark font-semibold w-11 text-right">{pctOfIncomeLabel(total, income)}</div>
           </div>
         </div>
       )}

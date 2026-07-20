@@ -506,7 +506,7 @@ function BucketSection({
           </div>
         </div>
         <div className="flex items-center gap-5 flex-shrink-0">
-          <div className="text-xs font-semibold text-ink-slate w-12 text-right">
+          <div className="text-xs font-semibold text-teal-dark w-12 text-right">
             {bucket.pctOfIncome > 0 ? `${Math.round(bucket.pctOfIncome)}%` : "—"}
           </div>
         </div>
@@ -530,7 +530,7 @@ function BucketSection({
                     <span className="text-[13px] font-bold text-navy">{grp.label}</span>
                     <div className="flex items-center gap-4 flex-shrink-0">
                       <span className="font-mono text-sm font-bold text-navy w-24 text-right">{fmtMoney(grp.subtotal)}</span>
-                      <span className="text-xs font-semibold text-ink-slate w-10 text-right">
+                      <span className="text-xs font-semibold text-teal-dark w-10 text-right">
                         {grp.pct >= 0.5 ? `${Math.round(grp.pct)}%` : "—"}
                       </span>
                       <span className="w-[26px]" aria-hidden />
@@ -583,7 +583,7 @@ function BucketSection({
         </button>
         <div className="flex items-center gap-4 flex-shrink-0">
           <span className="font-mono text-sm text-navy w-24 text-right">{fmtMoney(l.amount)}</span>
-          <span className="text-xs text-ink-light w-10 text-right font-mono hidden sm:block">
+          <span className="text-xs text-teal w-10 text-right font-mono hidden sm:block">
             {l.pctOfIncome >= 0.5 ? `${l.pctOfIncome.toFixed(1)}%` : "—"}
           </span>
           <AskAboutButton

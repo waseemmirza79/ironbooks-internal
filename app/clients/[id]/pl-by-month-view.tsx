@@ -62,7 +62,7 @@ function Cell({
   return (
     <td className={`px-4 py-1.5 text-right align-top ${flag ? "bg-amber-100/70" : ""}`}>
       <div className={`font-mono ${w} ${tone || "text-navy"}`}>{fmt(value)}</div>
-      <div className={`font-mono text-[10px] ${flag ? "text-amber-700 font-semibold" : "text-ink-light"}`}>
+      <div className={`font-mono text-[10px] ${flag ? "text-amber-700 font-semibold" : "text-teal"}`}>
         {pctOfIncome(value, income)}
       </div>
     </td>
