@@ -66,6 +66,7 @@ type ClientLink = {
   daily_recon_paused_reason?: string | null;
   daily_recon_enabled_at?: string | null;
   cleanup_completed_at?: string | null;
+  cleanup_sequence?: any;
   // Profile detail fields (migration 73)
   contact_first_name?: string | null;
   contact_last_name?: string | null;
@@ -276,7 +277,13 @@ export function ClientProfileShell({ clientLink, actorRole, overview, financials
         />
       )}
       {activeTab === "cleanup" && (
-        <CleanupTab clientLinkId={clientLink.id} clientName={clientLink.client_name} />
+        <CleanupTab
+          clientLinkId={clientLink.id}
+          clientName={clientLink.client_name}
+          cleanupCompletedAt={clientLink.cleanup_completed_at || null}
+          initialSequence={clientLink.cleanup_sequence ?? null}
+          onNavigateTab={(tab) => setActiveTab(tab)}
+        />
       )}
       {activeTab === "profile" && (
         <ProfileTab clientLink={clientLink} onboarding={onboarding} actorRole={actorRole} />
