@@ -73,7 +73,7 @@ interface SpotCheck {
 }
 
 interface Run {
-  status: "open" | "pending_review" | "complete";
+  status: "open" | "pending_review" | "failed_review" | "complete";
   has_concerns: boolean;
   concerns: string | null;
   checks: { checks: Check[]; overall: CheckStatus } | null;
@@ -403,6 +403,29 @@ export function ClientRecCard({
     }
   }
 
+  // Manager Reject — bounce the close to Failed Review with a required note; the
+  // bookkeeper sees it on Today. Distinct from "reopen" (silent → open).
+  async function reject() {
+    const note = window.prompt(
+      "Reject this close — what does the bookkeeper need to fix?\n(They'll see this note on their Today.)"
+    );
+    if (note === null) return;
+    if (!note.trim()) {
+      setError("A note is required to reject.");
+      return;
+    }
+    setCompleting(true);
+    setError("");
+    try {
+      await act({ action: "reject", notes: note.trim() });
+      onChanged();
+    } catch (e: any) {
+      setError(e?.message || "Couldn't reject");
+    } finally {
+      setCompleting(false);
+    }
+  }
+
   return (
     <div
       className={`bg-white rounded-2xl border overflow-hidden ${
@@ -499,15 +522,26 @@ export function ClientRecCard({
             Review &amp; approve
           </button>
         )}
+        {isPending && isSenior && (
+          <button
+            onClick={reject}
+            disabled={completing}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-700 hover:bg-red-50 border border-red-200 rounded-lg px-2 py-1.5 disabled:opacity-50 flex-shrink-0"
+            title="Reject — bounce back to the bookkeeper (Failed Review) with a note; no client email"
+          >
+            <XCircle size={11} />
+            Reject
+          </button>
+        )}
         {isPending && (
           <button
             onClick={reopen}
             disabled={completing}
             className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-slate hover:text-navy px-2 py-1.5 disabled:opacity-50 flex-shrink-0"
-            title={isSenior ? "Send back to the bookkeeper" : "Withdraw and keep working"}
+            title={isSenior ? "Withdraw silently (no note)" : "Withdraw and keep working"}
           >
             <RotateCcw size={11} />
-            {isSenior ? "Send back to bookkeeper" : "Withdraw"}
+            {isSenior ? "Withdraw" : "Withdraw"}
           </button>
         )}
         {isComplete && (

@@ -72,16 +72,43 @@ export default async function TodayPage({
   const { data: clients } = await clientsQuery.order("client_name");
   const eligibleClients = (clients || []) as any[];
 
-  // Manager-rejected cleanups bounced back to this bookkeeper to rework
-  // (cleanup_review_state = 'failed_review'). Top of "Your work".
+  // Manager-rejected work bounced back to this bookkeeper to rework — both
+  // cleanup (client_links.cleanup_review_state='failed_review') and production
+  // closes (monthly_rec_runs.status='failed_review'). Top of "Your work".
   let rejectedQuery = service
     .from("client_links")
     .select("id, client_name, cleanup_review_notes, cleanup_review_rejected_at, assigned_bookkeeper_id")
     .eq("is_active", true)
     .eq("cleanup_review_state" as any, "failed_review");
   if (scopeUserId) rejectedQuery = rejectedQuery.eq("assigned_bookkeeper_id", scopeUserId);
-  const { data: rejectedRows } = await rejectedQuery.order("cleanup_review_rejected_at", { ascending: false });
-  const rejectedForRework = (rejectedRows || []) as any[];
+  const { data: rejectedCleanupRows } = await rejectedQuery.order("cleanup_review_rejected_at", { ascending: false });
+
+  const { data: rejectedRunRows } = await (service as any)
+    .from("monthly_rec_runs")
+    .select("client_link_id, period, review_notes, rejected_at, client_links!inner(client_name, assigned_bookkeeper_id, is_active)")
+    .eq("status", "failed_review")
+    .order("rejected_at", { ascending: false });
+
+  const rejectedForRework: any[] = [
+    ...((rejectedCleanupRows || []) as any[]).map((r) => ({
+      id: r.id,
+      client_name: r.client_name,
+      note: r.cleanup_review_notes,
+      kind: "Cleanup",
+    })),
+    ...(((rejectedRunRows || []) as any[])
+      .filter((r) => {
+        const cl = r.client_links || {};
+        if (!cl.is_active) return false;
+        return !scopeUserId || cl.assigned_bookkeeper_id === scopeUserId;
+      })
+      .map((r) => ({
+        id: r.client_link_id,
+        client_name: r.client_links?.client_name || "Client",
+        note: r.review_notes,
+        kind: `Close ${r.period}`,
+      }))),
+  ];
 
   // ─── Client answers to ask-client transaction questions ───
   // The client picked an account in their portal; the bookkeeper confirms
@@ -555,19 +582,19 @@ export default async function TodayPage({
                     Sent back — needs rework ({rejectedForRework.length})
                   </div>
                   <div className="space-y-2">
-                    {rejectedForRework.map((r) => (
+                    {rejectedForRework.map((r, i) => (
                       <Link
-                        key={r.id}
-                        href={`/clients/${r.id}?tab=cleanup`}
+                        key={`${r.id}-${i}`}
+                        href={r.kind === "Cleanup" ? `/clients/${r.id}?tab=cleanup` : `/production`}
                         className="block rounded-lg border border-red-200 bg-white px-3 py-2 hover:border-red-400 transition-colors"
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-sm font-semibold text-navy">{r.client_name}</span>
-                          <span className="text-[11px] text-red-700 font-semibold">Failed review →</span>
+                          <span className="text-[11px] text-red-700 font-semibold">{r.kind} · Failed review →</span>
                         </div>
-                        {r.cleanup_review_notes && (
+                        {r.note && (
                           <p className="text-xs text-ink-slate mt-0.5">
-                            <span className="font-semibold">Manager:</span> {r.cleanup_review_notes}
+                            <span className="font-semibold">Manager:</span> {r.note}
                           </p>
                         )}
                       </Link>

@@ -43,7 +43,7 @@ const WAITING_REASONS = [
 // "not_started" survives as a legacy DB value but has NO column — those runs
 // display under In Progress (Mike 2026-07-14: a production client's month is
 // always in progress; an empty column earns nothing).
-type BoardStatus = "not_started" | "in_progress" | "stuck" | "waiting_client" | "ready_for_review";
+type BoardStatus = "not_started" | "in_progress" | "stuck" | "waiting_client" | "ready_for_review" | "failed_review";
 
 const COLUMNS: { id: Exclude<BoardStatus, "not_started">; title: string; icon: any; tone: string }[] = [
   { id: "in_progress", title: "In Progress", icon: PlayCircle, tone: "border-teal/40" },
@@ -52,6 +52,8 @@ const COLUMNS: { id: Exclude<BoardStatus, "not_started">; title: string; icon: a
   { id: "stuck", title: "Blocked (this month)", icon: OctagonAlert, tone: "border-red-300" },
   { id: "waiting_client", title: "Waiting on Client", icon: MailQuestion, tone: "border-amber-300" },
   { id: "ready_for_review", title: "Ready for Manager Review", icon: CheckCircle2, tone: "border-indigo-300" },
+  // Manager rejected — bounced back to the bookkeeper to rework.
+  { id: "failed_review", title: "Failed Review", icon: OctagonAlert, tone: "border-red-400" },
 ];
 
 export function ProductionBoard() {
@@ -125,11 +127,17 @@ export function ProductionBoard() {
       stuck: [],
       waiting_client: [],
       ready_for_review: [],
+      failed_review: [],
     };
     const done: ProdClient[] = [];
     for (const c of production) {
       if (c.run?.status === "complete") {
         done.push(c);
+        continue;
+      }
+      // Manager-rejected runs — their own column, bounced back to rework.
+      if (c.run?.status === "failed_review") {
+        byColumn.failed_review.push(c);
         continue;
       }
       // Submitted-for-review runs ARE the manager-review queue.
