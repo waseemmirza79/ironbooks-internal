@@ -91,18 +91,20 @@ export function macroStageOfStatus(s: LifecycleStatus): MacroStage {
 }
 
 export const LIFECYCLE_META: Record<LifecycleStatus, { label: string; tone: string; order: number; group: "Pipeline" | "Review" | "Live" }> = {
-  onboarding:        { label: "Onboarding",        tone: "bg-slate-100 text-slate-600",     order: 0,  group: "Pipeline" },
-  needs_cleanup:     { label: "Needs cleanup",     tone: "bg-slate-100 text-slate-700",     order: 1,  group: "Pipeline" },
-  coa_cleanup:       { label: "COA cleanup",       tone: "bg-blue-50 text-blue-700",        order: 2,  group: "Pipeline" },
-  reclassify:        { label: "Reclassify",        tone: "bg-indigo-50 text-indigo-700",    order: 3,  group: "Pipeline" },
-  bs_cleanup:        { label: "BS cleanup",        tone: "bg-cyan-50 text-cyan-700",        order: 4,  group: "Pipeline" },
-  ready_to_close:    { label: "Ready to close",    tone: "bg-fuchsia-50 text-fuchsia-700",  order: 5,  group: "Review" },
-  waiting_on_client: { label: "Waiting on client", tone: "bg-amber-50 text-amber-700",      order: 6,  group: "Review" },
-  ready_for_review:  { label: "Ready for review",  tone: "bg-violet-50 text-violet-700",    order: 7,  group: "Review" },
-  failed_review:     { label: "Failed review",     tone: "bg-red-50 text-red-700",          order: 6.5, group: "Review" },
-  completed:         { label: "Completed",         tone: "bg-emerald-50 text-emerald-700",  order: 8,  group: "Live" },
-  in_production:     { label: "In production",     tone: "bg-teal/10 text-teal",            order: 9,  group: "Live" },
-  done:              { label: "Done",              tone: "bg-emerald-100 text-emerald-800", order: 10, group: "Live" },
+  // Pill tones follow the design-language color discipline: grey = not yet
+  // moving, teal = in motion / positive, gold = needs a human, rust = problem.
+  onboarding:        { label: "Onboarding",        tone: "bg-pillgrey-tint border border-pillgrey-border text-ink-slate", order: 0,  group: "Pipeline" },
+  needs_cleanup:     { label: "Needs cleanup",     tone: "bg-pillgrey-tint border border-pillgrey-border text-ink-slate", order: 1,  group: "Pipeline" },
+  coa_cleanup:       { label: "COA cleanup",       tone: "bg-teal-light border border-teal-border text-teal-dark",        order: 2,  group: "Pipeline" },
+  reclassify:        { label: "Reclassify",        tone: "bg-teal-light border border-teal-border text-teal-dark",        order: 3,  group: "Pipeline" },
+  bs_cleanup:        { label: "BS cleanup",        tone: "bg-teal-light border border-teal-border text-teal-dark",        order: 4,  group: "Pipeline" },
+  ready_to_close:    { label: "Ready to close",    tone: "bg-gold-tint border border-gold-border text-gold-deep",         order: 5,  group: "Review" },
+  waiting_on_client: { label: "Waiting on client", tone: "bg-gold-tint border border-gold-border text-gold-deep",         order: 6,  group: "Review" },
+  ready_for_review:  { label: "Ready for review",  tone: "bg-gold-tint border border-gold-border text-gold-deep",         order: 7,  group: "Review" },
+  failed_review:     { label: "Failed review",     tone: "bg-rust-tint border border-rust-border text-rust",              order: 6.5, group: "Review" },
+  completed:         { label: "Completed",         tone: "bg-teal-light border border-teal-border text-teal-dark",        order: 8,  group: "Live" },
+  in_production:     { label: "In production",     tone: "bg-teal-light border border-teal-border text-teal-dark",        order: 9,  group: "Live" },
+  done:              { label: "Done",              tone: "bg-teal-light border border-teal-border text-teal-dark",        order: 10, group: "Live" },
 };
 
 /**

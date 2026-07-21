@@ -115,7 +115,7 @@ export function PriorYearRow({
           )}
         </div>
         {tracking.notified_at && (
-          <div className="text-[11px] text-indigo-600 mt-1">
+          <div className="text-[11px] text-teal-dark mt-1">
             Client told {new Date(tracking.notified_at).toLocaleDateString()}
           </div>
         )}
@@ -134,7 +134,7 @@ export function PriorYearRow({
               type="button"
               onClick={() => patch({ markNotified: true })}
               disabled={saving}
-              className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-700 border border-indigo-200 rounded px-2 py-1 hover:bg-indigo-50 whitespace-nowrap disabled:opacity-50"
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-teal-dark border border-teal-border rounded px-2 py-1 hover:bg-teal-light whitespace-nowrap disabled:opacity-50"
               title="Mark that the client has been told this is a billable catch-up"
             >
               {saving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />} Client notified

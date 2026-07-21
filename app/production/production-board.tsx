@@ -51,7 +51,7 @@ const COLUMNS: { id: Exclude<BoardStatus, "not_started">; title: string; icon: a
   // STUCK JOB badge. A client can be blocked this month and fine as a client.
   { id: "stuck", title: "Blocked (this month)", icon: OctagonAlert, tone: "border-red-300" },
   { id: "waiting_client", title: "Waiting on Client", icon: MailQuestion, tone: "border-amber-300" },
-  { id: "ready_for_review", title: "Ready for Manager Review", icon: CheckCircle2, tone: "border-indigo-300" },
+  { id: "ready_for_review", title: "Ready for Manager Review", icon: CheckCircle2, tone: "border-teal-border" },
   // Manager rejected — bounced back to the bookkeeper to rework.
   { id: "failed_review", title: "Failed Review", icon: OctagonAlert, tone: "border-red-400" },
 ];
@@ -563,7 +563,7 @@ function BoardCard({
       <button onClick={onSelect} className="w-full text-left">
         <div className="flex items-center gap-1.5 mt-1 flex-wrap">
           {isPending ? (
-            <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded">
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-teal-light text-teal-dark px-1.5 py-0.5 rounded">
               <Send size={9} />
               Ready for manager review
             </span>
@@ -705,7 +705,7 @@ function BoardCard({
               {w.label}
             </label>
           ))}
-          <label className="flex items-center gap-2 text-[11px] font-semibold text-purple-800 cursor-pointer pt-1 border-t border-amber-200/60">
+          <label className="flex items-center gap-2 text-[11px] font-semibold text-teal-dark cursor-pointer pt-1 border-t border-amber-200/60">
             <input
               type="checkbox"
               checked={false}
@@ -720,7 +720,7 @@ function BoardCard({
                   );
                 }
               }}
-              className="w-3.5 h-3.5 rounded border-gray-300 text-purple-600"
+              className="w-3.5 h-3.5 rounded border-gray-300 text-teal-dark"
             />
             Ready for manager review →
           </label>

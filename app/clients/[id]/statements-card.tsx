@@ -120,15 +120,15 @@ export function StatementsCard({ clientLinkId }: { clientLinkId: string }) {
   }
 
   return (
-    <section className="rounded-2xl border-2 border-indigo-200 bg-gradient-to-br from-indigo-50/60 to-white p-5">
+    <section className="rounded-2xl border-2 border-teal-border bg-gradient-to-br from-teal/60 to-white p-5">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0">
-          <div className="p-2 rounded-lg bg-indigo-100 flex-shrink-0">
-            <FileText size={20} className="text-indigo-600" />
+          <div className="p-2 rounded-lg bg-teal-light flex-shrink-0">
+            <FileText size={20} className="text-teal-dark" />
           </div>
           <div className="min-w-0">
             <h3 className="font-bold text-navy flex items-center gap-1.5">
-              Statements <Sparkles size={13} className="text-indigo-400" />
+              Statements <Sparkles size={13} className="text-teal-light" />
             </h3>
             <p className="text-xs text-ink-slate mt-0.5">
               Upload bank, credit-card or loan statements — AI identifies the account, matches it to QuickBooks, and files it by month.
@@ -138,7 +138,7 @@ export function StatementsCard({ clientLinkId }: { clientLinkId: string }) {
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={!!busy}
-          className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-sm font-semibold px-3 py-2 rounded-lg flex-shrink-0"
+          className="inline-flex items-center gap-1.5 bg-navy hover:bg-navy-deep disabled:opacity-60 text-white text-sm font-semibold px-3 py-2 rounded-lg flex-shrink-0"
         >
           {busy ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
           Upload
@@ -154,7 +154,7 @@ export function StatementsCard({ clientLinkId }: { clientLinkId: string }) {
       </div>
 
       {busy && (
-        <div className="mt-3 flex items-center gap-2 text-sm text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">
+        <div className="mt-3 flex items-center gap-2 text-sm text-teal-dark bg-teal-light border border-teal-border rounded-lg px-3 py-2">
           <Loader2 size={14} className="animate-spin" /> {busy}
         </div>
       )}
@@ -214,7 +214,7 @@ export function StatementsCard({ clientLinkId }: { clientLinkId: string }) {
                         <button
                           type="button"
                           onClick={() => toggleGroup(key)}
-                          className="w-full flex items-center justify-between gap-2 px-3 py-2 bg-indigo-50/40 hover:bg-indigo-50 text-left"
+                          className="w-full flex items-center justify-between gap-2 px-3 py-2 bg-teal-light/40 hover:bg-teal-light text-left"
                         >
                           <span className="flex items-center gap-2 min-w-0">
                             {isCollapsed ? <ChevronRight size={14} className="text-ink-slate" /> : <ChevronDown size={14} className="text-ink-slate" />}
@@ -233,19 +233,19 @@ export function StatementsCard({ clientLinkId }: { clientLinkId: string }) {
                               {rows.map((s) => {
                                 const conf = CONF[s.match_confidence || "none"] || CONF.none;
                                 return (
-                                  <tr key={s.id} className="bg-white hover:bg-indigo-50/30">
+                                  <tr key={s.id} className="bg-white hover:bg-teal-light/30">
                                     <td className="px-3 py-2.5">
                                       <div className="flex items-center gap-2 min-w-0">
-                                        <FileText size={16} className="text-indigo-500 flex-shrink-0" />
+                                        <FileText size={16} className="text-teal-dark flex-shrink-0" />
                                         <button
                                           type="button"
                                           onClick={() => setPreview({ path: s.storage_path, name: s.display_name })}
-                                          className="text-sm font-semibold text-navy truncate max-w-[220px] text-left hover:text-indigo-600 hover:underline"
+                                          className="text-sm font-semibold text-navy truncate max-w-[220px] text-left hover:text-teal-dark hover:underline"
                                           title="Click to preview"
                                         >
                                           {s.display_name}
                                         </button>
-                                        {s.uploaded_via === "portal" && <span className="text-[11px] text-indigo-500">client upload</span>}
+                                        {s.uploaded_via === "portal" && <span className="text-[11px] text-teal-dark">client upload</span>}
                                       </div>
                                     </td>
                                     <td className="px-3 py-2.5 text-sm text-ink-slate whitespace-nowrap">{periodLabel(s)}</td>

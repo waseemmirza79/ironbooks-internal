@@ -429,7 +429,7 @@ function ProgressFlowChart({ progress }: { progress: ClientProgress }) {
           2026-07-17: "it just needs to be smart and obvious on what we
           need to do to move to the next step"). */}
       {next && (
-        <div className="mb-4 rounded-2xl bg-gradient-to-r from-teal to-teal-dark text-white p-4 flex items-center justify-between gap-4 flex-wrap shadow-md">
+        <div className="mb-4 rounded-2xl bg-teal-lighter-dark text-white p-4 flex items-center justify-between gap-4 flex-wrap shadow-md">
           <div className="min-w-0">
             <div className="text-[10px] font-bold uppercase tracking-wider text-white/70">
               {next.phase === "cleanup"
@@ -1944,7 +1944,7 @@ function StatusPill({ status }: { status: string }) {
     in_review: "bg-amber-50 text-amber-700",
     executing: "bg-blue-50 text-blue-700",
     failed: "bg-red-50 text-red-700",
-    web_search_paused: "bg-purple-50 text-purple-700",
+    web_search_paused: "bg-teal-light text-teal-dark",
   };
   const className = styles[status] || "bg-gray-100 text-ink-slate";
   return (

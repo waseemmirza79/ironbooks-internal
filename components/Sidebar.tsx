@@ -157,7 +157,7 @@ export function Sidebar() {
   // nav (middleware also confines them to /admin/billing).
   if (isBillingAdmin) {
     return (
-      <aside className="flex flex-col h-screen sticky top-0 w-56 bg-navy text-white">
+      <aside className="flex flex-col h-screen sticky top-0 w-[232px] bg-rail text-white">
         <div className="px-4 py-4 border-b border-white/10">
           <div className="flex items-center gap-2.5">
             <img src="/logo.png" alt="Ironbooks" className="w-9 h-9 object-contain flex-shrink-0" />
@@ -174,7 +174,7 @@ export function Sidebar() {
         </nav>
         <div className="px-2.5 py-3 border-t border-white/10">
           <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg bg-white/5">
-            <div className="rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 w-8 h-8 bg-teal">{userName.charAt(0) || "?"}</div>
+            <div className="rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 w-8 h-8 bg-gold text-navy">{userName.charAt(0) || "?"}</div>
             <div className="flex-1 min-w-0">
               <div className="text-sm font-semibold leading-tight truncate">{userName || "Loading..."}</div>
               <div className="text-[11px] leading-tight truncate text-white/45 capitalize">billing admin</div>
@@ -193,7 +193,7 @@ export function Sidebar() {
     (pathname.startsWith("/rules/") && /\/(rules)\/[^/]+\//.test(pathname));
 
   return (
-    <aside className={`flex flex-col h-screen sticky top-0 bg-navy text-white transition-[width] duration-150 ${collapsed ? "w-[64px]" : "w-56"}`}>
+    <aside className={`flex flex-col h-screen sticky top-0 bg-rail text-white transition-[width] duration-150 ${collapsed ? "w-[64px]" : "w-[232px]"}`}>
       <div className={`py-4 border-b border-white/10 ${collapsed ? "px-2" : "px-4"}`}>
         <div className={`flex items-center ${collapsed ? "flex-col gap-2" : "gap-2.5"}`}>
           <img
@@ -203,8 +203,8 @@ export function Sidebar() {
           />
           {!collapsed && (
             <div className="flex-1 min-w-0">
-              <div className="font-bold text-base tracking-tight leading-none">Ironbooks</div>
-              <div className="text-[11px] mt-0.5 text-white/45">Bookkeeper OS</div>
+              <div className="font-brand font-medium text-[15px] tracking-[0.14em] leading-none uppercase">Ironbooks</div>
+              <div className="text-[10.5px] mt-1 tracking-[0.08em] uppercase text-[#7E99B3]">Bookkeeper OS</div>
             </div>
           )}
           <button
@@ -298,7 +298,7 @@ export function Sidebar() {
       <div className="px-2.5 py-3 border-t border-white/10">
         {collapsed ? (
           <div className="flex flex-col items-center gap-2.5 py-1">
-            <div className="rounded-full flex items-center justify-center font-bold text-sm w-8 h-8 bg-teal" title={`${userName} · ${userRole}`}>
+            <div className="rounded-full flex items-center justify-center font-bold text-sm w-8 h-8 bg-gold text-navy" title={`${userName} · ${userRole}`}>
               {userName.charAt(0) || "?"}
             </div>
             <Link href="/settings" className="text-white/40 hover:text-white transition-colors" title="Settings · email signature">
@@ -310,7 +310,7 @@ export function Sidebar() {
           </div>
         ) : (
           <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg bg-white/5">
-            <div className="rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 w-8 h-8 bg-teal">
+            <div className="rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 w-8 h-8 bg-gold text-navy">
               {userName.charAt(0) || "?"}
             </div>
             <div className="flex-1 min-w-0">
@@ -339,7 +339,7 @@ function NavSection({ label, className = "", collapsed }: { label: string; class
   // Collapsed rail: section labels become thin dividers.
   if (collapsed) return <div className={`my-2 mx-2 border-t border-white/10 ${className}`} />;
   return (
-    <div className={`mb-1.5 px-3 text-[10px] font-bold uppercase tracking-wider text-white/30 ${className}`}>
+    <div className={`mb-1.5 px-3 text-[10.5px] font-bold uppercase tracking-wider text-[#8FA9C2] ${className}`}>
       {label}
     </div>
   );
@@ -369,10 +369,10 @@ function NavItem({
     collapsed ? "justify-center px-0 py-2.5" : "gap-2.5 px-3 py-2"
   } ${
     active
-      ? "bg-teal/20 text-white"
+      ? "bg-white/[0.12] text-white font-semibold"
       : dim
       ? "text-white/40 hover:bg-white/5 hover:text-white/75"
-      : "text-white/70 hover:bg-white/5 hover:text-white"
+      : "text-[#B9CBDC] hover:bg-white/5 hover:text-white"
   }`;
 
   const inner = collapsed ? (
@@ -381,7 +381,7 @@ function NavItem({
       {badgeCount != null && badgeCount > 0 && (
         <span
           className={`absolute top-1 right-1.5 w-2 h-2 rounded-full ${
-            badgeTone === "red" ? "bg-red-500" : "bg-amber-500/90"
+            badgeTone === "red" ? "bg-rust" : "bg-gold text-navy"
           }`}
         />
       )}
@@ -394,7 +394,7 @@ function NavItem({
       {badgeCount != null && badgeCount > 0 && (
         <span
           className={`ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded-full text-white tabular-nums ${
-            badgeTone === "red" ? "bg-red-500" : "bg-amber-500/90"
+            badgeTone === "red" ? "bg-rust" : "bg-gold text-navy"
           }`}
         >
           {badgeCount > 999 ? "999+" : badgeCount}

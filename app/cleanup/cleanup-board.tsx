@@ -59,7 +59,7 @@ type ChipKey =
   | "not_started";
 
 const CHIP_META: Record<ChipKey, { label: string; cls: string; rank: number }> = {
-  signoff_submitted: { label: "Awaiting mgr review", cls: "bg-purple-100 text-purple-700", rank: 0 },
+  signoff_submitted: { label: "Awaiting mgr review", cls: "bg-teal-light text-teal-dark", rank: 0 },
   signoff_only: { label: "Sign-off only", cls: "bg-emerald-100 text-emerald-700", rank: 1 },
   needs_rules: { label: "Needs bank rules", cls: "bg-teal/15 text-teal-dark", rank: 2 },
   reclass_review: { label: "Reclass in review", cls: "bg-blue-100 text-blue-700", rank: 3 },
@@ -313,7 +313,7 @@ export function CleanupBoard() {
   const COLS: { id: keyof typeof collapsed; title: string; tone: string; hint: string }[] = [
     { id: "needs_cleanup", title: "Needs Cleanup", tone: "border-gray-200", hint: "New — start with COA cleanup" },
     { id: "in_progress", title: "In Progress", tone: "border-teal/40", hint: "Working the checklist" },
-    { id: "review", title: "Awaiting Mgr Review", tone: "border-purple-300", hint: "Statements submitted — manager approves & sends" },
+    { id: "review", title: "Awaiting Mgr Review", tone: "border-teal-border", hint: "Statements submitted — manager approves & sends" },
   ];
 
   return (
@@ -672,7 +672,7 @@ function CleanupCard({
             {s.label.startsWith("6") && hasSignoff && (
               <button
                 onClick={onOpenSignoff}
-                className="inline-flex items-center gap-0.5 text-[10px] font-bold text-purple-700 hover:underline"
+                className="inline-flex items-center gap-0.5 text-[10px] font-bold text-teal-dark hover:underline"
               >
                 Review sign-off <ArrowUpRight size={9} />
               </button>

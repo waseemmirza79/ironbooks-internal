@@ -1022,7 +1022,7 @@ function ClientRow({
                       ? "bg-red-100 text-red-700 hover:bg-red-200"
                       : client.resumable_job.status === "executing"
                       ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
-                      : "bg-purple-100 text-purple-700 hover:bg-purple-200"
+                      : "bg-teal-light text-teal-dark hover:bg-teal-light"
                   }`}
                   title={
                     client.resumable_job.status === "failed"

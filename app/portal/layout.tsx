@@ -272,14 +272,14 @@ function NavLink({
     return (
       <Link
         href={href}
-        className="group flex items-center gap-3 px-3 py-2 rounded-lg text-sm bg-gradient-to-r from-cyan-500/15 via-sky-500/10 to-violet-500/15 ring-1 ring-inset ring-cyan-400/25 hover:ring-cyan-300/50 transition-all"
+        className="group flex items-center gap-3 px-3 py-2 rounded-lg text-sm bg-gradient-to-r from-cyan-500/15 via-sky-500/10 to-teal/15 ring-1 ring-inset ring-cyan-400/25 hover:ring-cyan-300/50 transition-all"
       >
         <Icon size={16} className="text-cyan-300" />
-        <span className="flex-1 font-semibold bg-gradient-to-r from-cyan-200 via-sky-100 to-violet-200 bg-clip-text text-transparent">
+        <span className="flex-1 font-semibold bg-gradient-to-r from-cyan-200 via-sky-100 to-teal bg-clip-text text-transparent">
           {label}
         </span>
         {badge && (
-          <span className="text-[9px] font-bold text-white px-1.5 py-0.5 rounded bg-gradient-to-r from-cyan-400 to-violet-500">
+          <span className="text-[9px] font-bold text-white px-1.5 py-0.5 rounded bg-gradient-to-r from-cyan-400 to-teal">
             {badge}
           </span>
         )}

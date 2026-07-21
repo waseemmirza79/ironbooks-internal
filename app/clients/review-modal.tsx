@@ -240,7 +240,7 @@ export function CleanupReviewModal({
             <button
               onClick={copyEmail}
               disabled={!pdfUrl}
-              className="w-full inline-flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
+              className="w-full inline-flex items-center justify-center gap-2 bg-navy hover:bg-navy-deep disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
             >
               {emailCopied ? <CheckCircle2 size={15} /> : <Mail size={15} />}
               {emailCopied ? "Copied to clipboard!" : "Copy branded email to clipboard"}
