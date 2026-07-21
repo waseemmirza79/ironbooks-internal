@@ -1721,10 +1721,13 @@ function PLSection({
                     ? "hover:bg-teal-lighter/40 cursor-pointer"
                     : "cursor-default"
                 } ${isZero ? "opacity-60" : ""}`}
-                title={clickable ? "Click to see transactions" : "No account ID — can't drill"}
+                title={`${r.name}${clickable ? " — click to see transactions" : " (no account ID — can't drill)"}`}
               >
                 <div className="text-navy truncate pr-2 flex-1 min-w-0">
-                  {r.name}
+                  {/* Leaf name only — "Marketing:Marketing Tools" next to a
+                      parent-direct "Marketing" row read as a duplicate (Lisa,
+                      2026-07-21). Full path stays in the hover title. */}
+                  {r.name.split(":").pop()}
                   <span className="text-[10px] text-ink-slate ml-2 font-normal">
                     {r.accountType}
                   </span>
@@ -1736,7 +1739,7 @@ function PLSection({
                 >
                   {formatCurrency(r.amount)}
                 </div>
-                <div className="font-mono text-[10px] text-teal w-11 text-right shrink-0" title="% of income">
+                <div className="font-mono text-xs font-semibold text-teal-dark w-14 text-right shrink-0" title="% of income">
                   {pctOfIncomeLabel(r.amount, income)}
                 </div>
                 {clickable && (
@@ -1754,7 +1757,7 @@ function PLSection({
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <div className="font-mono text-sm font-bold text-navy">{formatCurrency(total)}</div>
-            <div className="font-mono text-[10px] text-teal-dark font-semibold w-11 text-right">{pctOfIncomeLabel(total, income)}</div>
+            <div className="font-mono text-xs text-teal-dark font-bold w-14 text-right">{pctOfIncomeLabel(total, income)}</div>
           </div>
         </div>
       )}

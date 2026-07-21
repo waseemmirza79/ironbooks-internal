@@ -2040,14 +2040,18 @@ export async function voidPayment(
     throw new Error(`${entity} ${paymentId} not found in QBO (can't void)`);
   }
 
-  // 2. POST operation=void with just Id + SyncToken
+  // 2. Void. QBO quirk: Invoice has a dedicated operation=void, but Payment
+  // and SalesReceipt do NOT — they void through the UPDATE operation with
+  // include=void (sparse body). operation=void on /payment is rejected by QBO,
+  // which is why the revenue-integrity "Fix in QuickBooks" never landed
+  // (Lisa, 2026-07-21).
   const data = await qboRequest<any>(
     realmId,
     accessToken,
-    `/${resource}?operation=void&minorversion=70`,
+    `/${resource}?operation=update&include=void&minorversion=70`,
     {
       method: "POST",
-      body: JSON.stringify({ Id: paymentId, SyncToken: existing.SyncToken }),
+      body: JSON.stringify({ Id: paymentId, SyncToken: existing.SyncToken, sparse: true }),
     }
   );
   const out = data?.[entity] || data?.Payment || data?.SalesReceipt || {};

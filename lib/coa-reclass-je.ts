@@ -36,7 +36,7 @@ const DEFAULT_SUBTYPE: Record<string, string> = {
   "other income": "OtherMiscellaneousIncome",
 };
 import { fetchProfitAndLossByMonth } from "@/lib/qbo-pl-by-month";
-import { fetchProfitAndLoss } from "@/lib/qbo-reports";
+import { fetchProfitAndLoss, fetchPLDetailAll, type PLDetailRow } from "@/lib/qbo-reports";
 import {
   fetchTransactionsForAccount, reclassifyTransactionLines,
   SUPPORTED_TX_TYPES, type SupportedTxType,
@@ -147,6 +147,27 @@ export async function reclassAccountViaJournalEntry(params: {
   };
   if (!row) return result; // no P&L activity in the range — nothing to move
 
+  // Transaction-level detail for the range — lets each month's JE carry ONE
+  // LINE PER SOURCE TRANSACTION on the target side (date · type · payee), so
+  // the target's drill-down shows real detail instead of one lump "SNAP COA
+  // merge" (Lisa, 2026-07-21 — Amundson). Payroll-sourced activity can't be
+  // line-reclassed via the API at all, so this JE is the only automated move;
+  // itemized lines preserve the visible audit trail. Best-effort: any doubt
+  // (fetch failure, sum mismatch, too many rows) falls back to the lump.
+  const detailByMonth = new Map<string, PLDetailRow[]>();
+  try {
+    const detail = await fetchPLDetailAll(realmId, accessToken, startDate, endDate, "Cash");
+    for (const r of detail) {
+      const forms = matchCandidates(r.account);
+      if (![...forms].some((f) => cand.has(f))) continue;
+      const key = String(r.date || "").slice(0, 7); // YYYY-MM
+      if (!key || key.length !== 7) continue;
+      const arr = detailByMonth.get(key) || [];
+      arr.push(r);
+      detailByMonth.set(key, arr);
+    }
+  } catch { /* detail is an enhancement — the lump JE still moves the money */ }
+
   const creditNormal = isCreditNormal(source.AccountType);
   for (let i = 0; i < row.values.length; i++) {
     const v = row.values[i];
@@ -162,10 +183,42 @@ export async function reclassAccountViaJournalEntry(params: {
       sourcePosting = sourcePosting === "Debit" ? "Credit" : "Debit";
       targetPosting = targetPosting === "Debit" ? "Credit" : "Debit";
     }
-    const lines: JournalEntryLine[] = [
-      { posting_type: sourcePosting, amount, account_id: source.Id, account_name: source.Name, description: memo },
-      { posting_type: targetPosting, amount, account_id: target.Id, account_name: target.Name, description: memo },
-    ];
+
+    // Itemize the target side when the month's detail rows reconcile exactly
+    // to the month total: one JE line per source transaction, so the target
+    // drill-down reads like the original register. Strict gate — anything off
+    // by a cent (or >90 rows, or sub-cent rows that QBO would reject) lumps.
+    const monthRows = detailByMonth.get(date.slice(0, 7)) || [];
+    const rowsSum = monthRows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    const canItemize =
+      monthRows.length > 0 &&
+      monthRows.length <= 90 &&
+      Math.abs(rowsSum - v) < 0.02 &&
+      monthRows.every((r) => Math.abs(Number(r.amount) || 0) >= 0.01);
+    const lines: JournalEntryLine[] = canItemize
+      ? [
+          { posting_type: sourcePosting, amount, account_id: source.Id, account_name: source.Name, description: memo },
+          ...monthRows.map((r) => {
+            const rv = Number(r.amount) || 0;
+            // A row whose sign differs from the month's net flips its posting.
+            const posting = (rv >= 0) === (v >= 0)
+              ? targetPosting
+              : targetPosting === "Debit" ? ("Credit" as const) : ("Debit" as const);
+            const desc = [r.date, r.txn_type, r.name || r.memo || null, r.doc_number ? `#${r.doc_number}` : null]
+              .filter(Boolean).join(" · ");
+            return {
+              posting_type: posting,
+              amount: Math.abs(rv),
+              account_id: target.Id,
+              account_name: target.Name,
+              description: (desc || memo).slice(0, 3900),
+            };
+          }),
+        ]
+      : [
+          { posting_type: sourcePosting, amount, account_id: source.Id, account_name: source.Name, description: memo },
+          { posting_type: targetPosting, amount, account_id: target.Id, account_name: target.Name, description: memo },
+        ];
     try {
       await createJournalEntry(realmId, accessToken, {
         txn_date: date,
