@@ -48,7 +48,7 @@ const LOAN_TOKENS = /\b(loan|line\s+of\s+credit|\bloc\b|term\s+loan|instal?lment
 // Generic inter-account transfer wording (mirrors the discover route's prior
 // isBankTransfer). Kept here so both call sites share one definition.
 const TRANSFER_TOKENS =
-  /\b(online\s+transfer|funds?\s+transfer|internal\s+transfer|wire\s+transfer|ach\s+transfer|transfer\s+(to|from)|(xfer|tfr)\s+(to|from))\b/i;
+  /\b(online(\s+banking)?\s+transfer|bank(ing)?\s+transfer|funds?\s+transfer|internal\s+transfer|wire\s+transfer|ach\s+transfer|transfer\s+(to|from)|(xfer|tfr)\s+(to|from))\b/i;
 
 // E-transfer plumbing words — everything left after stripping these (and
 // numbers) is a counterparty name.

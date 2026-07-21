@@ -109,7 +109,11 @@ const HARD_BLOCK_PATTERNS = [
   // unambiguous payment/transfer wording (not bare issuer names) so ordinary
   // card-branded purchases still flow.
   /\btransfer\s+(to|from)\b/i,
-  /\b(online|internal|wire)\s+transfer\b/i,
+  // Allow an optional qualifier between "online/internal/wire" and "transfer"
+  // so "Online Banking Transfer" (QBO's bank-feed transfer wording) matches,
+  // not just "online transfer" (Tough Painting, 2026-07-21).
+  /\b(online|internal|wire)\s+(\w+\s+)?transfer\b/i,
+  /\bbank(ing)?\s+transfer\b/i,
   /\bcredit\s+card\s+pay(ment|mt)?\b/i,
   /\bcard\s+payment\b/i,
   /\bline\s+of\s+credit\b/i,

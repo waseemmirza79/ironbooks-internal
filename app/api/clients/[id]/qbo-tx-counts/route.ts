@@ -32,7 +32,7 @@ const TX_TYPES: Array<{ name: string; supportedByReclass: boolean; description: 
   { name: "VendorCredit", supportedByReclass: true, description: "Vendor credits" },
   { name: "JournalEntry", supportedByReclass: false, description: "Manual JEs — common with accountant-style bookkeeping" },
   { name: "Deposit", supportedByReclass: false, description: "Bank deposits" },
-  { name: "Transfer", supportedByReclass: false, description: "Between-account transfers" },
+  { name: "Transfer", supportedByReclass: true, description: "Between-account transfers (From/To reclassify via lib/qbo-transfers)" },
   { name: "BillPayment", supportedByReclass: false, description: "Payments against bills (already-categorized)" },
   { name: "Invoice", supportedByReclass: false, description: "Customer invoices (income side)" },
   { name: "SalesReceipt", supportedByReclass: false, description: "Direct sales receipts (income side)" },
