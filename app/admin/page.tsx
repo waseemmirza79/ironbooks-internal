@@ -2,7 +2,7 @@ import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { createServerSupabase } from "@/lib/supabase";
 import Link from "next/link";
-import { Users, FileCheck, Shield, Activity, AlertTriangle, ArrowRight, Clock, Mail, CreditCard, RefreshCw, Phone, Repeat, Landmark, ReceiptText, CheckCheck, ListChecks, Copy, TrendingUp } from "lucide-react";
+import { Users, FileCheck, Activity, AlertTriangle, ArrowRight, Clock, Mail, CreditCard, RefreshCw, Repeat, Landmark, ReceiptText, CheckCheck, ListChecks, Copy, TrendingUp } from "lucide-react";
 
 export default async function AdminOverviewPage() {
   const supabase = await createServerSupabase();
@@ -10,7 +10,6 @@ export default async function AdminOverviewPage() {
   const [
     { count: totalUsers },
     { count: activeUsers },
-    { data: users },
     { data: recentActivity },
     { count: totalCleanups },
     { count: completedCleanups },
@@ -18,7 +17,6 @@ export default async function AdminOverviewPage() {
   ] = await Promise.all([
     supabase.from("users").select("*", { count: "exact", head: true }),
     supabase.from("users").select("*", { count: "exact", head: true }).eq("is_active", true),
-    supabase.from("user_activity_stats").select("*").limit(20),
     supabase.from("recent_activity_feed").select("*").limit(15),
     supabase.from("coa_jobs").select("*", { count: "exact", head: true }),
     supabase.from("coa_jobs").select("*", { count: "exact", head: true }).eq("status", "complete"),
@@ -54,18 +52,18 @@ export default async function AdminOverviewPage() {
               Link Stripe
             </Link>
             <Link
-              href="/admin/coaching-calls"
+              href="/admin/users"
               className="inline-flex items-center gap-2 bg-white border-2 border-slate-200 text-ink-slate hover:border-teal hover:text-teal text-sm font-semibold px-4 py-2 rounded-lg"
             >
-              <Phone size={16} />
-              Coaching calls
+              <Users size={16} />
+              Employees
             </Link>
             <Link
-              href="/admin/users"
+              href="/admin/users?tab=clients"
               className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-4 py-2 rounded-lg"
             >
               <Users size={16} />
-              Manage Users
+              Clients
             </Link>
           </div>
         }
@@ -98,27 +96,6 @@ export default async function AdminOverviewPage() {
             icon={AlertTriangle}
             color={(failedJobs ?? 0) > 0 ? "#DC2626" : "#94A3B8"}
           />
-        </div>
-
-        {/* Compliance status */}
-        <div className="rounded-xl bg-white border border-gray-200 mb-6">
-          <div className="px-5 py-4 border-b border-gray-200 flex items-center gap-3">
-            <div className="rounded-lg flex items-center justify-center w-9 h-9 bg-green-100">
-              <Shield size={18} className="text-green-600" />
-            </div>
-            <div>
-              <h3 className="font-bold text-sm text-navy">Compliance Status</h3>
-              <p className="text-xs text-ink-slate">Financial controls active</p>
-            </div>
-          </div>
-          <div className="p-5 grid grid-cols-3 gap-4 text-sm">
-            <ComplianceItem label="Audit log immutable" ok />
-            <ComplianceItem label="RLS enforced on all tables" ok />
-            <ComplianceItem label="Role changes auto-audited" ok />
-            <ComplianceItem label="QBO tokens encrypted" ok />
-            <ComplianceItem label="Magic-link auth" ok />
-            <ComplianceItem label="Service role isolated" ok />
-          </div>
         </div>
 
         {/* Admin tools — everything that used to have its own sidebar row.
@@ -220,48 +197,7 @@ export default async function AdminOverviewPage() {
           })}
         </div>
 
-        <div className="grid grid-cols-2 gap-6">
-          {/* Team leaderboard */}
-          <div className="rounded-xl bg-white border border-gray-200">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
-              <h3 className="font-bold text-sm text-navy">Team Productivity</h3>
-              <Link
-                href="/admin/users"
-                className="text-xs font-semibold text-teal flex items-center gap-1"
-              >
-                All users <ArrowRight size={12} />
-              </Link>
-            </div>
-            <div className="divide-y divide-gray-100">
-              {users?.slice(0, 6).map((u) => (
-                <Link
-                  key={u.id}
-                  href={`/admin/users/${u.id}`}
-                  className="flex items-center gap-3 px-5 py-3 hover:bg-teal-lighter transition-colors"
-                >
-                  <div className="rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 w-8 h-8 bg-teal-light text-teal">
-                    {u.full_name?.charAt(0) || "?"}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold text-navy truncate">{u.full_name}</div>
-                    <div className="text-xs text-ink-slate capitalize">{u.role}</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-sm font-bold text-navy">
-                      {u.completed_cleanups || 0}
-                    </div>
-                    <div className="text-xs text-ink-slate">cleanups</div>
-                  </div>
-                </Link>
-              ))}
-              {(!users || users.length === 0) && (
-                <p className="px-5 py-6 text-sm text-ink-slate text-center">
-                  No team members yet.
-                </p>
-              )}
-            </div>
-          </div>
-
+        <div className="grid grid-cols-1 gap-6">
           {/* Recent activity */}
           <div className="rounded-xl bg-white border border-gray-200">
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
@@ -332,18 +268,6 @@ function StatCard({
       </div>
       <div className="text-2xl font-bold tracking-tight text-navy">{value}</div>
       <div className="text-sm mt-1 text-ink-slate">{label}</div>
-    </div>
-  );
-}
-
-function ComplianceItem({ label, ok }: { label: string; ok: boolean }) {
-  return (
-    <div className="flex items-center gap-2">
-      <div
-        className="rounded-full w-2 h-2"
-        style={{ backgroundColor: ok ? "#10B981" : "#DC2626" }}
-      />
-      <span className="text-navy">{label}</span>
     </div>
   );
 }
