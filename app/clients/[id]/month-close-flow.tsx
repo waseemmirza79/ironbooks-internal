@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { Shuffle, Mail, FileText, CheckCircle2, ArrowRight } from "lucide-react";
+import { Shuffle, Mail, FileText, CheckCircle2, ArrowRight, Search, RotateCcw } from "lucide-react";
 import { AskClientComposer } from "@/components/AskClientComposer";
 
 /**
@@ -91,6 +91,38 @@ export function MonthCloseFlow({
             <CheckCircle2 size={13} /> Close the month <ArrowRight size={12} />
           </Link>
         </FlowStep>
+      </div>
+
+      {/* Re-run a cleanup check — production clients still need to re-scan for
+          revenue / expense double-counts when something looks off. The cleanup
+          sequence itself is hidden once a client graduates, so surface the
+          scanners here rather than send them hunting (Lisa, Supreme). */}
+      <div className="rounded-xl border border-gray-200 bg-gray-50/60 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <RotateCcw size={14} className="text-ink-slate" />
+          <span className="text-xs font-bold uppercase tracking-wide text-ink-slate">
+            Something look off? Re-run a cleanup check
+          </span>
+        </div>
+        <p className="text-[11px] text-ink-slate mt-0.5">
+          These scanners are read-only until you apply a fix — safe to re-run on a live client any time.
+        </p>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          <Link
+            href={`/revenue-check/${clientLinkId}`}
+            title="Deposits-as-revenue, CRM-invoice double-count, and payroll double-count"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-navy hover:border-teal"
+          >
+            <Search size={13} /> Revenue &amp; payroll check <ArrowRight size={12} className="text-ink-light" />
+          </Link>
+          <Link
+            href={`/admin/duplicates?client=${clientLinkId}`}
+            title="Find & clear duplicate bills / expenses for this client"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-navy hover:border-teal"
+          >
+            <Search size={13} /> Duplicate expenses <ArrowRight size={12} className="text-ink-light" />
+          </Link>
+        </div>
       </div>
 
       {composer && (

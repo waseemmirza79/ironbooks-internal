@@ -521,10 +521,40 @@ function BoardCard({
   const isComplete = run?.status === "complete";
   const closedExternally = (run as any)?.email_delivery?.via === "external";
   const currentStatus = isPending
-    ? "waiting_client"
+    ? "ready_for_review"
     : isComplete
     ? "completed"
     : (((run?.board_status as string) === "not_started" ? "in_progress" : (run?.board_status as string)) || "in_progress");
+
+  // Manager: bounce a submitted month back to the bookkeeper (Failed Review)
+  // straight from the board — no need to open the close card. Requires a note
+  // (the bookkeeper sees it on their Today). Senior-gated by the API too.
+  async function rejectFromBoard() {
+    const note = window.prompt(
+      "Send back to the bookkeeper (Failed Review) — what needs to be fixed?\n(They'll see this note on their Today.)"
+    );
+    if (note === null) return;
+    if (!note.trim()) {
+      alert("A note is required to send a close back.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/clients/${client.id}/monthly-rec`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reject", period, notes: note.trim() }),
+      });
+      if (res.ok) {
+        onChanged();
+      } else {
+        const b = await res.json().catch(() => ({}));
+        alert(b.error || `Couldn't send back (HTTP ${res.status}).`);
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div
@@ -614,10 +644,15 @@ function BoardCard({
       <div className="mt-2 pt-2 border-t border-gray-100 flex items-center gap-1.5">
         <select
           value={currentStatus}
-          disabled={saving || isPending}
+          // Pending (submitted) cards are the manager-review queue: only a
+          // senior can act on them (approve/complete or send back). Bookkeepers
+          // still see them read-only, waiting on the manager.
+          disabled={saving || (isPending && !isSenior)}
           title={
             isPending
-              ? "Submitted — waiting on the manager"
+              ? isSenior
+                ? "Approve & complete, or send back to Failed Review"
+                : "Submitted — waiting on the manager"
               : isComplete
               ? "Completed — pick another status to reopen"
               : "Move this client"
@@ -625,6 +660,11 @@ function BoardCard({
           onChange={(e) => {
             const v = e.target.value;
             if (v === currentStatus) return;
+            if (v === "failed_review") {
+              // Manager reject — bounce back to the bookkeeper with a note.
+              rejectFromBoard();
+              return;
+            }
             if (v === "completed") {
               // The close lives in the rec-card flow (checks -> review ->
               // attest -> send). Opening the card IS the action here — and
@@ -642,11 +682,21 @@ function BoardCard({
           }}
           className="text-[11px] px-1.5 py-1 rounded border border-gray-200 bg-white text-ink-slate flex-1 min-w-0 disabled:opacity-60"
         >
-          <option value="in_progress">In progress</option>
-          <option value="stuck">Blocked (this month)</option>
-          <option value="waiting_client">Waiting on client</option>
-          <option value="ready_for_review">Ready for manager review</option>
-          <option value="completed">✓ Completed</option>
+          {isPending ? (
+            <>
+              <option value="ready_for_review">Ready for manager review</option>
+              <option value="failed_review">⤺ Failed Review — send back</option>
+              <option value="completed">✓ Approve &amp; complete</option>
+            </>
+          ) : (
+            <>
+              <option value="in_progress">In progress</option>
+              <option value="stuck">Blocked (this month)</option>
+              <option value="waiting_client">Waiting on client</option>
+              <option value="ready_for_review">Ready for manager review</option>
+              <option value="completed">✓ Completed</option>
+            </>
+          )}
         </select>
         {isSenior && (
           <button

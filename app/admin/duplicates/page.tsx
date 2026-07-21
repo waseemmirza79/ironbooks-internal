@@ -1,7 +1,9 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { redirect } from "next/navigation";
-import { CopyX } from "lucide-react";
+import Link from "next/link";
+import { CopyX, ArrowLeft } from "lucide-react";
 import { DuplicatesFleetClient } from "./duplicates-client";
+import { DuplicatesPanel } from "@/components/DuplicatesPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -15,13 +17,46 @@ export const dynamic = "force-dynamic";
  * same-bank-originator near-dups are HIGH, and refund/credit reversal pairs
  * are surfaced separately (informational, never removable).
  */
-export default async function DuplicatesFleetPage() {
+export default async function DuplicatesFleetPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ client?: string }>;
+}) {
+  const { client: clientParam } = await searchParams;
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/auth/login");
   const service = createServiceSupabase();
   const { data: actor } = await service.from("users").select("role").eq("id", user.id).single();
   if (!["admin", "lead"].includes((actor as any)?.role || "")) redirect("/today");
+
+  // Single-client scan: linked from a production client's month-close flow
+  // ("re-run a cleanup check"). Renders the same panel used mid-cleanup, with
+  // its own Scan button — works even when the client has zero open findings.
+  if (clientParam) {
+    const { data: c } = await (service as any)
+      .from("client_links")
+      .select("id, client_name")
+      .eq("id", clientParam)
+      .maybeSingle();
+    const name = (c as any)?.client_name || "client";
+    return (
+      <div className="max-w-4xl mx-auto px-6 py-8">
+        <Link href="/admin/duplicates" className="inline-flex items-center gap-1 text-xs font-semibold text-teal hover:underline mb-3">
+          <ArrowLeft size={13} /> All clients
+        </Link>
+        <div className="flex items-center gap-2.5 mb-1">
+          <CopyX size={20} className="text-teal" />
+          <h1 className="text-xl font-bold text-navy">Duplicate expenses — {name}</h1>
+        </div>
+        <p className="text-sm text-ink-slate mb-6 max-w-3xl">
+          Scan this client for duplicate bills / expenses (YTD window). Read-only until you remove a
+          finding — safe to re-run any time. Removal is guarded: snapshot first, closed periods skipped.
+        </p>
+        <DuplicatesPanel clientLinkId={clientParam} showScan title={`Duplicates — ${name}`} />
+      </div>
+    );
+  }
 
   const { data: findings } = await (service as any)
     .from("dup_findings")

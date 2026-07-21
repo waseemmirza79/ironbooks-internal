@@ -507,10 +507,10 @@ export function DailyReviewTable({
                             onClick={() => act(r, "ask_client")}
                             disabled={isBusy}
                             className="inline-flex items-center gap-1 px-2 py-1 border border-teal-border text-teal-dark text-xs rounded hover:bg-teal-light disabled:opacity-50"
-                            title="Ask: hold for client input, surfaces in next client email"
+                            title="Ask client: hold for client input, surfaces in next client email"
                           >
                             <HelpCircle size={11} />
-                            Ask
+                            Ask client
                           </button>
                         </div>
                         {err && (
