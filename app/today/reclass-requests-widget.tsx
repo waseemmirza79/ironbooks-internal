@@ -67,6 +67,9 @@ export function ReclassRequestsWidget({
   requests: PendingReclassRequest[];
 }) {
   const [requests, setRequests] = useState<PendingReclassRequest[]>(initial);
+  // Home shows the top 5; nothing on Home ever scrolls 20+ rows.
+  const [showAll, setShowAll] = useState(false);
+  const visibleRequests = showAll ? requests : requests.slice(0, 5);
 
   if (requests.length === 0) return null;
 
@@ -82,7 +85,7 @@ export function ReclassRequestsWidget({
         </span>
       </div>
       <ul className="divide-y divide-teal">
-        {requests.map((r) => (
+        {visibleRequests.map((r) => (
           <li key={r.id}>
             <ReclassRow
               req={r}
@@ -93,6 +96,14 @@ export function ReclassRequestsWidget({
           </li>
         ))}
       </ul>
+      {requests.length > 5 && (
+        <button
+          onClick={() => setShowAll((v) => !v)}
+          className="w-full px-5 py-2.5 text-left text-xs font-semibold text-teal-dark hover:text-navy border-t border-hairline transition-colors"
+        >
+          {showAll ? "Show top 5" : `Show all ${requests.length}`}
+        </button>
+      )}
     </section>
   );
 }

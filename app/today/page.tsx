@@ -92,6 +92,32 @@ export default async function TodayPage({
     .eq("status", "failed_review")
     .order("rejected_at", { ascending: false });
 
+  // ── "This week" wins — home should show progress, not only pressure. ──
+  // Scoped like everything else: bookkeepers see their own wins, seniors see
+  // the team's (or one bookkeeper's via view-as). Defensive: zero on error.
+  const weekAgoIso = new Date(Date.now() - 7 * 86400000).toISOString();
+  let winCloses = 0, winCleanups = 0, winDupCount = 0, winDupTotal = 0;
+  try {
+    let closesQ = (service as any).from("monthly_rec_runs")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "complete").gte("completed_at", weekAgoIso);
+    if (scopeUserId) closesQ = closesQ.eq("completed_by", scopeUserId);
+    let cleanupsQ = (service as any).from("client_links")
+      .select("id", { count: "exact", head: true })
+      .gte("cleanup_completed_at", weekAgoIso);
+    if (scopeUserId) cleanupsQ = cleanupsQ.eq("cleanup_completed_by", scopeUserId);
+    let dupsQ = (service as any).from("dup_findings")
+      .select("amount").eq("status", "resolved").gte("resolved_at", weekAgoIso);
+    if (scopeUserId) dupsQ = dupsQ.eq("resolved_by", scopeUserId);
+    const [c1, c2, d] = await Promise.all([closesQ, cleanupsQ, dupsQ]);
+    winCloses = c1.count || 0;
+    winCleanups = c2.count || 0;
+    const dupRows = (d.data as any[]) || [];
+    winDupCount = dupRows.length;
+    winDupTotal = dupRows.reduce((s, r) => s + Math.abs(Number(r.amount) || 0), 0);
+  } catch { /* wins are decoration — never break the page */ }
+  const hasWins = winCloses + winCleanups + winDupCount > 0;
+
   const rejectedForRework: any[] = [
     ...((rejectedCleanupRows || []) as any[]).map((r) => ({
       id: r.id,
@@ -544,6 +570,23 @@ export default async function TodayPage({
     <AppShell>
       <TopBar title={<Greeting name={firstName} />} subtitle={`Production daily review · ${today}`} />
       <div className="px-8 py-6 max-w-5xl space-y-5">
+        {/* Your day, one sentence — everything below is detail on this line. */}
+        <p className="text-sm text-ink-slate -mt-2">
+          {workCount > 0 ? (
+            <>
+              <span className="font-bold text-navy">{workCount}</span> thing{workCount === 1 ? "" : "s"} need{workCount === 1 ? "s" : ""} you
+            </>
+          ) : (
+            <span className="font-semibold text-teal-dark">You&apos;re clear — nothing needs you right now</span>
+          )}
+          {rejectedForRework.length > 0 && (
+            <> · <span className="font-bold text-rust">{rejectedForRework.length}</span> sent back</>
+          )}
+          {eligibleClients.length > 0 && (
+            <> · <span className="font-bold text-navy">{monthlyClosedCount}</span>/{eligibleClients.length} closed · {closingPeriodLabel}</>
+          )}
+        </p>
+
         {/* Pulse bar — time-pressure at a glance + month-end status + view-as */}
         <PulseBar
           counts={counts}
@@ -554,6 +597,23 @@ export default async function TodayPage({
           bookkeepers={allBookkeepers}
           viewAs={viewAs}
         />
+
+        {/* This week's wins — progress, not just pressure. Hides when empty. */}
+        {hasWins && (
+          <p className="text-[12.5px] text-ink-slate flex items-center gap-1.5 -mt-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-teal inline-block" />
+            <span className="font-bold uppercase tracking-wider text-[10.5px] text-ink-light mr-1">Past 7 days</span>
+            {winCloses > 0 && (
+              <><span className="font-bold text-teal-dark">{winCloses}</span> book{winCloses === 1 ? "" : "s"} closed</>
+            )}
+            {winCleanups > 0 && (
+              <>{winCloses > 0 && <span className="text-ink-light">·</span>} <span className="font-bold text-teal-dark">{winCleanups}</span> cleanup{winCleanups === 1 ? "" : "s"} finished</>
+            )}
+            {winDupCount > 0 && (
+              <>{winCloses + winCleanups > 0 && <span className="text-ink-light">·</span>} <span className="font-bold text-teal-dark">${Math.round(winDupTotal).toLocaleString()}</span> in duplicates cleared</>
+            )}
+          </p>
+        )}
 
         {/* Dead QBO connections — seniors only. Sits right up top so a broken
             connection (which silently blocks recon) is impossible to miss.
