@@ -82,19 +82,32 @@ export function computeCoaDrift(accounts: DriftAccount[], masterRows: DriftMaste
     const norm = normalizeAccountName(a.Name);
     const master = masterLeafByNorm.get(norm);
     const rt = retypeById.get(a.Id);
-    if (master && rt) {
-      wrongType.push({ id: a.Id, name: a.Name, currentType: rt.current_type || "(none)", masterType: rt.new_type });
-    } else if (master) {
-      matched++;
-      // Structure check: right name+type, wrong nesting. Skip accounts that
-      // are themselves parents (no subtree moves) and skip when master has no
-      // opinion beyond "top-level" and the account already is.
+    if (master) {
+      if (rt) {
+        wrongType.push({ id: a.Id, name: a.Name, currentType: rt.current_type || "(none)", masterType: rt.new_type });
+      } else {
+        matched++;
+      }
+      // Structure check — runs for BOTH correct- and wrong-typed accounts so a
+      // single ordered pass can retype AND re-nest. Skip accounts that are
+      // themselves parents / have children (no subtree moves).
+      //
+      // Why wrong-typed accounts get checked here (previously they didn't):
+      // retypeAccountViaRebuild rebuilds the account as a brand-new TOP-LEVEL
+      // twin, so any wrong-typed account the master nests ends up orphaned
+      // after the retype. Surfacing it as wrongParent NOW lets the fix route
+      // retype then re-nest it in one run, instead of the old two-pass dance
+      // where the nesting need only appeared after a re-scan.
       if (!master.is_parent && !hasChildren.has(String(a.Id))) {
         const currentParentName = a.ParentRef?.value ? (byId.get(String(a.ParentRef.value))?.Name ?? null) : null;
         const masterParentName = master.parent_account_name || null;
         const curNorm = currentParentName ? normalizeAccountName(currentParentName) : null;
         const wantNorm = masterParentName ? normalizeAccountName(masterParentName) : null;
-        if (curNorm !== wantNorm) {
+        // Correct-typed: move only if the current parent differs from master.
+        // Wrong-typed: the retype orphans it top-level, so it needs its master
+        // parent whenever the master specifies one.
+        const needsReparent = rt ? !!wantNorm : curNorm !== wantNorm;
+        if (needsReparent) {
           wrongParent.push({ id: a.Id, name: a.Name, currentParent: currentParentName, masterParent: masterParentName });
         }
       }

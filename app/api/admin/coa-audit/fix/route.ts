@@ -54,13 +54,28 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Nothing selected to fix" }, { status: 400 });
   }
 
-  const { data: clientLink } = await service
+  // (service as any): cleanup_completed_at is a live column not yet in the
+  // generated Supabase types (same pattern as the coa-audit history route).
+  const { data: clientLink } = await (service as any)
     .from("client_links")
-    .select("id, client_name, qbo_realm_id, jurisdiction, industry, is_active")
+    .select("id, client_name, qbo_realm_id, jurisdiction, industry, is_active, cleanup_completed_at")
     .eq("id", clientLinkId)
     .single();
   if (!clientLink?.qbo_realm_id || !clientLink.is_active) {
     return NextResponse.json({ error: "Client not found / inactive / not QBO-connected" }, { status: 404 });
+  }
+
+  // Guard (Clean Cut incident, 2026-07-19): never let a batch re-standardize a
+  // file a bookkeeper already finished — that's how Lisa's completed cleanup
+  // got overwritten. Individual reviewed fixes may override by passing
+  // allow_completed:true (after an explicit in-app confirm); the "Fix all"
+  // batch never passes it, so it hard-stops here.
+  if ((clientLink as any).cleanup_completed_at && body.allow_completed !== true) {
+    return NextResponse.json({
+      error: "cleanup_complete",
+      message: `${clientLink.client_name} is marked cleanup-complete (${String((clientLink as any).cleanup_completed_at).slice(0, 10)}). Re-standardizing risks overwriting finished work — apply items individually with confirmation, or pass allow_completed to override.`,
+      cleanup_completed_at: (clientLink as any).cleanup_completed_at,
+    }, { status: 409 });
   }
 
   const industryRaw = ((clientLink as any).industry as string) || "painters";
@@ -96,6 +111,24 @@ export async function POST(request: Request) {
     const now = new Date();
     const ytdStart = `${now.getFullYear()}-01-01`;
     const ytdEnd = now.toISOString().slice(0, 10);
+
+    // Resolve reparent selections to NAMES up front. A retype rebuilds an
+    // account as a brand-new TOP-LEVEL twin with a NEW id but the SAME name
+    // (retypeAccountViaRebuild), so matching the post-retype drift by the
+    // original id would silently skip every just-retyped account. Names are
+    // stable across the rebuild — match on those so retype→re-nest lands in
+    // one pass.
+    let reparentNameSet = new Set<string>();
+    if (reparentIds.length > 0) {
+      const preAccounts = await fetchAllAccounts(clientLink.qbo_realm_id, accessToken);
+      const preById = new Map(preAccounts.map((a) => [a.Id, a]));
+      reparentNameSet = new Set(
+        reparentIds
+          .map((id) => preById.get(id)?.Name)
+          .filter((n): n is string => !!n)
+          .map((n) => normalizeAccountName(n))
+      );
+    }
 
     // ── Retypes — QBO can't change a used account's type, so rebuild: rename the
     //    wrong-typed account aside, create a correctly-typed twin with the real
@@ -155,7 +188,9 @@ export async function POST(request: Request) {
         (masterRows as any[]).map((m) => [normalizeAccountName(m.account_name), m])
       );
       const live = [...accounts]; // grows as we create headings
-      for (const wp of drift.wrongParent.filter((w) => reparentIds.includes(w.id))) {
+      // Match by NAME, not id — a just-retyped account is now a twin with a
+      // different id but the same name (see reparentNameSet above).
+      for (const wp of drift.wrongParent.filter((w) => reparentNameSet.has(normalizeAccountName(w.name)))) {
         const acct: any = byId.get(wp.id);
         if (!acct) {
           summary.failed.push({ account: wp.name, message: "account no longer exists" });

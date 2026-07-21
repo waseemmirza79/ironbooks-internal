@@ -187,12 +187,19 @@ export function CoaAuditClient({
     setMergeBusy(p.sourceId);
     setMergeMsg((m) => ({ ...m, [p.sourceId]: "" }));
     try {
-      const res = await fetch("/api/admin/coa-audit/merge", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_link_id: clientId, source_account_id: p.sourceId, target_account_id: targetId }),
-      });
-      const data = await res.json();
+      const postMerge = (allowCompleted: boolean) =>
+        fetch("/api/admin/coa-audit/merge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ client_link_id: clientId, source_account_id: p.sourceId, target_account_id: targetId, ...(allowCompleted ? { allow_completed: true } : {}) }),
+        });
+      let res = await postMerge(false);
+      let data = await res.json();
+      if (res.status === 409 && data.error === "cleanup_complete") {
+        if (!confirm(`⚠ ${data.message}\n\nMerge anyway?`)) { setMergeMsg((m) => ({ ...m, [p.sourceId]: "skipped — cleanup-complete" })); return; }
+        res = await postMerge(true);
+        data = await res.json();
+      }
       if (data.reauth) { setMergeMsg((m) => ({ ...m, [p.sourceId]: "QBO reconnect needed" })); return; }
       if (data.tooLarge) { setMergeMsg((m) => ({ ...m, [p.sourceId]: data.error })); return; }
       if (data.ok === false) { setMergeMsg((m) => ({ ...m, [p.sourceId]: data.error || "merge failed" })); return; }
@@ -270,12 +277,21 @@ export function CoaAuditClient({
     if (!confirm(`Apply to ${clientName}'s live QuickBooks: ${retype.length} account re-type(s) + ${create.length} new account(s) + ${reparent.length} re-nest(s)? This re-writes the chart. (Merges/renames of other accounts are handled separately in the reviewed cleanup.)`)) return;
     patch(id, { applying: true, fixMsg: undefined });
     try {
-      const res = await fetch("/api/admin/coa-audit/fix", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_link_id: id, retype_account_ids: retype, create_account_names: create, reparent_account_ids: reparent }),
-      });
-      const data = await res.json();
+      const post = (allowCompleted: boolean) =>
+        fetch("/api/admin/coa-audit/fix", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ client_link_id: id, retype_account_ids: retype, create_account_names: create, reparent_account_ids: reparent, ...(allowCompleted ? { allow_completed: true } : {}) }),
+        });
+      let res = await post(false);
+      let data = await res.json();
+      // Cleanup-complete guard: an individual reviewed fix may override after an
+      // explicit confirm; the "Fix all" batch runner does NOT (see runAllFixes).
+      if (res.status === 409 && data.error === "cleanup_complete") {
+        if (!confirm(`⚠ ${data.message}\n\nApply anyway?`)) { patch(id, { applying: false, fixMsg: "skipped — file is cleanup-complete" }); return; }
+        res = await post(true);
+        data = await res.json();
+      }
       if (data.reauth) { patch(id, { applying: false, fixMsg: "QBO needs reconnect" }); return; }
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       const parts: string[] = [];
@@ -331,6 +347,13 @@ export function CoaAuditClient({
         });
         const data = await res.json();
         if (data.reauth) { patch(id, { applying: false, fixMsg: "QBO needs reconnect" }); return "reconnect QBO"; }
+        // Batch NEVER overrides the cleanup-complete guard — that's the Clean
+        // Cut footgun. Refuse the whole run; the bookkeeper can fix items
+        // individually (which offer a per-action override) if truly needed.
+        if (res.status === 409 && data.error === "cleanup_complete") {
+          patch(id, { applying: false, fixMsg: "⛔ Fix-all refused — file is cleanup-complete; fix items individually" });
+          return "refused — cleanup-complete";
+        }
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         if (data.retyped?.length) summary.push(`${data.retyped.length} re-typed`);
         if (data.created?.length) summary.push(`${data.created.length} created`);
@@ -366,6 +389,11 @@ export function CoaAuditClient({
           // eslint-disable-next-line no-await-in-loop
           const data = await res.json();
           if (data.reauth) { mergeFail++; continue; }
+          // Batch refuses on a cleanup-complete file (merge-only case).
+          if (res.status === 409 && data.error === "cleanup_complete") {
+            patch(id, { applying: false, fixMsg: "⛔ Fix-all refused — file is cleanup-complete; merge items individually" });
+            return "refused — cleanup-complete";
+          }
           if (data.tooLarge) { tooLarge++; continue; }
           if (data.ok === false) { mergeFail++; continue; }
           if (!res.ok) { mergeFail++; continue; }

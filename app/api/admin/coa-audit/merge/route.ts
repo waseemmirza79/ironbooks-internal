@@ -46,13 +46,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Source and target can't be the same account" }, { status: 400 });
   }
 
-  const { data: clientLink } = await service
+  // (service as any): cleanup_completed_at is a live column not yet in the
+  // generated Supabase types (same pattern as the coa-audit history route).
+  const { data: clientLink } = await (service as any)
     .from("client_links")
-    .select("id, client_name, qbo_realm_id, jurisdiction, industry, is_active")
+    .select("id, client_name, qbo_realm_id, jurisdiction, industry, is_active, cleanup_completed_at")
     .eq("id", clientLinkId)
     .single();
   if (!clientLink?.qbo_realm_id || !clientLink.is_active) {
     return NextResponse.json({ error: "Client not found / inactive / not QBO-connected" }, { status: 404 });
+  }
+
+  // Guard (Clean Cut incident, 2026-07-19): a merge moves YTD transactions and
+  // retires an account — the exact destructive step that overwrote Lisa's
+  // finished cleanup. Refuse on a cleanup-complete file unless the reviewed
+  // action explicitly overrides (allow_completed, after an in-app confirm).
+  if ((clientLink as any).cleanup_completed_at && body.allow_completed !== true) {
+    return NextResponse.json({
+      error: "cleanup_complete",
+      message: `${clientLink.client_name} is marked cleanup-complete (${String((clientLink as any).cleanup_completed_at).slice(0, 10)}). Merging will overwrite finished work — confirm to override.`,
+      cleanup_completed_at: (clientLink as any).cleanup_completed_at,
+    }, { status: 409 });
   }
 
   // Concurrency guard: never merge while a COA cleanup job is actively
