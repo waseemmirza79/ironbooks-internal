@@ -27,8 +27,8 @@ import { StripeConnectModal } from "./StripeConnectModal";
 // collapsible Tools drawer.
 const dailyNav: { href: string; label: string; icon: any; senior?: boolean; newTab?: boolean }[] = [
   { href: "/home", label: "Home", icon: HomeIcon },
-  { href: "/clients", label: "Clients", icon: Users },
   { href: "/board", label: "Pipelines", icon: ClipboardCheck },
+  { href: "/clients", label: "Clients", icon: Users },
   { href: "/support", label: "Support", icon: LifeBuoy, newTab: true },
 ];
 

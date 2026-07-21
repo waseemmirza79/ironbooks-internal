@@ -919,88 +919,32 @@ function OverviewTab({
     !!clientLink.daily_recon_enabled ||
     (stageDone("coa") && stageDone("reclass") && stageDone("rules"));
 
+  const inProduction = qboStatus === "connected" && !!clientLink.daily_recon_enabled;
+
   return (
-    <div className="space-y-6">
-      {/* QBO connection status — always visible, above everything else.
-          Green when healthy; amber + big Reconnect button + instructions
-          when the token expired or was never set up. Without this the
-          bookkeeper has to figure out why financial tabs are empty from
-          the "couldn't fetch P&L" amber banner elsewhere. */}
-      <QboConnectionBanner
-        clientLinkId={clientLink.id}
-        clientName={clientLink.client_name}
-        qboRealmId={clientLink.qbo_realm_id}
-        status={qboStatus}
-      />
+    <div className="space-y-5">
+      {/* Status line — a quiet strip when healthy; the QBO banner only
+          expands to a full card when connection needs attention. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <QboConnectionBanner
+          clientLinkId={clientLink.id}
+          clientName={clientLink.client_name}
+          qboRealmId={clientLink.qbo_realm_id}
+          status={qboStatus}
+        />
+      </div>
 
-      {/* Balance-sheet cleanup deferred — still owed. Surfaced here so a
-          client live in production doesn't silently skip its BS cleanup. */}
+      {/* Balance-sheet cleanup still owed — a compact line, not a banner. */}
       {bsCleanupOwed && (
-        <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
-          <AlertTriangle size={15} className="flex-shrink-0" />
-          <span><strong>Balance-sheet cleanup deferred</strong> — this client still owes a BS cleanup. Mark it done from the Clients manager dashboard once complete.</span>
+        <div className="flex items-center gap-2 rounded-lg border border-gold-border bg-gold-tint px-3 py-2 text-[13px] text-[#7c5210]">
+          <AlertTriangle size={14} className="flex-shrink-0" />
+          <span><strong>Balance-sheet cleanup deferred</strong> — still owed. Mark it done from the Clients table once complete.</span>
         </div>
       )}
 
-      {/* Inline message thread — "text" the client without leaving the profile. */}
-      <MessagesPanel clientLinkId={clientLink.id} canSend={canSendMessages !== false} />
-
-      {/* Production status — the lever that takes a client from "we
-          cleaned them up once" to "the 3am cron pulls their books
-          every morning." Auto-hides for clients with no QBO connection
-          since promotion is pointless without working tokens. */}
-      {qboStatus === "connected" && (
-        <div id="move-to-production" className="scroll-mt-24">
-          <ProductionStatusCard
-            clientLinkId={clientLink.id}
-            clientName={clientLink.client_name}
-            dailyReconEnabled={!!clientLink.daily_recon_enabled}
-            dailyReconPaused={!!clientLink.daily_recon_paused}
-            pausedReason={clientLink.daily_recon_paused_reason || null}
-            enabledAt={clientLink.daily_recon_enabled_at || null}
-            cleanupCompletedAt={clientLink.cleanup_completed_at || null}
-            reachedBsStage={reachedBsStage}
-          />
-        </div>
-      )}
-
-      {/* Closing the month lives on the production board — ONE close path,
-          with the checks, attestation, and Books Reliability gates. The old
-          per-profile CloseAndSendCard bypassed all three. */}
-      {qboStatus === "connected" && clientLink.daily_recon_enabled && (
-        <section className="bg-white rounded-2xl border border-gray-100 p-5 flex items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-bold text-navy">Monthly close</h3>
-            <p className="text-xs text-ink-slate mt-0.5">
-              Close the month and send statements from the Production board — checks,
-              attestation, and verification happen there.
-            </p>
-          </div>
-          <Link
-            href="/production"
-            className="text-xs font-bold text-teal border border-teal/30 hover:bg-teal/5 rounded-lg px-3 py-2 flex-shrink-0"
-          >
-            Open Production board →
-          </Link>
-        </section>
-      )}
-
-      {/* Statements — bookkeeper-uploaded (and client-uploaded) bank/CC/loan
-          statements, AI-identified + matched to QBO + filed by month. */}
-      <StatementsCard clientLinkId={clientLink.id} />
-
-      {/* Progress flow chart — bird's-eye view of where this client is in
-          their SNAP lifecycle. Renders above Outstanding Work so the
-          bookkeeper sees the "where are we" answer before the "what's
-          broken" list. */}
-      {progress && <ProgressFlowChart progress={progress} />}
-
-      {/* Client details + onboarding answers moved to their own "Profile"
-          tab to keep Overview focused on status + outstanding work. */}
-
-      {/* Outstanding work — top-priority card. If empty we show a positive
-          "all clear" state because seeing "0 outstanding items" hidden in
-          a corner feels less reassuring than a deliberate empty state. */}
+      {/* ── HERO: Outstanding work ── the one question Overview must answer:
+          "what needs doing for this client right now?" Everything else is
+          context below it. Empty = a deliberate all-clear state. */}
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-bold text-navy">Outstanding work</h2>
@@ -1054,6 +998,45 @@ function OverviewTab({
           </div>
         )}
       </section>
+
+      {/* Production control — the promote-to-production lever (pre-live) or the
+          daily-recon status + queue + pause (live). One card, the operational
+          control for this client's stage. (Monthly close is the stage banner's
+          job, above the tabs — not duplicated here.) */}
+      {qboStatus === "connected" && (
+        <div id="move-to-production" className="scroll-mt-24">
+          <ProductionStatusCard
+            clientLinkId={clientLink.id}
+            clientName={clientLink.client_name}
+            dailyReconEnabled={!!clientLink.daily_recon_enabled}
+            dailyReconPaused={!!clientLink.daily_recon_paused}
+            pausedReason={clientLink.daily_recon_paused_reason || null}
+            enabledAt={clientLink.daily_recon_enabled_at || null}
+            cleanupCompletedAt={clientLink.cleanup_completed_at || null}
+            reachedBsStage={reachedBsStage}
+          />
+        </div>
+      )}
+
+      {/* Cleanup progress — only meaningful pre-production. A live client
+          doesn't need the "where are we in cleanup" flow on Overview. */}
+      {progress && !inProduction && <ProgressFlowChart progress={progress} />}
+
+      {/* Inline message thread — collapsed; "text" the client without leaving. */}
+      <MessagesPanel clientLinkId={clientLink.id} canSend={canSendMessages !== false} />
+
+      {/* Documents & statements — available but folded away; AI files uploaded
+          bank/CC/loan statements by month. Off the main flow so it doesn't
+          crowd a production Overview. */}
+      <details className="group">
+        <summary className="flex items-center gap-2 cursor-pointer select-none text-sm font-bold text-navy py-1 list-none">
+          <ChevronRight size={15} className="text-ink-slate transition-transform group-open:rotate-90" />
+          Documents &amp; statements
+        </summary>
+        <div className="mt-2">
+          <StatementsCard clientLinkId={clientLink.id} />
+        </div>
+      </details>
 
       {/* Recent activity strip — last 10 events from audit_log */}
       {activity.length > 0 && (
@@ -1161,30 +1144,25 @@ function QboConnectionBanner({
   status: "connected" | "token_expired" | "never_connected";
 }) {
   if (status === "connected") {
+    // Healthy = a quiet one-line strip, not a full success card. A big green
+    // box for "everything's fine" was pure noise on a busy Overview; the space
+    // belongs to the work. The full card returns the moment there's a problem
+    // (expired / never connected) — that's when it earns the room.
     return (
-      <div className="rounded-2xl border-2 border-green-200 bg-green-50/60 p-5 flex items-center gap-4">
-        <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
-          <CheckCircle2 size={26} className="text-green-700" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-base font-bold text-navy">
-            QuickBooks connected
-          </div>
-          <div className="text-xs text-ink-slate mt-0.5">
-            All financial data on this page is fetched live from QBO each load.
-            {qboRealmId && (
-              <span className="ml-1 font-mono text-ink-light">· realm {qboRealmId}</span>
-            )}
-          </div>
-        </div>
+      <div className="flex items-center gap-2 text-xs text-ink-slate">
+        <span className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" />
+        <span className="font-semibold text-navy">QuickBooks connected</span>
+        <span className="text-ink-light">· live data</span>
+        {qboRealmId && <span className="font-mono text-ink-light hidden sm:inline">· realm {qboRealmId}</span>}
+        <span className="flex-1" />
         {qboRealmId && (
           <a
             href={`https://app.qbo.intuit.com/app/homepage?cid=${qboRealmId}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-green-700 hover:text-green-900 border border-green-300 hover:border-green-500 bg-white rounded-lg px-3 py-2 flex-shrink-0"
+            className="inline-flex items-center gap-1 font-semibold text-teal-dark hover:text-navy flex-shrink-0"
           >
-            <ExternalLink size={12} /> Open in QuickBooks
+            <ExternalLink size={11} /> Open in QuickBooks
           </a>
         )}
       </div>
