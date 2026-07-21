@@ -133,6 +133,9 @@ export async function POST(
           ghl_contact_id: lead.ghl_contact_id,
           client_link_id: created.id,
           client_name: clientName,
+          // true when advanced via the "Force to cleanup" escape hatch (lead
+          // wasn't in "ready" — e.g. a reconcile/backfill lead with no form/call).
+          forced: body.force === true,
         } as any,
       });
       return NextResponse.json({ ok: true, client_link_id: created.id });

@@ -295,6 +295,22 @@ function LeadCard({
             <UserPlus size={11} /> Start cleanup <ArrowRight size={10} />
           </button>
         )}
+        {stage !== "ready" && lead.status === "active" && (
+          <button
+            onClick={() => {
+              if (
+                confirm(
+                  `Force ${lead.business_name || lead.full_name} into Cleanup now, skipping the onboarding form/call gate?\n\nUse this for won deals pulled in via reconcile/backfill (no form or call recorded), so they aren't stranded in Onboarding. Their client account is created and moved to the Cleanup board.`
+                )
+              )
+                onAct(lead.id, "create_client", { force: true });
+            }}
+            className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200"
+            title="Bypass the form/call requirement and move this lead straight to Cleanup (for reconciled/backfilled leads that can't reach 'ready')"
+          >
+            <ArrowRight size={11} /> Force to cleanup
+          </button>
+        )}
         <button
           onClick={() => {
             const reason = prompt(`Mark ${lead.business_name || lead.full_name} as lost? Optional reason:`);
