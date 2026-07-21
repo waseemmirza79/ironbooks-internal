@@ -1,5 +1,6 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
+import { Greeting } from "./greeting";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { redirect } from "next/navigation";
 import Link from "next/link";
@@ -50,6 +51,8 @@ export default async function TodayPage({
     .single();
   const isSenior = ["admin", "lead"].includes((actor as any)?.role || "");
   const isAdmin = (actor as any)?.role === "admin";
+  // First name for the Home greeting ("Good morning, Lisa").
+  const firstName = String((actor as any)?.full_name || "").trim().split(/\s+/)[0] || "";
 
   // Seniors can view /today AS any bookkeeper (?viewas=<user_id>) — every
   // client-scoped widget below narrows to that bookkeeper's clients.
@@ -352,7 +355,7 @@ export default async function TodayPage({
   ) {
     return (
       <AppShell>
-        <TopBar title="Today" subtitle="Production daily review — clients on auto-recon" />
+        <TopBar title={<Greeting name={firstName} />} subtitle="Production daily review — clients on auto-recon" />
         <div className="px-8 py-12 max-w-2xl">
           <div className="bg-white rounded-2xl border border-gray-100 p-10 text-center space-y-4">
             <div className="inline-flex w-16 h-16 rounded-full bg-teal-lighter items-center justify-center">
@@ -539,7 +542,7 @@ export default async function TodayPage({
 
   return (
     <AppShell>
-      <TopBar title="Today" subtitle={`Production daily review · ${today}`} />
+      <TopBar title={<Greeting name={firstName} />} subtitle={`Production daily review · ${today}`} />
       <div className="px-8 py-6 max-w-5xl space-y-5">
         {/* Pulse bar — time-pressure at a glance + month-end status + view-as */}
         <PulseBar
@@ -610,13 +613,19 @@ export default async function TodayPage({
                 <ReclassRequestsWidget requests={pendingReclassRequests} />
               )}
               {clientAnswers.length > 0 && <ClientAnswersWidget rows={clientAnswers} />}
-              {/* Duplicate findings for this bookkeeper's production clients
-                  (weekly sweep + close-time scans). Hides itself when empty. */}
-              <DuplicatesPanel clientIds={scopeUserId ? eligibleClients.map((c: any) => c.id) : null} />
               {inboundComms.length > 0 && <ClientInboxWidget rows={inboundComms} />}
               {scopeUserId && cleanupDeadlines.length > 0 && (
                 <CleanupDeadlinesWidget rows={cleanupDeadlines} showBookkeeper={false} />
               )}
+              {/* Duplicate findings — LAST in the stack and capped to the top 5
+                  by $ exposure. An admin's fleet-wide list can run 300+ rows,
+                  which used to bury the whole Home screen; the full list lives
+                  on the fleet page. Hides itself when empty. */}
+              <DuplicatesPanel
+                clientIds={scopeUserId ? eligibleClients.map((c: any) => c.id) : null}
+                maxRows={5}
+                viewAllHref={isAdmin ? "/admin/duplicates" : undefined}
+              />
             </div>
           )}
         </section>
